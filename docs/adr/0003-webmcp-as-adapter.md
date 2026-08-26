@@ -8,4 +8,4 @@ Decision: Future WebMCP receives runtime-validated input and calls domain operat
 
 Alternatives considered: Putting workflow and authorization logic in tool callbacks.
 
-Consequences: `document.modelContext` integration is replaceable; no tools are registered in Gate 0.5.
+Consequences: Gate 2 registers exactly seven replaceable `document.modelContext` tools over strict validation and narrow operations. The adapter has no approval or consequential authority.

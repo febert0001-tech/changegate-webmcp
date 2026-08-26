@@ -13,3 +13,7 @@
 11. Authoritative proposal/approval structures own and freeze recursively validated JSON-compatible values.
 12. Approval checks recompute canonical proposal and approval-content digests; property insertion order is not authority.
 13. Rollback restores only the frozen snapshot captured immediately before execution.
+14. Every WebMCP input begins as `unknown` and must pass strict runtime validation before an operation can dispatch a domain action.
+15. WebMCP queries return bounded copies; no authoritative state, proposal, environment, or audit reference crosses the operations boundary.
+16. Requesting human review names the exact current proposal ID and creates neither approval authority nor a HUMAN audit event.
+17. Gate 2 exposes no consequential WebMCP capability.

@@ -16,4 +16,8 @@ Supported parameter values are null, booleans, finite numbers, strings, arrays, 
 
 ## Boundary rule
 
-Data crossing WebMCP, command, approval, authorization, state-machine, execution, or audit boundaries starts as `unknown`; a future runtime boundary will validate it before the typed domain engine. Zod remains planned but is not needed for the trusted Gate 1 reducer tests.
+Data crossing WebMCP starts as `unknown`. Gate 2 first rejects non-JSON runtime containers and then applies strict Zod schemas before calling a narrow operations layer. The reducer still validates legal transitions and remains the authority.
+
+`createChangeGateOperations()` creates one isolated, browser-compatible integration instance. Its private current-state closure is reducer-backed and has no generic dispatch or state replacement surface. Tool callbacks retain the operations object, not a state snapshot, so they observe the latest state without a mutable global singleton.
+
+Environment, service, proposal, policy, and audit reads are bounded projections. Every nested output is copied and frozen; approval objects and raw reducer state are never projected.

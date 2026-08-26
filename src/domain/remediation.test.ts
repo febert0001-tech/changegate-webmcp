@@ -42,7 +42,11 @@ function proposed(): ChangeGateState {
 }
 
 function awaiting(): ChangeGateState {
-  return apply(proposed(), { type: "REQUEST_HUMAN_APPROVAL", actor: "AGENT" });
+  return apply(proposed(), {
+    type: "REQUEST_HUMAN_APPROVAL",
+    actor: "AGENT",
+    proposalId: proposalInput.proposalId,
+  });
 }
 
 function approved(): ChangeGateState {

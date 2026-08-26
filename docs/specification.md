@@ -2,11 +2,19 @@
 
 ## Scope
 
-ChangeGate is a deterministic, synthetic IT-operations simulator for the 2026 OpenAI WebMCP Challenge. Gate 1.1 hardens only the pure domain/state-machine foundation; it has no UI, WebMCP registration, network, persistence, or real infrastructure integration.
+ChangeGate is a deterministic, synthetic IT-operations simulator for the 2026 OpenAI WebMCP Challenge. Gate 2 adds only a safe browser-facing WebMCP boundary over the verified pure domain/state-machine foundation. It has no approval UI, consequential WebMCP command, network, persistence, or real infrastructure integration.
 
 ## Interfaces and authority
 
 The system has a Human UI and a WebMCP agent interface. Neither owns authority. The domain state machine and its policy checks are authoritative. React presents state and dispatches future requests; WebMCP adapts validated external input to future domain operations.
+
+Gate 2 external input begins as `unknown`, passes descriptor-safe JSON-data checks and strict Zod schemas, and only then reaches narrow operations. The adapter supplies `actor: AGENT`; callers cannot supply actors, approvals, approval IDs, proposal digests, or authorization fields.
+
+`REQUEST_HUMAN_APPROVAL` carries the exact proposal ID and is legal only when it matches the current trusted `PROPOSED` change. It creates no human approval and stops at `AWAITING_HUMAN_APPROVAL`.
+
+## Gate 2 capability boundary
+
+The exact catalog is five bounded reads (`get_environment_status`, `get_service_details`, `get_change_policy`, `get_change_proposal`, `get_audit_trail`) and two non-authoritative commands (`propose_change`, `request_change_approval`). Approval, execution, rollback, reset, and semantic equivalents are not WebMCP capabilities.
 
 ## Canonical incident
 

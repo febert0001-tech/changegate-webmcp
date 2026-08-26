@@ -4,15 +4,16 @@ Standalone entry for the 2026 OpenAI WebMCP Challenge.
 
 ChangeGate will be a human-controlled IT-operations simulator: an agent may inspect a simulated environment, diagnose an incident, and propose a change. A person must authorize one exact proposal through the visible application UI before the simulator can execute it. The agent must never approve consequential actions.
 
-## Gate 1.1 status
+## Gate 2 status
 
-The environment and deterministic domain foundation are verified with hardened rollback snapshots, reset revocation, browser-safe SHA-256, and deeply immutable proposal/approval bindings. The project intentionally has no WebMCP interface, approval UI, persistence, or real execution effects.
+The verified Gate 1.1 domain foundation now has a safe browser-facing WebMCP boundary. Gate 2 registers five bounded read tools and two non-authoritative proposal tools after strict Zod validation. It intentionally has no human approval UI, consequential WebMCP capability, persistence, or real execution effects.
 
 ## Stack
 
 - Next.js 16.3.3
 - React 19.2.8
 - TypeScript 5 with `strict: true`
+- Zod 4 runtime validation
 - ESLint 9 / `eslint-config-next`
 - Vercel-ready Next.js application
 
@@ -26,9 +27,9 @@ npm run lint
 npm test
 ```
 
-## WebMCP direction
+## WebMCP implementation
 
-Future WebMCP integration will use the current imperative API at `document.modelContext`, specifically `registerTool` with an abort signal for lifecycle management. It will not use deprecated `navigator.modelContext` APIs. See [docs/webmcp-tools.md](docs/webmcp-tools.md).
+The browser integration uses the current imperative API at `document.modelContext`, specifically asynchronous `registerTool` calls with shared abort-signal lifecycle cleanup. Invocation cancellation remains separate. Unsupported browsers render normally without a polyfill. See [docs/webmcp-tools.md](docs/webmcp-tools.md).
 
 ## Documentation
 

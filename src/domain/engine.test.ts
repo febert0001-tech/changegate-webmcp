@@ -40,7 +40,7 @@ function expectDenied(state: ChangeGateState, action: DomainAction): void {
 function awaitingApproval(): ChangeGateState {
   return apply(
     apply(createInitialState(), { type: "PROPOSE_CHANGE", actor: "AGENT", proposal }),
-    { type: "REQUEST_HUMAN_APPROVAL", actor: "AGENT" },
+    { type: "REQUEST_HUMAN_APPROVAL", actor: "AGENT", proposalId: proposal.proposalId },
   );
 }
 
@@ -123,10 +123,50 @@ describe("deterministic ChangeGate domain engine", () => {
 
   it("does not give an agent an approval transition", () => {
     const proposed = apply(createInitialState(), { type: "PROPOSE_CHANGE", actor: "AGENT", proposal });
-    const afterAgentRequest = apply(proposed, { type: "REQUEST_HUMAN_APPROVAL", actor: "AGENT" });
+    const afterAgentRequest = apply(proposed, {
+      type: "REQUEST_HUMAN_APPROVAL",
+      actor: "AGENT",
+      proposalId: proposal.proposalId,
+    });
 
     expect(afterAgentRequest.change?.status).toBe("AWAITING_HUMAN_APPROVAL");
     expect(afterAgentRequest.audit.every(({ actor, type }) => actor !== "AGENT" || type !== "HUMAN_APPROVE")).toBe(true);
+  });
+
+  it("binds a human-approval request to the exact current proposal ID", () => {
+    const proposed = apply(createInitialState(), { type: "PROPOSE_CHANGE", actor: "AGENT", proposal });
+    const wrongId = reduceChangeGate(proposed, {
+      type: "REQUEST_HUMAN_APPROVAL",
+      actor: "AGENT",
+      proposalId: "Proposal-agent-gateway-restart",
+    });
+
+    expect(wrongId).toEqual({
+      ok: false,
+      error: {
+        code: "ILLEGAL_TRANSITION",
+        action: "REQUEST_HUMAN_APPROVAL",
+        currentState: "PROPOSED",
+      },
+    });
+    expect(proposed.change?.status).toBe("PROPOSED");
+    expect(proposed.audit).toHaveLength(1);
+
+    const exactId = apply(proposed, {
+      type: "REQUEST_HUMAN_APPROVAL",
+      actor: "AGENT",
+      proposalId: proposal.proposalId,
+    });
+    expect(exactId.change).toEqual({
+      status: "AWAITING_HUMAN_APPROVAL",
+      proposal: proposed.change?.proposal,
+    });
+    expect(exactId.audit.at(-1)).toMatchObject({
+      actor: "AGENT",
+      type: "REQUEST_HUMAN_APPROVAL",
+      lifecycle: "AWAITING_HUMAN_APPROVAL",
+    });
+    expect(exactId.change !== null && "approval" in exactId.change).toBe(false);
   });
 
   it("binds approval to the exact trusted proposal and changes digest for every material field", () => {

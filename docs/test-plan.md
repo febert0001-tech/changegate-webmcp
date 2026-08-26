@@ -1,6 +1,6 @@
 # Test plan
 
-## Gate 1.1 checks
+## Gate 2 checks
 
 1. Install dependencies with `npm install`.
 2. Start `npm run dev` and verify the local home page responds.
@@ -11,9 +11,11 @@
 6. Inspect the tracked file list and scan for common secret-file names and credential markers.
 7. Confirm the Git root is `changegate-webmcp`, not a parent project.
 
-The Vitest suite additionally proves original-snapshot identity/restoration, all legal reset origins, active reset denial, deep caller-reference isolation, runtime rejection of non-JSON values, canonical nested digests, runtime freezing, exact approval binding, and the absence of Node-only crypto imports in browser-reachable domain modules.
+The complete Vitest suite preserves every Gate 1.1 invariant and adds strict Zod rejection, exact proposal-ID review requests, bounded non-aliasing projections, exact seven-tool exposure, internally fixed AGENT commands, safe structured errors, current-state callbacks, registration cleanup/remount, partial-failure cleanup, unsupported-browser behavior, distinct registration/invocation signals, and static client-boundary checks.
 
-## Future interface acceptance tests (not Gate 1)
+The production build is the browser-bundle proof: the mounted Client Component imports the operations, Zod adapter, reducer, and browser-safe digest path without evaluating `document` during SSR.
+
+## Deferred consequential-interface acceptance tests (after Gate 2)
 
 - execution before approval -> DENIED
 - agent attempts self-approval -> IMPOSSIBLE/DENIED

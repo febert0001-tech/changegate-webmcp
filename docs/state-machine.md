@@ -11,6 +11,7 @@ From `AWAITING_HUMAN_APPROVAL`, a proposal may become `REJECTED` or `EXPIRED`. `
 ## Legal transition rules
 
 - Only a visible Human UI decision may move `AWAITING_HUMAN_APPROVAL` to `APPROVED` or `REJECTED`.
+- `PROPOSED -> AWAITING_HUMAN_APPROVAL` requires an exact, case-sensitive match between the requested proposal ID and the current trusted proposal ID.
 - Execution must independently revalidate the exact immutable proposal and one active human approval before `EXECUTING`.
 - `VERIFYING` must not become `SUCCEEDED` without independent verification.
 - Rollback needs a new, separately scoped human approval.
@@ -25,4 +26,4 @@ From `AWAITING_HUMAN_APPROVAL`, a proposal may become `REJECTED` or `EXPIRED`. `
 - A failed verification cannot be relabeled as success.
 - Reset cannot retain a prior approval or authorization, and rollback cannot capture a replacement baseline.
 
-Gate 1.1 implements this as a pure deterministic reducer; it has no execution side effects.
+Gate 2 exposes only proposal creation and exact-ID human-review requests through WebMCP. The pure deterministic reducer remains the sole transition authority and still has no execution side effects.

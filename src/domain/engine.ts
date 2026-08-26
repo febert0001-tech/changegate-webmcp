@@ -70,7 +70,11 @@ export interface ChangeGateState {
 
 export type DomainAction =
   | { readonly type: "PROPOSE_CHANGE"; readonly actor: "HUMAN" | "AGENT"; readonly proposal: ChangeProposalInput }
-  | { readonly type: "REQUEST_HUMAN_APPROVAL"; readonly actor: "HUMAN" | "AGENT" }
+  | {
+      readonly type: "REQUEST_HUMAN_APPROVAL";
+      readonly actor: "HUMAN" | "AGENT";
+      readonly proposalId: string;
+    }
   | { readonly type: "HUMAN_APPROVE"; readonly approvalId: string }
   | { readonly type: "HUMAN_REJECT" }
   | { readonly type: "EXPIRE_PROPOSAL" }
@@ -227,7 +231,7 @@ export function reduceChangeGate(state: ChangeGateState, action: DomainAction): 
         ? success(state, { status: "PROPOSED", proposal: createImmutableProposal(action.proposal) }, action.actor, action.type)
         : illegal(state, action);
     case "REQUEST_HUMAN_APPROVAL":
-      return change?.status === "PROPOSED"
+      return change?.status === "PROPOSED" && action.proposalId === change.proposal.proposalId
         ? success(state, { status: "AWAITING_HUMAN_APPROVAL", proposal: change.proposal }, action.actor, action.type)
         : illegal(state, action);
     case "HUMAN_APPROVE":
