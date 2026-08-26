@@ -15,6 +15,14 @@ export type ChangeLifecycleState =
   | "ROLLED_BACK"
   | "ROLLBACK_FAILED";
 
+export type JsonPrimitive = null | boolean | number | string;
+
+export type JsonValue = JsonPrimitive | readonly JsonValue[] | JsonObject;
+
+export interface JsonObject {
+  readonly [key: string]: JsonValue;
+}
+
 export interface ChangeProposalInput {
   readonly proposalId: string;
   readonly target: ServiceId;
@@ -23,7 +31,12 @@ export interface ChangeProposalInput {
   readonly preconditions: readonly string[];
 }
 
-export interface ImmutableChangeProposal extends ChangeProposalInput {
+export interface ImmutableChangeProposal {
+  readonly proposalId: string;
+  readonly target: ServiceId;
+  readonly action: string;
+  readonly parameters: JsonObject;
+  readonly preconditions: readonly string[];
   /** Computed only by trusted domain code from the canonical proposal fields. */
   readonly proposalDigest: string;
 }
@@ -35,7 +48,7 @@ export interface HumanApproval {
   readonly proposalDigest: string;
   readonly target: ServiceId;
   readonly action: string;
-  readonly parameters: Readonly<Record<string, unknown>>;
+  readonly parameters: JsonObject;
   readonly preconditions: readonly string[];
   readonly issuedBy: "HUMAN";
   readonly status: "ACTIVE" | "CONSUMED" | "INVALIDATED" | "EXPIRED" | "REJECTED";

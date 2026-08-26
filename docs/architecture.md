@@ -1,4 +1,4 @@
-# Architecture (Gate 1 domain foundation)
+# Architecture (Gate 1.1 hardened domain foundation)
 
 ChangeGate is a browser-hosted, deterministic IT-operations simulator. The domain operations, authorization policy, and state machine are authoritative. Human UI and WebMCP are separate interfaces; WebMCP is an adapter after runtime validation, not an authority.
 
@@ -17,7 +17,7 @@ The flagship incident is `Agent Gateway = DEGRADED`.
 
 `read-only inspection -> diagnosis event -> proposed change -> visible human approval -> scoped execution -> independent verification -> audit record -> optional rollback`
 
-The UI will present state and future approval controls. It does not directly mutate domain state. Gate 1 implements the pure domain reducer only; WebMCP remains unimplemented and may not bypass UI approval or policy checks.
+The UI will present state and future approval controls. It does not directly mutate domain state. Gate 1.1 keeps the pure synchronous domain layer browser-compatible; WebMCP remains unimplemented and may not bypass UI approval or policy checks.
 
 ## Deterministic reset
 

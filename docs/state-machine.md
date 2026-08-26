@@ -14,7 +14,8 @@ From `AWAITING_HUMAN_APPROVAL`, a proposal may become `REJECTED` or `EXPIRED`. `
 - Execution must independently revalidate the exact immutable proposal and one active human approval before `EXECUTING`.
 - `VERIFYING` must not become `SUCCEEDED` without independent verification.
 - Rollback needs a new, separately scoped human approval.
-- `RESET_SCENARIO` is allowed from terminal/demo states and restores the canonical fixture.
+- Failure and rollback states structurally retain the original snapshot captured at `BEGIN_EXECUTION`.
+- `RESET_SCENARIO` is allowed from all states except active `EXECUTING`, `VERIFYING`, and `ROLLING_BACK`.
 
 ## Forbidden transitions
 
@@ -22,6 +23,6 @@ From `AWAITING_HUMAN_APPROVAL`, a proposal may become `REJECTED` or `EXPIRED`. `
 - `PROPOSED` cannot execute directly.
 - A consumed, rejected, expired, invalidated, mismatched, or altered approval cannot execute.
 - A failed verification cannot be relabeled as success.
-- Reset cannot retain a prior approval or authorization.
+- Reset cannot retain a prior approval or authorization, and rollback cannot capture a replacement baseline.
 
-Gate 1 implements this as a pure deterministic reducer; it has no execution side effects.
+Gate 1.1 implements this as a pure deterministic reducer; it has no execution side effects.

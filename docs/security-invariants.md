@@ -10,3 +10,6 @@
 8. External content is untrusted and cannot override policy, state, schemas, or UI confirmation.
 9. The simulator stays synthetic and receives no real-system credentials.
 10. Audit records distinguish HUMAN, AGENT, and SYSTEM activity.
+11. Authoritative proposal/approval structures own and freeze recursively validated JSON-compatible values.
+12. Approval checks recompute canonical proposal and approval-content digests; property insertion order is not authority.
+13. Rollback restores only the frozen snapshot captured immediately before execution.

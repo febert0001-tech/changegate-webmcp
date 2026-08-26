@@ -6,7 +6,7 @@ import type {
   HumanApproval,
   ImmutableChangeProposal,
 } from "./change/contracts";
-import { createImmutableProposal } from "./change/proposal-digest";
+import { computeProposalDigest, createImmutableProposal } from "./change/proposal-digest";
 
 export type AuditActor = "HUMAN" | "AGENT" | "SYSTEM";
 
@@ -35,6 +35,7 @@ interface ExecutionState extends ApprovedState {
 
 interface FailedState extends ProposalState {
   readonly failureStage: "EXECUTION" | "VERIFICATION";
+  readonly preChangeSnapshot: EnvironmentState;
 }
 
 interface RollbackAwaitingApprovalState extends FailedState {
@@ -43,7 +44,6 @@ interface RollbackAwaitingApprovalState extends FailedState {
 
 interface RollingBackState extends FailedState {
   readonly rollbackApproval: HumanApproval;
-  readonly preChangeSnapshot: EnvironmentState;
 }
 
 export type ChangeLifecycle =
@@ -97,43 +97,56 @@ export type DomainTransitionResult =
   | { readonly ok: false; readonly error: DomainTransitionError };
 
 function cloneEnvironment(): EnvironmentState {
-  return {
-    services: CANONICAL_SCENARIO.services.map((service) => ({ ...service })),
-  };
+  return Object.freeze({
+    services: Object.freeze(
+      CANONICAL_SCENARIO.services.map((service) => Object.freeze({ ...service })),
+    ),
+  });
 }
 
 function cloneSnapshot(environment: EnvironmentState): EnvironmentState {
-  return { services: environment.services.map((service) => ({ ...service })) };
+  return Object.freeze({
+    services: Object.freeze(environment.services.map((service) => Object.freeze({ ...service }))),
+  });
 }
 
 function createApproval(approvalId: string, proposal: ImmutableChangeProposal): HumanApproval {
-  return {
+  return Object.freeze({
     approvalId,
     proposalId: proposal.proposalId,
     proposalDigest: proposal.proposalDigest,
     target: proposal.target,
     action: proposal.action,
-    parameters: { ...proposal.parameters },
-    preconditions: [...proposal.preconditions],
+    parameters: proposal.parameters,
+    preconditions: proposal.preconditions,
     issuedBy: "HUMAN",
     status: "ACTIVE",
-  };
+  });
 }
 
 function consumed(approval: HumanApproval): HumanApproval {
-  return { ...approval, status: "CONSUMED" };
+  return Object.freeze({ ...approval, status: "CONSUMED" });
 }
 
 export function isApprovalBoundToProposal(approval: HumanApproval, proposal: ImmutableChangeProposal): boolean {
+  const trustedProposalDigest = computeProposalDigest(proposal);
+  const approvalContentDigest = computeProposalDigest({
+    proposalId: approval.proposalId,
+    target: approval.target,
+    action: approval.action,
+    parameters: approval.parameters,
+    preconditions: approval.preconditions,
+  });
+
   return (
     approval.issuedBy === "HUMAN" &&
     approval.status === "ACTIVE" &&
     approval.proposalId === proposal.proposalId &&
+    proposal.proposalDigest === trustedProposalDigest &&
     approval.proposalDigest === proposal.proposalDigest &&
+    approvalContentDigest === trustedProposalDigest &&
     approval.target === proposal.target &&
-    approval.action === proposal.action &&
-    JSON.stringify(approval.parameters) === JSON.stringify(proposal.parameters) &&
-    JSON.stringify(approval.preconditions) === JSON.stringify(proposal.preconditions)
+    approval.action === proposal.action
   );
 }
 
@@ -154,11 +167,13 @@ function success(
   change: ChangeLifecycle | null,
   actor: AuditActor,
   eventType: string,
+  environment: EnvironmentState = state.environment,
 ): DomainTransitionResult {
   return {
     ok: true,
     state: {
       ...state,
+      environment,
       change,
       ...appendAudit(state, actor, eventType, change?.status ?? "NONE"),
     },
@@ -179,13 +194,9 @@ function illegal(state: ChangeGateState, action: DomainAction): DomainTransition
 function canReset(change: ChangeLifecycle | null): boolean {
   return (
     change === null ||
-    change.status === "PROPOSED" ||
-    change.status === "REJECTED" ||
-    change.status === "EXPIRED" ||
-    change.status === "SUCCEEDED" ||
-    change.status === "FAILED" ||
-    change.status === "ROLLED_BACK" ||
-    change.status === "ROLLBACK_FAILED"
+    (change.status !== "EXECUTING" &&
+      change.status !== "VERIFYING" &&
+      change.status !== "ROLLING_BACK")
   );
 }
 
@@ -241,7 +252,7 @@ export function reduceChangeGate(state: ChangeGateState, action: DomainAction): 
         : illegal(state, action);
     case "EXECUTION_FAILED":
       return change?.status === "EXECUTING"
-        ? success(state, { status: "FAILED", proposal: change.proposal, failureStage: "EXECUTION" }, "SYSTEM", action.type)
+        ? success(state, { status: "FAILED", proposal: change.proposal, failureStage: "EXECUTION", preChangeSnapshot: change.preChangeSnapshot }, "SYSTEM", action.type)
         : illegal(state, action);
     case "VERIFICATION_SUCCEEDED":
       return change?.status === "VERIFYING"
@@ -249,7 +260,7 @@ export function reduceChangeGate(state: ChangeGateState, action: DomainAction): 
         : illegal(state, action);
     case "VERIFICATION_FAILED":
       return change?.status === "VERIFYING"
-        ? success(state, { status: "FAILED", proposal: change.proposal, failureStage: "VERIFICATION" }, "SYSTEM", action.type)
+        ? success(state, { status: "FAILED", proposal: change.proposal, failureStage: "VERIFICATION", preChangeSnapshot: change.preChangeSnapshot }, "SYSTEM", action.type)
         : illegal(state, action);
     case "REQUEST_ROLLBACK_APPROVAL":
       return change?.status === "FAILED"
@@ -263,15 +274,15 @@ export function reduceChangeGate(state: ChangeGateState, action: DomainAction): 
       return change?.status === "ROLLBACK_AWAITING_APPROVAL" &&
         change.rollbackApproval !== undefined &&
         isApprovalBoundToProposal(change.rollbackApproval, change.proposal)
-        ? success(state, { status: "ROLLING_BACK", proposal: change.proposal, failureStage: change.failureStage, rollbackApproval: consumed(change.rollbackApproval), preChangeSnapshot: cloneSnapshot(state.environment) }, "SYSTEM", action.type)
+        ? success(state, { status: "ROLLING_BACK", proposal: change.proposal, failureStage: change.failureStage, rollbackApproval: consumed(change.rollbackApproval), preChangeSnapshot: change.preChangeSnapshot }, "SYSTEM", action.type)
         : illegal(state, action);
     case "ROLLBACK_SUCCEEDED":
       return change?.status === "ROLLING_BACK"
-        ? success(state, { status: "ROLLED_BACK", proposal: change.proposal, failureStage: change.failureStage }, "SYSTEM", action.type)
+        ? success(state, { status: "ROLLED_BACK", proposal: change.proposal, failureStage: change.failureStage, preChangeSnapshot: change.preChangeSnapshot }, "SYSTEM", action.type, change.preChangeSnapshot)
         : illegal(state, action);
     case "ROLLBACK_FAILED":
       return change?.status === "ROLLING_BACK"
-        ? success(state, { status: "ROLLBACK_FAILED", proposal: change.proposal, failureStage: change.failureStage }, "SYSTEM", action.type)
+        ? success(state, { status: "ROLLBACK_FAILED", proposal: change.proposal, failureStage: change.failureStage, preChangeSnapshot: change.preChangeSnapshot }, "SYSTEM", action.type)
         : illegal(state, action);
   }
 }

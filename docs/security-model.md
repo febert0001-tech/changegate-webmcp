@@ -2,7 +2,7 @@
 
 ## Human-control boundary
 
-The agent can observe, diagnose, and propose. The visible UI is the sole human-approval surface. The Gate 1 domain model binds a human decision to one immutable proposal ID, target service, exact action, parameters, and preconditions. The agent cannot approve, broaden, renew, or self-authorize a proposal.
+The agent can observe, diagnose, and propose. The visible UI is the sole human-approval surface. The Gate 1.1 domain model binds a human decision to one deeply immutable proposal ID, target service, exact action, parameters, and preconditions. The agent cannot approve, broaden, renew, or self-authorize a proposal.
 
 **There must never be a WebMCP `approve_change` tool or equivalent. Human approval must occur through the visible UI and be scoped to one exact proposed change.**
 
