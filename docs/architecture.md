@@ -1,6 +1,6 @@
-# Architecture (planned; not implemented)
+# Architecture (Gate 0.5 foundation; not implemented)
 
-ChangeGate is a browser-hosted, deterministic IT-operations simulator. An agent may inspect state and propose a repair; a human remains the approval authority for consequential actions.
+ChangeGate is a browser-hosted, deterministic IT-operations simulator. The domain operations, authorization policy, and state machine are authoritative. Human UI and WebMCP are separate interfaces; WebMCP is an adapter after runtime validation, not an authority.
 
 ## Future simulated environment
 
@@ -15,13 +15,13 @@ The flagship incident is `Agent Gateway = DEGRADED`.
 
 ## Planned flow
 
-`read-only inspection -> diagnosis -> proposed change -> visible human approval -> scoped execution -> verification -> audit record -> optional rollback`
+`read-only inspection -> diagnosis event -> proposed change -> visible human approval -> scoped execution -> independent verification -> audit record -> optional rollback`
 
-The UI will show authoritative simulator state and approval controls. WebMCP will expose carefully scoped tools; it will not bypass UI approval.
+The UI will present state and future approval controls. It does not directly mutate domain state. WebMCP will expose carefully scoped tools but may not bypass UI approval or policy checks.
 
 ## Deterministic reset
 
-A future visible UI reset will restore the fixed seed state, including `Agent Gateway = DEGRADED`, clear transient proposals and approvals, and preserve/reset audit data only according to a documented demonstration mode. Reset will be reproducible from a fixed scenario definition.
+A future visible UI reset will restore the fixed seed state, including `Agent Gateway = DEGRADED`; remove proposals, approvals, execution and rollback authorization; invalidate every transient authorization; restore deterministic audit state; and reset sequence counters.
 
 ## Deployment boundary
 

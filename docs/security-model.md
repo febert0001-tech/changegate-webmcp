@@ -8,9 +8,9 @@ The agent can observe, diagnose, and propose. The visible UI is the sole human-a
 
 ## Future state machine
 
-`observed -> diagnosed -> proposed -> pending_human_approval -> approved | rejected | expired -> executing -> verified | failed -> rollback_pending_approval -> rolled_back | rollback_failed`
+Environment observation and diagnosis are events, not transaction states. The detailed lifecycle and forbidden transitions are in [state-machine.md](state-machine.md).
 
-Only the visible UI may transition `pending_human_approval` to `approved` or `rejected`. Execution must consume one exact approval and reject stale, mismatched, duplicated, or expired approvals.
+Only the visible UI may transition `AWAITING_HUMAN_APPROVAL` to `APPROVED` or `REJECTED`. Execution must consume one exact approval and reject stale, mismatched, duplicated, or expired approvals.
 
 ## Authorization and rollback rules
 
