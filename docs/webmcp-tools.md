@@ -1,6 +1,6 @@
 # WebMCP tool catalog (planned; not implemented)
 
-## API direction verified for Gate 0.5
+## API direction verified through Gate 1
 
 Current official Chrome guidance identifies `document.modelContext` as the current imperative surface. Future registration will use `document.modelContext.registerTool(...)`, descriptive JSON input schemas, and `AbortSignal` lifecycle cleanup. `navigator.modelContext` is deprecated and will not be used. This active proposal must be rechecked immediately before implementation.
 
@@ -32,4 +32,4 @@ The exact final schemas, annotations, output bounds, and cancellation behavior r
 
 No tool may create, alter, infer, replay, or substitute a human approval. `request_change_approval` is not approval: it may only bring an immutable proposal to the visible human UI.
 
-See [tool-contracts.md](tool-contracts.md) for the authoritative classification. No WebMCP tools are registered in Gate 0.5.
+See [tool-contracts.md](tool-contracts.md) for the authoritative classification. No WebMCP tools are registered in Gate 1.

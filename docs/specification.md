@@ -2,7 +2,7 @@
 
 ## Scope
 
-ChangeGate is a deterministic, synthetic IT-operations simulator for the 2026 OpenAI WebMCP Challenge. Gate 0.5 freezes contracts and architecture; no simulator behavior, approval UI, WebMCP tool registration, execution, rollback, persistence, or production integration exists.
+ChangeGate is a deterministic, synthetic IT-operations simulator for the 2026 OpenAI WebMCP Challenge. Gate 1 implements only the pure domain/state-machine foundation; it has no UI, WebMCP registration, network, persistence, or real infrastructure integration.
 
 ## Interfaces and authority
 
@@ -14,4 +14,8 @@ The fixed seed scenario contains exactly four synthetic services: `web-server`, 
 
 ## Reset contract
 
-Future `RESET_SCENARIO` behavior restores the exact canonical service state; removes proposals, approvals, execution state, rollback authorization; invalidates every transient authorization; restores the deterministic demo/audit starting state; and resets deterministic sequence counters.
+`RESET_SCENARIO` restores the exact canonical service state; removes proposals, approvals, execution state, rollback authorization; invalidates every transient authorization; restores deterministic audit state; and resets sequence counters. It is rejected while `EXECUTING`, `VERIFYING`, or `ROLLING_BACK`; it never silently interrupts active work.
+
+## Proposal digest authority
+
+Trusted domain code canonicalizes proposal ID, target, action, parameters, and preconditions, then computes the SHA-256 digest. External callers never supply an authoritative digest; any material change yields a different binding.

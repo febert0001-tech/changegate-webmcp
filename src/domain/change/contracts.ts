@@ -15,13 +15,17 @@ export type ChangeLifecycleState =
   | "ROLLED_BACK"
   | "ROLLBACK_FAILED";
 
-export interface ImmutableChangeProposal {
+export interface ChangeProposalInput {
   readonly proposalId: string;
-  readonly proposalDigest: string;
   readonly target: ServiceId;
   readonly action: string;
   readonly parameters: Readonly<Record<string, unknown>>;
   readonly preconditions: readonly string[];
+}
+
+export interface ImmutableChangeProposal extends ChangeProposalInput {
+  /** Computed only by trusted domain code from the canonical proposal fields. */
+  readonly proposalDigest: string;
 }
 
 /** A future approval binds one human decision to exactly one immutable proposal. */

@@ -1,4 +1,4 @@
-# Challenge compliance (Gate 0.5)
+# Challenge compliance (Gate 1)
 
 ## Scope boundary
 
@@ -10,10 +10,10 @@ This is a standalone repository for the 2026 OpenAI WebMCP Challenge. Gate 0 con
 - WebMCP direction was verified against current official Chrome documentation.
 - The design documents the four synthetic services and flagship `Agent Gateway = DEGRADED` incident.
 - The tool catalog explicitly excludes `approve_change` and equivalent agent approval capabilities.
-- The domain authority, approval model, deterministic reset, audit boundaries, tool contracts, and lifecycle are documented but not implemented.
-- A deterministic typed four-service fixture and its Vitest contract test are present; neither is a simulator engine.
+- The pure domain authority, approval model, deterministic reset, audit foundation, and lifecycle are implemented and tested without external interfaces or effects.
+- The typed four-service fixture and deterministic Vitest suite are present; neither contacts real infrastructure nor implements a WebMCP interface.
 - `.gitignore` excludes environment files, dependencies, build output, Vercel metadata, and PEM files.
 
 ## Deferred work
 
-All simulator behavior, WebMCP registration, human approval UI, change execution, audit persistence, rollback, and transition behavior are deliberately deferred beyond Gate 0.5.
+WebMCP registration, human approval UI, dashboard, persistence, real execution effects, and infrastructure integration are deliberately deferred beyond Gate 1.

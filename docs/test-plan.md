@@ -1,6 +1,6 @@
 # Test plan
 
-## Gate 0.5 checks
+## Gate 1 checks
 
 1. Install dependencies with `npm install`.
 2. Start `npm run dev` and verify the local home page responds.
@@ -11,9 +11,9 @@
 6. Inspect the tracked file list and scan for common secret-file names and credential markers.
 7. Confirm the Git root is `changegate-webmcp`, not a parent project.
 
-The Gate 0.5 Vitest contract test proves the exact four service IDs and health values. It reads fixed data only; it has no current-time or random dependency.
+The Vitest suite proves the exact fixture, legal lifecycle paths, rejected transitions, digest binding, consumed/reset-invalid approvals, active-reset rejection, deterministic reset, and deterministic audit actors/sequences. It has no current-time or random dependency.
 
-## Future acceptance tests (not Gate 0)
+## Future interface acceptance tests (not Gate 1)
 
 - execution before approval -> DENIED
 - agent attempts self-approval -> IMPOSSIBLE/DENIED

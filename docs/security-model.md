@@ -1,8 +1,8 @@
-# Security model (planned; not implemented)
+# Security model (Gate 1 foundation)
 
 ## Human-control boundary
 
-The agent can observe, diagnose, and propose. The visible UI is the sole human-approval surface. Approval will bind a human decision to one immutable proposal ID, target service, exact action, parameters, preconditions, and expiry. The agent cannot approve, broaden, renew, or self-authorize a proposal.
+The agent can observe, diagnose, and propose. The visible UI is the sole human-approval surface. The Gate 1 domain model binds a human decision to one immutable proposal ID, target service, exact action, parameters, and preconditions. The agent cannot approve, broaden, renew, or self-authorize a proposal.
 
 **There must never be a WebMCP `approve_change` tool or equivalent. Human approval must occur through the visible UI and be scoped to one exact proposed change.**
 
@@ -22,6 +22,6 @@ Only the visible UI may transition `AWAITING_HUMAN_APPROVAL` to `APPROVED` or `R
 
 ## Audit and integrity
 
-Future audit events will capture actor class (agent or human), proposal identity, state transition, result, and verification outcome. Approval and execution must be distinguishable. Scenario reset must not silently make an old approval valid.
+Gate 1 audit events use deterministic sequence numbers and distinguish HUMAN, AGENT, and SYSTEM actors. Approval and execution are distinguishable. Scenario reset cannot silently make an old approval valid.
 
 Knowledge content and tool outputs will be treated as untrusted inputs; they cannot override schemas, authorization checks, UI confirmation, or the synthetic-environment boundary.

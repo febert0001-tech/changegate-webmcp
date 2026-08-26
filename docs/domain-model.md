@@ -8,10 +8,10 @@
 
 ## Foundation contracts
 
-`src/domain/scenario/canonical-scenario.ts` exports immutable fixed data. `src/domain/change/contracts.ts` defines only lifecycle and value-object shapes.
+`src/domain/scenario/canonical-scenario.ts` exports immutable fixed data. `src/domain/engine.ts` creates independent runtime state and implements the pure reducer. `src/domain/change/proposal-digest.ts` produces the trusted digest from canonical proposal content.
 
 `HumanApproval` is not a boolean. It binds `approvalId`, `proposalId`, `proposalDigest`, target, action, parameters, preconditions, `issuedBy: HUMAN`, and a lifecycle status to one exact proposal. The future representation may evolve without weakening this binding.
 
 ## Boundary rule
 
-Data crossing WebMCP, command, approval, authorization, state-machine, execution, or audit boundaries starts as `unknown`; future runtime validation produces trusted typed inputs. Zod is the planned validator, but is intentionally not installed at Gate 0.5.
+Data crossing WebMCP, command, approval, authorization, state-machine, execution, or audit boundaries starts as `unknown`; a future runtime boundary will validate it before the typed domain engine. Zod remains planned but is not needed for the trusted Gate 1 reducer tests.

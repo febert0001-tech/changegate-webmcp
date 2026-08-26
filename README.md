@@ -4,9 +4,9 @@ Standalone entry for the 2026 OpenAI WebMCP Challenge.
 
 ChangeGate will be a human-controlled IT-operations simulator: an agent may inspect a simulated environment, diagnose an incident, and propose a change. A person must authorize one exact proposal through the visible application UI before the simulator can execute it. The agent must never approve consequential actions.
 
-## Gate 0.5 status
+## Gate 1 status
 
-The environment is verified and the architecture/specification foundation is frozen. It intentionally does not implement simulator behavior, WebMCP tools, the approval UI, execution, audit persistence, or rollback.
+The environment, architecture, and pure deterministic domain foundation are verified. It intentionally does not implement a WebMCP interface, approval UI, dashboard, persistence, real execution side effects, or infrastructure integration.
 
 ## Stack
 

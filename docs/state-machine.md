@@ -6,7 +6,7 @@ Environment health and change lifecycle are separate models. Inspection and diag
 
 `PROPOSED -> AWAITING_HUMAN_APPROVAL -> APPROVED -> EXECUTING -> VERIFYING -> SUCCEEDED`
 
-From `AWAITING_HUMAN_APPROVAL`, a proposal may become `REJECTED` or `EXPIRED`. From `VERIFYING`, it may become `FAILED`; a failed change may enter `ROLLBACK_AWAITING_APPROVAL -> ROLLING_BACK -> ROLLED_BACK | ROLLBACK_FAILED`.
+From `AWAITING_HUMAN_APPROVAL`, a proposal may become `REJECTED` or `EXPIRED`. `EXECUTING` may become `VERIFYING` on simulated success or `FAILED` on execution failure; no separate execution-failed state exists. `VERIFYING` may become `FAILED`; a failed change may enter `ROLLBACK_AWAITING_APPROVAL -> ROLLING_BACK -> ROLLED_BACK | ROLLBACK_FAILED`.
 
 ## Legal transition rules
 
@@ -24,4 +24,4 @@ From `AWAITING_HUMAN_APPROVAL`, a proposal may become `REJECTED` or `EXPIRED`. F
 - A failed verification cannot be relabeled as success.
 - Reset cannot retain a prior approval or authorization.
 
-This document defines a future reducer/policy contract only; no transition logic exists at Gate 0.5.
+Gate 1 implements this as a pure deterministic reducer; it has no execution side effects.
