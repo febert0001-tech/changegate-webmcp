@@ -1,6 +1,6 @@
 import type { output, ZodType } from "zod";
 
-import type { ChangeGateOperations } from "../application/changegate-operations";
+import type { ChangeGateWebMcpOperations } from "../application/changegate-operations";
 import type { WebMcpInvocationContext, WebMcpToolDefinition } from "./native-contract";
 import {
   emptyInputSchema,
@@ -67,7 +67,7 @@ function tool(
 }
 
 export function createGate2ToolDefinitions(
-  operations: ChangeGateOperations,
+  operations: ChangeGateWebMcpOperations,
 ): readonly WebMcpToolDefinition[] {
   const definitions: readonly WebMcpToolDefinition[] = [
     tool(

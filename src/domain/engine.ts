@@ -25,6 +25,10 @@ interface ProposalState {
   readonly proposal: ImmutableChangeProposal;
 }
 
+interface AwaitingHumanApprovalState extends ProposalState {
+  readonly reviewInstanceId: string;
+}
+
 interface ApprovedState extends ProposalState {
   readonly approval: HumanApproval;
 }
@@ -48,7 +52,7 @@ interface RollingBackState extends FailedState {
 
 export type ChangeLifecycle =
   | ({ readonly status: "PROPOSED" } & ProposalState)
-  | ({ readonly status: "AWAITING_HUMAN_APPROVAL" } & ProposalState)
+  | ({ readonly status: "AWAITING_HUMAN_APPROVAL" } & AwaitingHumanApprovalState)
   | ({ readonly status: "REJECTED" } & ProposalState)
   | ({ readonly status: "EXPIRED" } & ProposalState)
   | ({ readonly status: "APPROVED" } & ApprovedState)
@@ -66,6 +70,7 @@ export interface ChangeGateState {
   readonly change: ChangeLifecycle | null;
   readonly audit: readonly AuditEvent[];
   readonly nextSequence: number;
+  readonly nextReviewInstance: number;
 }
 
 export type DomainAction =
@@ -75,8 +80,19 @@ export type DomainAction =
       readonly actor: "HUMAN" | "AGENT";
       readonly proposalId: string;
     }
-  | { readonly type: "HUMAN_APPROVE"; readonly approvalId: string }
-  | { readonly type: "HUMAN_REJECT" }
+  | {
+      readonly type: "HUMAN_APPROVE";
+      readonly proposalId: string;
+      readonly proposalDigest: string;
+      readonly reviewInstanceId: string;
+      readonly approvalId: string;
+    }
+  | {
+      readonly type: "HUMAN_REJECT";
+      readonly proposalId: string;
+      readonly proposalDigest: string;
+      readonly reviewInstanceId: string;
+    }
   | { readonly type: "EXPIRE_PROPOSAL" }
   | { readonly type: "BEGIN_EXECUTION" }
   | { readonly type: "EXECUTION_SUCCEEDED" }
@@ -205,7 +221,13 @@ function canReset(change: ChangeLifecycle | null): boolean {
 }
 
 export function createInitialState(): ChangeGateState {
-  return { environment: cloneEnvironment(), change: null, audit: [], nextSequence: 1 };
+  return {
+    environment: cloneEnvironment(),
+    change: null,
+    audit: [],
+    nextSequence: 1,
+    nextReviewInstance: 1,
+  };
 }
 
 export function reduceChangeGate(state: ChangeGateState, action: DomainAction): DomainTransitionResult {
@@ -221,6 +243,7 @@ export function reduceChangeGate(state: ChangeGateState, action: DomainAction): 
         change: null,
         audit: [{ sequence: 1, actor: "SYSTEM", type: "SCENARIO_RESET", lifecycle: "NONE" }],
         nextSequence: 2,
+        nextReviewInstance: state.nextReviewInstance,
       },
     };
   }
@@ -231,15 +254,34 @@ export function reduceChangeGate(state: ChangeGateState, action: DomainAction): 
         ? success(state, { status: "PROPOSED", proposal: createImmutableProposal(action.proposal) }, action.actor, action.type)
         : illegal(state, action);
     case "REQUEST_HUMAN_APPROVAL":
-      return change?.status === "PROPOSED" && action.proposalId === change.proposal.proposalId
-        ? success(state, { status: "AWAITING_HUMAN_APPROVAL", proposal: change.proposal }, action.actor, action.type)
+      return change?.status === "PROPOSED" &&
+        action.proposalId === change.proposal.proposalId &&
+        Number.isSafeInteger(state.nextReviewInstance) &&
+        state.nextReviewInstance > 0 &&
+        state.nextReviewInstance < Number.MAX_SAFE_INTEGER
+        ? success(
+            { ...state, nextReviewInstance: state.nextReviewInstance + 1 },
+            {
+              status: "AWAITING_HUMAN_APPROVAL",
+              proposal: change.proposal,
+              reviewInstanceId: `human-review:${state.nextReviewInstance}`,
+            },
+            action.actor,
+            action.type,
+          )
         : illegal(state, action);
     case "HUMAN_APPROVE":
-      return change?.status === "AWAITING_HUMAN_APPROVAL"
+      return change?.status === "AWAITING_HUMAN_APPROVAL" &&
+        action.proposalId === change.proposal.proposalId &&
+        action.proposalDigest === change.proposal.proposalDigest &&
+        action.reviewInstanceId === change.reviewInstanceId
         ? success(state, { status: "APPROVED", proposal: change.proposal, approval: createApproval(action.approvalId, change.proposal) }, "HUMAN", action.type)
         : illegal(state, action);
     case "HUMAN_REJECT":
-      return change?.status === "AWAITING_HUMAN_APPROVAL"
+      return change?.status === "AWAITING_HUMAN_APPROVAL" &&
+        action.proposalId === change.proposal.proposalId &&
+        action.proposalDigest === change.proposal.proposalDigest &&
+        action.reviewInstanceId === change.reviewInstanceId
         ? success(state, { status: "REJECTED", proposal: change.proposal }, "HUMAN", action.type)
         : illegal(state, action);
     case "EXPIRE_PROPOSAL":

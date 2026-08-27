@@ -11,11 +11,12 @@ export default function Home() {
           A human-controlled IT-operations simulator with a safe, inspection-first
           browser agent boundary.
         </p>
-        <section className={styles.notice} aria-label="Gate 2 scope">
-          <h2>Gate 2: safe WebMCP boundary</h2>
+        <section className={styles.notice} aria-label="Gate 3 scope">
+          <h2>Gate 3: human authorization plane</h2>
           <p>
-            Inspection, proposal, and human-review-request tools are available.
-            Human approval and consequential execution remain deliberately absent.
+            The agent may inspect, propose, and request review. Only a person using
+            this visible interface may approve or reject the exact proposal.
+            Consequential execution remains deliberately absent.
           </p>
           <ChangeGateWebMcp />
         </section>

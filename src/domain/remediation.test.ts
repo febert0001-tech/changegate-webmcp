@@ -20,6 +20,27 @@ const proposalInput = {
   preconditions: ["agent-gateway is DEGRADED"],
 } as const;
 
+const proposalDigest = computeProposalDigest(proposalInput);
+
+function humanApprove(approvalId: string, reviewInstanceId = "human-review:1"): DomainAction {
+  return {
+    type: "HUMAN_APPROVE",
+    proposalId: proposalInput.proposalId,
+    proposalDigest,
+    reviewInstanceId,
+    approvalId,
+  };
+}
+
+function humanReject(reviewInstanceId = "human-review:1"): DomainAction {
+  return {
+    type: "HUMAN_REJECT",
+    proposalId: proposalInput.proposalId,
+    proposalDigest,
+    reviewInstanceId,
+  };
+}
+
 function apply(state: ChangeGateState, action: DomainAction): ChangeGateState {
   const result = reduceChangeGate(state, action);
   if (!result.ok) throw new Error(`Unexpected transition failure: ${result.error.action}`);
@@ -50,7 +71,7 @@ function awaiting(): ChangeGateState {
 }
 
 function approved(): ChangeGateState {
-  return apply(awaiting(), { type: "HUMAN_APPROVE", approvalId: "approval-1" });
+  return apply(awaiting(), humanApprove("approval-1"));
 }
 
 function executing(): ChangeGateState {
@@ -155,7 +176,7 @@ describe("Gate 1.1 reset legality and revocation", () => {
     ["PROPOSED", proposed],
     ["AWAITING_HUMAN_APPROVAL", awaiting],
     ["APPROVED", approved],
-    ["REJECTED", () => apply(awaiting(), { type: "HUMAN_REJECT" })],
+    ["REJECTED", () => apply(awaiting(), humanReject())],
     ["EXPIRED", () => apply(awaiting(), { type: "EXPIRE_PROPOSAL" })],
     ["FAILED", failed],
     ["ROLLBACK_AWAITING_APPROVAL", () => rollbackAwaiting(true)],

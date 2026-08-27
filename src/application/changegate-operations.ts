@@ -75,7 +75,7 @@ export type ChangeCommandResult =
       readonly reason: "TRANSITION_NOT_PERMITTED";
     };
 
-export interface ChangeGateOperations {
+export interface ChangeGateWebMcpOperations {
   readonly getEnvironmentStatus: () => EnvironmentStatusProjection;
   readonly getServiceDetails: (serviceId: ServiceId) => ServiceProjection | null;
   readonly getChangePolicy: () => ChangePolicyProjection;
@@ -83,6 +83,13 @@ export interface ChangeGateOperations {
   readonly getAuditTrail: () => AuditTrailProjection;
   readonly proposeChange: (input: FlagshipChangeInput) => ChangeCommandResult;
   readonly requestChangeApproval: (proposalId: string) => ChangeCommandResult;
+}
+
+export interface ChangeGateOperations extends ChangeGateWebMcpOperations {
+  readonly getRevision: () => number;
+  readonly subscribe: (listener: () => void) => () => void;
+  readonly approvePendingChange: () => ChangeCommandResult;
+  readonly rejectPendingChange: () => ChangeCommandResult;
 }
 
 function isJsonArray(value: JsonValue): value is readonly JsonValue[] {
@@ -131,8 +138,48 @@ function denied(state: ChangeGateState): ChangeCommandResult {
   });
 }
 
+export function createWebMcpOperationsFacade(
+  operations: ChangeGateWebMcpOperations,
+): ChangeGateWebMcpOperations {
+  return Object.freeze({
+    getEnvironmentStatus: operations.getEnvironmentStatus,
+    getServiceDetails: operations.getServiceDetails,
+    getChangePolicy: operations.getChangePolicy,
+    getChangeProposal: operations.getChangeProposal,
+    getAuditTrail: operations.getAuditTrail,
+    proposeChange: operations.proposeChange,
+    requestChangeApproval: operations.requestChangeApproval,
+  });
+}
+
 export function createChangeGateOperations(): ChangeGateOperations {
   let currentState = createInitialState();
+  let revision = 0;
+  const listeners = new Set<() => void>();
+
+  const publish = (): void => {
+    revision += 1;
+    for (const listener of [...listeners]) {
+      try {
+        listener();
+      } catch {
+        continue;
+      }
+    }
+  };
+
+  const completeTransition = (
+    result: ReturnType<typeof reduceChangeGate>,
+  ): ChangeCommandResult => {
+    if (!result.ok) return denied(currentState);
+
+    const proposal = projectProposal(result.state);
+    if (proposal === null) return denied(currentState);
+
+    currentState = result.state;
+    publish();
+    return Object.freeze({ status: "SUCCESS", proposal });
+  };
 
   const getEnvironmentStatus = (): EnvironmentStatusProjection =>
     Object.freeze({
@@ -172,18 +219,22 @@ export function createChangeGateOperations(): ChangeGateOperations {
     });
   };
 
+  const getRevision = (): number => revision;
+
+  const subscribe = (listener: () => void): (() => void) => {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  };
+
   const proposeChange = (input: FlagshipChangeInput): ChangeCommandResult => {
     const result = reduceChangeGate(currentState, {
       type: "PROPOSE_CHANGE",
       actor: "AGENT",
       proposal: input,
     });
-    if (!result.ok) return denied(currentState);
-
-    currentState = result.state;
-    const proposal = projectProposal(currentState);
-    if (proposal === null) return denied(currentState);
-    return Object.freeze({ status: "SUCCESS", proposal });
+    return completeTransition(result);
   };
 
   const requestChangeApproval = (proposalId: string): ChangeCommandResult => {
@@ -192,12 +243,34 @@ export function createChangeGateOperations(): ChangeGateOperations {
       actor: "AGENT",
       proposalId,
     });
-    if (!result.ok) return denied(currentState);
+    return completeTransition(result);
+  };
 
-    currentState = result.state;
-    const proposal = projectProposal(currentState);
-    if (proposal === null) return denied(currentState);
-    return Object.freeze({ status: "SUCCESS", proposal });
+  const approvePendingChange = (): ChangeCommandResult => {
+    const change = currentState.change;
+    if (change?.status !== "AWAITING_HUMAN_APPROVAL") return denied(currentState);
+
+    const result = reduceChangeGate(currentState, {
+      type: "HUMAN_APPROVE",
+      proposalId: change.proposal.proposalId,
+      proposalDigest: change.proposal.proposalDigest,
+      reviewInstanceId: change.reviewInstanceId,
+      approvalId: `human-ui:${change.reviewInstanceId}`,
+    });
+    return completeTransition(result);
+  };
+
+  const rejectPendingChange = (): ChangeCommandResult => {
+    const change = currentState.change;
+    if (change?.status !== "AWAITING_HUMAN_APPROVAL") return denied(currentState);
+
+    const result = reduceChangeGate(currentState, {
+      type: "HUMAN_REJECT",
+      proposalId: change.proposal.proposalId,
+      proposalDigest: change.proposal.proposalDigest,
+      reviewInstanceId: change.reviewInstanceId,
+    });
+    return completeTransition(result);
   };
 
   return Object.freeze({
@@ -206,7 +279,11 @@ export function createChangeGateOperations(): ChangeGateOperations {
     getChangePolicy,
     getChangeProposal,
     getAuditTrail,
+    getRevision,
+    subscribe,
     proposeChange,
     requestChangeApproval,
+    approvePendingChange,
+    rejectPendingChange,
   });
 }

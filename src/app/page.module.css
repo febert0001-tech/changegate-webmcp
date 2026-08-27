@@ -3,7 +3,32 @@
 .eyebrow { color: #0f766e; font-size: .85rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .main h1 { margin: .4rem 0 1rem; font-size: clamp(3rem, 10vw, 5.5rem); letter-spacing: -.07em; }
 .summary { max-width: 38rem; font-size: 1.2rem; line-height: 1.6; }
-.notice { margin-top: 2rem; padding: 1.25rem; border: 1px solid #99f6e4; border-radius: .75rem; background: #f0fdfa; }
+.notice { margin-top: 2rem; padding: 1.25rem; border: 1px solid #99f6e4; border-radius: .75rem; color: #134e4a; background: #f0fdfa; }
 .notice h2 { margin-bottom: .5rem; font-size: 1rem; }
 .notice p { line-height: 1.5; }
 .integrationStatus { margin-top: .75rem; color: #115e59; font-size: .9rem; font-weight: 700; }
+.authorizationPanel { margin-top: 1.25rem; padding: 1rem; border: 1px solid #5eead4; border-radius: .65rem; background: #fff; }
+.authorizationHeading { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
+.authorizationHeading h3 { margin-top: .2rem; font-size: 1.2rem; }
+.authorizationKicker { color: #0f766e; font-size: .72rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.authorizationStatus { flex: 0 0 auto; padding: .35rem .55rem; border-radius: .35rem; color: #fff; background: #115e59; font-size: .72rem; letter-spacing: .04em; }
+.authorizationMessage { margin-top: 1rem; color: #475569; }
+.proposalSummary { display: grid; gap: .75rem; margin-top: 1rem; }
+.proposalSummary div { display: grid; grid-template-columns: minmax(7rem, .35fr) 1fr; gap: .75rem; }
+.proposalSummary dt { color: #475569; font-size: .8rem; font-weight: 700; }
+.proposalSummary dd { min-width: 0; overflow-wrap: anywhere; }
+.proposalSummary code { font-size: .8rem; }
+.decisionArea { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #ccfbf1; }
+.decisionActions { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: .8rem; }
+.decisionActions button { min-width: 7rem; padding: .65rem 1rem; border: 0; border-radius: .45rem; color: #fff; font: inherit; font-weight: 800; cursor: pointer; }
+.approveButton { background: #047857; }
+.rejectButton { background: #b91c1c; }
+.decisionActions button:focus-visible { outline: 3px solid #0f172a; outline-offset: 2px; }
+.approvedMessage { margin-top: 1rem; padding: .75rem; border-left: 4px solid #047857; color: #065f46; background: #ecfdf5; font-weight: 700; }
+.rejectedMessage { margin-top: 1rem; padding: .75rem; border-left: 4px solid #b91c1c; color: #991b1b; background: #fef2f2; font-weight: 700; }
+
+@media (max-width: 34rem) {
+  .authorizationHeading { align-items: stretch; flex-direction: column; }
+  .authorizationStatus { align-self: start; }
+  .proposalSummary div { grid-template-columns: 1fr; gap: .2rem; }
+}

@@ -18,6 +18,27 @@ const proposal = {
   preconditions: ["agent-gateway is DEGRADED"],
 } as const;
 
+const proposalDigest = computeProposalDigest(proposal);
+
+function humanApprove(approvalId: string, reviewInstanceId = "human-review:1"): DomainAction {
+  return {
+    type: "HUMAN_APPROVE",
+    proposalId: proposal.proposalId,
+    proposalDigest,
+    reviewInstanceId,
+    approvalId,
+  };
+}
+
+function humanReject(reviewInstanceId = "human-review:1"): DomainAction {
+  return {
+    type: "HUMAN_REJECT",
+    proposalId: proposal.proposalId,
+    proposalDigest,
+    reviewInstanceId,
+  };
+}
+
 function apply(state: ChangeGateState, action: DomainAction): ChangeGateState {
   const result = reduceChangeGate(state, action);
   expect(result.ok).toBe(true);
@@ -46,7 +67,7 @@ function awaitingApproval(): ChangeGateState {
 
 function executing(): ChangeGateState {
   return apply(
-    apply(awaitingApproval(), { type: "HUMAN_APPROVE", approvalId: "approval-1" }),
+    apply(awaitingApproval(), humanApprove("approval-1")),
     { type: "BEGIN_EXECUTION" },
   );
 }
@@ -71,7 +92,7 @@ describe("deterministic ChangeGate domain engine", () => {
     let state = awaitingApproval();
     expect(state.change?.status).toBe("AWAITING_HUMAN_APPROVAL");
 
-    state = apply(state, { type: "HUMAN_APPROVE", approvalId: "approval-1" });
+    state = apply(state, humanApprove("approval-1"));
     expect(state.change?.status).toBe("APPROVED");
     state = apply(state, { type: "BEGIN_EXECUTION" });
     expect(state.change?.status).toBe("EXECUTING");
@@ -117,7 +138,7 @@ describe("deterministic ChangeGate domain engine", () => {
 
     const awaiting = awaitingApproval();
     expectDenied(awaiting, { type: "BEGIN_EXECUTION" });
-    expectDenied(apply(awaiting, { type: "HUMAN_REJECT" }), { type: "BEGIN_EXECUTION" });
+    expectDenied(apply(awaiting, humanReject()), { type: "BEGIN_EXECUTION" });
     expectDenied(apply(awaiting, { type: "EXPIRE_PROPOSAL" }), { type: "BEGIN_EXECUTION" });
   });
 
@@ -160,6 +181,7 @@ describe("deterministic ChangeGate domain engine", () => {
     expect(exactId.change).toEqual({
       status: "AWAITING_HUMAN_APPROVAL",
       proposal: proposed.change?.proposal,
+      reviewInstanceId: "human-review:1",
     });
     expect(exactId.audit.at(-1)).toMatchObject({
       actor: "AGENT",
@@ -183,7 +205,7 @@ describe("deterministic ChangeGate domain engine", () => {
       expect(computeProposalDigest(alternative)).not.toBe(baseDigest);
     }
 
-    const approved = apply(awaitingApproval(), { type: "HUMAN_APPROVE", approvalId: "approval-a" });
+    const approved = apply(awaitingApproval(), humanApprove("approval-a"));
     expect(approved.change).toMatchObject({
       status: "APPROVED",
       proposal: { proposalDigest: baseDigest },
@@ -203,7 +225,7 @@ describe("deterministic ChangeGate domain engine", () => {
   });
 
   it("consumes approval, rejects replay, and invalidates all authority on reset", () => {
-    const active = apply(awaitingApproval(), { type: "HUMAN_APPROVE", approvalId: "approval-1" });
+    const active = apply(awaitingApproval(), humanApprove("approval-1"));
     const inFlight = apply(active, { type: "BEGIN_EXECUTION" });
     expectDenied(inFlight, { type: "BEGIN_EXECUTION" });
 
@@ -211,6 +233,61 @@ describe("deterministic ChangeGate domain engine", () => {
     const reset = apply(terminal, { type: "RESET_SCENARIO" });
     expect(reset.change).toBeNull();
     expectDenied(reset, { type: "BEGIN_EXECUTION" });
+  });
+
+  it("denies byte-identical human decisions from a prior review instance", () => {
+    const firstReview = awaitingApproval();
+    if (firstReview.change?.status !== "AWAITING_HUMAN_APPROVAL") {
+      throw new Error("Expected first human review.");
+    }
+    const staleApprove = humanApprove("stale-approval", firstReview.change.reviewInstanceId);
+    const staleReject = humanReject(firstReview.change.reviewInstanceId);
+
+    const reset = apply(firstReview, { type: "RESET_SCENARIO" });
+    const secondReview = apply(
+      apply(reset, { type: "PROPOSE_CHANGE", actor: "AGENT", proposal }),
+      { type: "REQUEST_HUMAN_APPROVAL", actor: "AGENT", proposalId: proposal.proposalId },
+    );
+    if (secondReview.change?.status !== "AWAITING_HUMAN_APPROVAL") {
+      throw new Error("Expected second human review.");
+    }
+
+    expect(secondReview.change.reviewInstanceId).toBe("human-review:2");
+    expect(secondReview.change.proposal.proposalDigest).toBe(firstReview.change.proposal.proposalDigest);
+    expectDenied(secondReview, staleApprove);
+    expectDenied(secondReview, staleReject);
+  });
+
+  it("fails closed when the human-review counter reaches the safe-integer boundary", () => {
+    const proposed = apply(createInitialState(), { type: "PROPOSE_CHANGE", actor: "AGENT", proposal });
+    const nearExhaustion = { ...proposed, nextReviewInstance: Number.MAX_SAFE_INTEGER - 1 };
+    const firstReview = apply(nearExhaustion, {
+      type: "REQUEST_HUMAN_APPROVAL",
+      actor: "AGENT",
+      proposalId: proposal.proposalId,
+    });
+
+    expect(firstReview.change).toMatchObject({
+      status: "AWAITING_HUMAN_APPROVAL",
+      reviewInstanceId: `human-review:${Number.MAX_SAFE_INTEGER - 1}`,
+    });
+    expect(firstReview.nextReviewInstance).toBe(Number.MAX_SAFE_INTEGER);
+    expect(Number.isSafeInteger(firstReview.nextReviewInstance)).toBe(true);
+
+    const reset = apply(firstReview, { type: "RESET_SCENARIO" });
+    const reproposed = apply(reset, { type: "PROPOSE_CHANGE", actor: "AGENT", proposal });
+    const auditBeforeDeniedRequest = reproposed.audit;
+
+    expectDenied(reproposed, {
+      type: "REQUEST_HUMAN_APPROVAL",
+      actor: "AGENT",
+      proposalId: proposal.proposalId,
+    });
+    expect(reproposed.change?.status).toBe("PROPOSED");
+    expect(reproposed.nextReviewInstance).toBe(Number.MAX_SAFE_INTEGER);
+    expect(reproposed.audit).toBe(auditBeforeDeniedRequest);
+    expect(reproposed.audit).toHaveLength(2);
+    expect(reproposed.change !== null && "reviewInstanceId" in reproposed.change).toBe(false);
   });
 
   it("resets exactly and deterministically without mutating the canonical fixture", () => {
@@ -249,7 +326,7 @@ describe("deterministic ChangeGate domain engine", () => {
   it("records deterministic HUMAN, AGENT, and SYSTEM audit events", () => {
     const state = apply(
       apply(
-        apply(awaitingApproval(), { type: "HUMAN_APPROVE", approvalId: "approval-1" }),
+        apply(awaitingApproval(), humanApprove("approval-1")),
         { type: "BEGIN_EXECUTION" },
       ),
       { type: "EXECUTION_SUCCEEDED" },

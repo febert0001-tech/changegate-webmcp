@@ -1,4 +1,4 @@
-import type { ChangeGateOperations } from "../application/changegate-operations";
+import type { ChangeGateWebMcpOperations } from "../application/changegate-operations";
 import type { WebMcpModelContext } from "./native-contract";
 import { createGate2ToolDefinitions } from "./tool-catalog";
 
@@ -16,7 +16,7 @@ export interface WebMcpRegistrationSession {
 
 export function startWebMcpRegistration(
   modelContext: WebMcpModelContext | undefined,
-  operations: ChangeGateOperations,
+  operations: ChangeGateWebMcpOperations,
 ): WebMcpRegistrationSession {
   const controller = new AbortController();
 
