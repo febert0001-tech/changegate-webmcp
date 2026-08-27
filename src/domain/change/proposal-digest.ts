@@ -3,10 +3,15 @@ import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 
 import type {
   ChangeProposalInput,
+  GatewayProposalInput,
   ImmutableChangeProposal,
+  ImmutableGatewayProposal,
+  ImmutableRefundProposal,
   JsonObject,
   JsonValue,
+  RefundProposalInput,
 } from "./contracts";
+import { hasRefundProposalShape } from "../refund";
 
 function isPlainRecord(value: object): value is Readonly<Record<string, unknown>> {
   const prototype = Object.getPrototypeOf(value);
@@ -153,6 +158,9 @@ export function computeProposalDigest(proposal: ChangeProposalInput | ImmutableC
   return bytesToHex(sha256(utf8ToBytes(canonicalizeProposal(proposal))));
 }
 
+export function createImmutableProposal(proposal: GatewayProposalInput): ImmutableGatewayProposal;
+export function createImmutableProposal(proposal: RefundProposalInput): ImmutableRefundProposal;
+export function createImmutableProposal(proposal: ChangeProposalInput): ImmutableChangeProposal;
 export function createImmutableProposal(proposal: ChangeProposalInput): ImmutableChangeProposal {
   const parameters = normalizeParameters(proposal.parameters);
   const preconditions = normalizePreconditions(proposal.preconditions);
@@ -164,12 +172,18 @@ export function createImmutableProposal(proposal: ChangeProposalInput): Immutabl
     ),
   );
 
-  return Object.freeze({
+  const content = {
     proposalId: proposal.proposalId,
     target: proposal.target,
     action: proposal.action,
     parameters,
     preconditions,
-    proposalDigest,
-  });
+  };
+  if (content.target === "order:4821") {
+    if (!hasRefundProposalShape(content)) {
+      throw new TypeError("Refund proposal must match the supported refund contract.");
+    }
+    return Object.freeze({ ...content, proposalDigest });
+  }
+  return Object.freeze({ ...content, target: content.target, proposalDigest });
 }

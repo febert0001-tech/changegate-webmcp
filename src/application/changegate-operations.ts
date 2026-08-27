@@ -1,4 +1,4 @@
-import type { ChangeLifecycleState, JsonObject, JsonValue } from "../domain/change/contracts";
+import type { ChangeLifecycleState, ChangeTarget, JsonObject, JsonValue } from "../domain/change/contracts";
 import {
   createInitialState,
   reduceChangeGate,
@@ -44,7 +44,7 @@ export interface ChangePolicyProjection {
 export interface ChangeProposalProjection {
   readonly lifecycle: ChangeLifecycleState;
   readonly proposalId: string;
-  readonly target: ServiceId;
+  readonly target: ChangeTarget;
   readonly action: string;
   readonly parameters: JsonObject;
   readonly preconditions: readonly string[];

@@ -5,8 +5,12 @@ import type {
   ChangeProposalInput,
   HumanApproval,
   ImmutableChangeProposal,
+  ImmutableRefundProposal,
+  RefundExecutionBinding,
+  RefundExecutionIdentity,
 } from "./change/contracts";
 import { computeProposalDigest, createImmutableProposal } from "./change/proposal-digest";
+import { isAuthorizedRefundProposal } from "./refund";
 
 export type AuditActor = "HUMAN" | "AGENT" | "SYSTEM";
 
@@ -29,15 +33,27 @@ interface AwaitingHumanApprovalState extends ProposalState {
   readonly reviewInstanceId: string;
 }
 
-interface ApprovedState extends ProposalState {
+interface ApprovedState extends AwaitingHumanApprovalState {
   readonly approval: HumanApproval;
 }
 
 interface ExecutionState extends ApprovedState {
+  readonly executionKind: "GATEWAY";
   readonly preChangeSnapshot: EnvironmentState;
 }
 
-interface FailedState extends ProposalState {
+interface RefundExecutionState extends ApprovedState {
+  readonly executionKind: "REFUND";
+  readonly proposal: ImmutableRefundProposal;
+  readonly refundExecution: RefundExecutionBinding;
+}
+
+interface RefundFailedState extends RefundExecutionState {
+  readonly failureStage: "EXECUTION";
+}
+
+interface FailedState extends AwaitingHumanApprovalState {
+  readonly executionKind: "GATEWAY";
   readonly failureStage: "EXECUTION" | "VERIFICATION";
   readonly preChangeSnapshot: EnvironmentState;
 }
@@ -56,10 +72,10 @@ export type ChangeLifecycle =
   | ({ readonly status: "REJECTED" } & ProposalState)
   | ({ readonly status: "EXPIRED" } & ProposalState)
   | ({ readonly status: "APPROVED" } & ApprovedState)
-  | ({ readonly status: "EXECUTING" } & ExecutionState)
-  | ({ readonly status: "VERIFYING" } & ExecutionState)
+  | ({ readonly status: "EXECUTING" } & (ExecutionState | RefundExecutionState))
+  | ({ readonly status: "VERIFYING" } & (ExecutionState | RefundExecutionState))
   | ({ readonly status: "SUCCEEDED" } & ApprovedState)
-  | ({ readonly status: "FAILED" } & FailedState)
+  | ({ readonly status: "FAILED" } & (FailedState | RefundFailedState))
   | ({ readonly status: "ROLLBACK_AWAITING_APPROVAL" } & RollbackAwaitingApprovalState)
   | ({ readonly status: "ROLLING_BACK" } & RollingBackState)
   | ({ readonly status: "ROLLED_BACK" } & FailedState)
@@ -95,6 +111,17 @@ export type DomainAction =
     }
   | { readonly type: "EXPIRE_PROPOSAL" }
   | { readonly type: "BEGIN_EXECUTION" }
+  | {
+      readonly type: "BEGIN_REFUND_EXECUTION";
+      readonly expectedProposalId: string;
+      readonly expectedProposalDigest: string;
+      readonly expectedReviewInstanceId: string;
+      readonly expectedApprovalId: string;
+    }
+  | ({ readonly type: "REFUND_EXECUTION_SUCCEEDED" } & RefundExecutionIdentity)
+  | ({ readonly type: "REFUND_EXECUTION_FAILED" } & RefundExecutionIdentity)
+  // Refund verification completion requires independent evidence in a later unit.
+  // There is deliberately no identity-only verification-success action.
   | { readonly type: "EXECUTION_SUCCEEDED" }
   | { readonly type: "EXECUTION_FAILED" }
   | { readonly type: "VERIFICATION_SUCCEEDED" }
@@ -130,15 +157,11 @@ function cloneSnapshot(environment: EnvironmentState): EnvironmentState {
   });
 }
 
-function createApproval(approvalId: string, proposal: ImmutableChangeProposal): HumanApproval {
+function createApproval(approvalId: string, proposal: ImmutableChangeProposal, reviewInstanceId: string): HumanApproval {
   return Object.freeze({
+    ...proposal,
     approvalId,
-    proposalId: proposal.proposalId,
-    proposalDigest: proposal.proposalDigest,
-    target: proposal.target,
-    action: proposal.action,
-    parameters: proposal.parameters,
-    preconditions: proposal.preconditions,
+    reviewInstanceId,
     issuedBy: "HUMAN",
     status: "ACTIVE",
   });
@@ -150,13 +173,7 @@ function consumed(approval: HumanApproval): HumanApproval {
 
 export function isApprovalBoundToProposal(approval: HumanApproval, proposal: ImmutableChangeProposal): boolean {
   const trustedProposalDigest = computeProposalDigest(proposal);
-  const approvalContentDigest = computeProposalDigest({
-    proposalId: approval.proposalId,
-    target: approval.target,
-    action: approval.action,
-    parameters: approval.parameters,
-    preconditions: approval.preconditions,
-  });
+  const approvalContentDigest = computeProposalDigest(approval);
 
   return (
     approval.issuedBy === "HUMAN" &&
@@ -275,7 +292,7 @@ export function reduceChangeGate(state: ChangeGateState, action: DomainAction): 
         action.proposalId === change.proposal.proposalId &&
         action.proposalDigest === change.proposal.proposalDigest &&
         action.reviewInstanceId === change.reviewInstanceId
-        ? success(state, { status: "APPROVED", proposal: change.proposal, approval: createApproval(action.approvalId, change.proposal) }, "HUMAN", action.type)
+        ? success(state, { status: "APPROVED", proposal: change.proposal, reviewInstanceId: change.reviewInstanceId, approval: createApproval(action.approvalId, change.proposal, change.reviewInstanceId) }, "HUMAN", action.type)
         : illegal(state, action);
     case "HUMAN_REJECT":
       return change?.status === "AWAITING_HUMAN_APPROVAL" &&
@@ -289,46 +306,95 @@ export function reduceChangeGate(state: ChangeGateState, action: DomainAction): 
         ? success(state, { status: "EXPIRED", proposal: change.proposal }, "SYSTEM", action.type)
         : illegal(state, action);
     case "BEGIN_EXECUTION":
-      return change?.status === "APPROVED" && isApprovalBoundToProposal(change.approval, change.proposal)
-        ? success(state, { status: "EXECUTING", proposal: change.proposal, approval: consumed(change.approval), preChangeSnapshot: cloneSnapshot(state.environment) }, "SYSTEM", action.type)
+      return change?.status === "APPROVED" && change.proposal.target !== "order:4821" && isApprovalBoundToProposal(change.approval, change.proposal)
+        ? success(state, { ...change, status: "EXECUTING", executionKind: "GATEWAY", approval: consumed(change.approval), preChangeSnapshot: cloneSnapshot(state.environment) }, "SYSTEM", action.type)
+        : illegal(state, action);
+    case "BEGIN_REFUND_EXECUTION": {
+      if (
+        change?.status !== "APPROVED" ||
+        change.proposal.target !== "order:4821" ||
+        !isAuthorizedRefundProposal(change.proposal) ||
+        !isApprovalBoundToProposal(change.approval, change.proposal) ||
+        change.approval.reviewInstanceId !== change.reviewInstanceId ||
+        action.expectedProposalId !== change.proposal.proposalId ||
+        action.expectedProposalDigest !== change.proposal.proposalDigest ||
+        action.expectedReviewInstanceId !== change.reviewInstanceId ||
+        action.expectedApprovalId !== change.approval.approvalId ||
+        Reflect.ownKeys(action).length !== 5 ||
+        Reflect.ownKeys(action).some((key) => ![
+          "type", "expectedProposalId", "expectedProposalDigest", "expectedReviewInstanceId", "expectedApprovalId",
+        ].includes(String(key)))
+      ) return illegal(state, action);
+
+      const refundExecution: RefundExecutionBinding = Object.freeze({
+        executionId: JSON.stringify(["refund-execution-v1", change.reviewInstanceId, change.approval.approvalId]),
+        proposalId: change.proposal.proposalId,
+        proposalDigest: change.proposal.proposalDigest,
+        reviewInstanceId: change.reviewInstanceId,
+        approvalId: change.approval.approvalId,
+        effect: Object.freeze({
+          operation: change.proposal.action,
+          orderId: "4821",
+          currency: change.proposal.parameters.currency,
+          amountCents: change.proposal.parameters.amountCents,
+        }),
+      });
+      return success(state, {
+        ...change,
+        status: "EXECUTING",
+        executionKind: "REFUND",
+        proposal: change.proposal,
+        approval: consumed(change.approval),
+        refundExecution,
+      }, "SYSTEM", action.type);
+    }
+    case "REFUND_EXECUTION_SUCCEEDED":
+      return change?.status === "EXECUTING" && change.executionKind === "REFUND" &&
+        action.executionId === change.refundExecution.executionId
+        ? success(state, { ...change, status: "VERIFYING" }, "SYSTEM", action.type)
+        : illegal(state, action);
+    case "REFUND_EXECUTION_FAILED":
+      return change?.status === "EXECUTING" && change.executionKind === "REFUND" &&
+        action.executionId === change.refundExecution.executionId
+        ? success(state, { ...change, status: "FAILED", failureStage: "EXECUTION" }, "SYSTEM", action.type)
         : illegal(state, action);
     case "EXECUTION_SUCCEEDED":
-      return change?.status === "EXECUTING"
+      return change?.status === "EXECUTING" && change.executionKind === "GATEWAY"
         ? success(state, { ...change, status: "VERIFYING" }, "SYSTEM", action.type)
         : illegal(state, action);
     case "EXECUTION_FAILED":
-      return change?.status === "EXECUTING"
-        ? success(state, { status: "FAILED", proposal: change.proposal, failureStage: "EXECUTION", preChangeSnapshot: change.preChangeSnapshot }, "SYSTEM", action.type)
+      return change?.status === "EXECUTING" && change.executionKind === "GATEWAY"
+        ? success(state, { status: "FAILED", executionKind: "GATEWAY", proposal: change.proposal, reviewInstanceId: change.reviewInstanceId, failureStage: "EXECUTION", preChangeSnapshot: change.preChangeSnapshot }, "SYSTEM", action.type)
         : illegal(state, action);
     case "VERIFICATION_SUCCEEDED":
-      return change?.status === "VERIFYING"
-        ? success(state, { status: "SUCCEEDED", proposal: change.proposal, approval: change.approval }, "SYSTEM", action.type)
+      return change?.status === "VERIFYING" && change.executionKind === "GATEWAY"
+        ? success(state, { status: "SUCCEEDED", proposal: change.proposal, reviewInstanceId: change.reviewInstanceId, approval: change.approval }, "SYSTEM", action.type)
         : illegal(state, action);
     case "VERIFICATION_FAILED":
-      return change?.status === "VERIFYING"
-        ? success(state, { status: "FAILED", proposal: change.proposal, failureStage: "VERIFICATION", preChangeSnapshot: change.preChangeSnapshot }, "SYSTEM", action.type)
+      return change?.status === "VERIFYING" && change.executionKind === "GATEWAY"
+        ? success(state, { status: "FAILED", executionKind: "GATEWAY", proposal: change.proposal, reviewInstanceId: change.reviewInstanceId, failureStage: "VERIFICATION", preChangeSnapshot: change.preChangeSnapshot }, "SYSTEM", action.type)
         : illegal(state, action);
     case "REQUEST_ROLLBACK_APPROVAL":
-      return change?.status === "FAILED"
+      return change?.status === "FAILED" && change.executionKind === "GATEWAY"
         ? success(state, { ...change, status: "ROLLBACK_AWAITING_APPROVAL" }, action.actor, action.type)
         : illegal(state, action);
     case "HUMAN_APPROVE_ROLLBACK":
       return change?.status === "ROLLBACK_AWAITING_APPROVAL" && change.rollbackApproval === undefined
-        ? success(state, { ...change, rollbackApproval: createApproval(action.approvalId, change.proposal) }, "HUMAN", action.type)
+        ? success(state, { ...change, rollbackApproval: createApproval(action.approvalId, change.proposal, change.reviewInstanceId) }, "HUMAN", action.type)
         : illegal(state, action);
     case "BEGIN_ROLLBACK":
       return change?.status === "ROLLBACK_AWAITING_APPROVAL" &&
         change.rollbackApproval !== undefined &&
         isApprovalBoundToProposal(change.rollbackApproval, change.proposal)
-        ? success(state, { status: "ROLLING_BACK", proposal: change.proposal, failureStage: change.failureStage, rollbackApproval: consumed(change.rollbackApproval), preChangeSnapshot: change.preChangeSnapshot }, "SYSTEM", action.type)
+        ? success(state, { ...change, status: "ROLLING_BACK", rollbackApproval: consumed(change.rollbackApproval) }, "SYSTEM", action.type)
         : illegal(state, action);
     case "ROLLBACK_SUCCEEDED":
       return change?.status === "ROLLING_BACK"
-        ? success(state, { status: "ROLLED_BACK", proposal: change.proposal, failureStage: change.failureStage, preChangeSnapshot: change.preChangeSnapshot }, "SYSTEM", action.type, change.preChangeSnapshot)
+        ? success(state, { status: "ROLLED_BACK", executionKind: "GATEWAY", proposal: change.proposal, reviewInstanceId: change.reviewInstanceId, failureStage: change.failureStage, preChangeSnapshot: change.preChangeSnapshot }, "SYSTEM", action.type, change.preChangeSnapshot)
         : illegal(state, action);
     case "ROLLBACK_FAILED":
       return change?.status === "ROLLING_BACK"
-        ? success(state, { status: "ROLLBACK_FAILED", proposal: change.proposal, failureStage: change.failureStage, preChangeSnapshot: change.preChangeSnapshot }, "SYSTEM", action.type)
+        ? success(state, { status: "ROLLBACK_FAILED", executionKind: "GATEWAY", proposal: change.proposal, reviewInstanceId: change.reviewInstanceId, failureStage: change.failureStage, preChangeSnapshot: change.preChangeSnapshot }, "SYSTEM", action.type)
         : illegal(state, action);
   }
 }

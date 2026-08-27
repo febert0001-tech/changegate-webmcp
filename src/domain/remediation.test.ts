@@ -122,13 +122,13 @@ function expectCanonicalReset(state: ChangeGateState): void {
 describe("Gate 1.1 original rollback snapshot", () => {
   it("captures once and preserves the identical snapshot through execution failure and rollback", () => {
     const inExecution = executing();
-    if (inExecution.change?.status !== "EXECUTING") throw new Error("Expected EXECUTING.");
+    if (inExecution.change?.status !== "EXECUTING" || inExecution.change.executionKind !== "GATEWAY") throw new Error("Expected gateway EXECUTING.");
     const originalSnapshot = inExecution.change.preChangeSnapshot;
     const changedEnvironment = environmentWithGatewayHealthy(inExecution.environment);
     const afterEffect = { ...inExecution, environment: changedEnvironment };
 
     const failedState = apply(afterEffect, { type: "EXECUTION_FAILED" });
-    if (failedState.change?.status !== "FAILED") throw new Error("Expected FAILED.");
+    if (failedState.change?.status !== "FAILED" || failedState.change.executionKind !== "GATEWAY") throw new Error("Expected gateway FAILED.");
     expect(failedState.change.preChangeSnapshot).toBe(originalSnapshot);
 
     const awaitingRollback = apply(failedState, { type: "REQUEST_ROLLBACK_APPROVAL", actor: "AGENT" });
@@ -151,12 +151,12 @@ describe("Gate 1.1 original rollback snapshot", () => {
 
   it("preserves the original snapshot through verification failure", () => {
     const inVerification = verifying();
-    if (inVerification.change?.status !== "VERIFYING") throw new Error("Expected VERIFYING.");
+    if (inVerification.change?.status !== "VERIFYING" || inVerification.change.executionKind !== "GATEWAY") throw new Error("Expected gateway VERIFYING.");
     const originalSnapshot = inVerification.change.preChangeSnapshot;
     const changed = { ...inVerification, environment: environmentWithGatewayHealthy(inVerification.environment) };
     const failedState = apply(changed, { type: "VERIFICATION_FAILED" });
 
-    if (failedState.change?.status !== "FAILED") throw new Error("Expected FAILED.");
+    if (failedState.change?.status !== "FAILED" || failedState.change.executionKind !== "GATEWAY") throw new Error("Expected gateway FAILED.");
     expect(failedState.change.preChangeSnapshot).toBe(originalSnapshot);
   });
 
@@ -291,6 +291,7 @@ describe("Gate 1.1 deep proposal and approval immutability", () => {
     }) satisfies JsonObject;
     const approval = Object.freeze({
       approvalId: "approval-canonical",
+      reviewInstanceId: "human-review:1",
       proposalId: proposal.proposalId,
       proposalDigest: proposal.proposalDigest,
       target: proposal.target,

@@ -23,7 +23,7 @@ export interface JsonObject {
   readonly [key: string]: JsonValue;
 }
 
-export interface ChangeProposalInput {
+export interface GatewayProposalInput {
   readonly proposalId: string;
   readonly target: ServiceId;
   readonly action: string;
@@ -31,7 +31,7 @@ export interface ChangeProposalInput {
   readonly preconditions: readonly string[];
 }
 
-export interface ImmutableChangeProposal {
+export interface ImmutableGatewayProposal {
   readonly proposalId: string;
   readonly target: ServiceId;
   readonly action: string;
@@ -41,15 +41,43 @@ export interface ImmutableChangeProposal {
   readonly proposalDigest: string;
 }
 
-/** A future approval binds one human decision to exactly one immutable proposal. */
-export interface HumanApproval {
-  readonly approvalId: string;
+export interface RefundProposalInput {
   readonly proposalId: string;
+  readonly target: "order:4821";
+  readonly action: "SYNTHETIC_PARTIAL_REFUND";
+  readonly parameters: Readonly<{ currency: "USD"; amountCents: number }>;
+  readonly preconditions: readonly ["order:4821 refunded amount is 0 cents"];
+}
+
+export interface ImmutableRefundProposal extends RefundProposalInput {
   readonly proposalDigest: string;
-  readonly target: ServiceId;
-  readonly action: string;
-  readonly parameters: JsonObject;
-  readonly preconditions: readonly string[];
+}
+
+export type ChangeProposalInput = GatewayProposalInput | RefundProposalInput;
+export type ImmutableChangeProposal = ImmutableGatewayProposal | ImmutableRefundProposal;
+export type ChangeTarget = ImmutableChangeProposal["target"];
+
+/** One human decision bound to the exact immutable proposal and review lifecycle. */
+export type HumanApproval = ImmutableChangeProposal & {
+  readonly approvalId: string;
+  readonly reviewInstanceId: string;
   readonly issuedBy: "HUMAN";
   readonly status: "ACTIVE" | "CONSUMED" | "INVALIDATED" | "EXPIRED" | "REJECTED";
+};
+
+export interface RefundExecutionIdentity {
+  readonly executionId: string;
+}
+
+export interface RefundExecutionBinding extends RefundExecutionIdentity {
+  readonly proposalId: string;
+  readonly proposalDigest: string;
+  readonly reviewInstanceId: string;
+  readonly approvalId: string;
+  readonly effect: Readonly<{
+    operation: "SYNTHETIC_PARTIAL_REFUND";
+    orderId: "4821";
+    currency: "USD";
+    amountCents: number;
+  }>;
 }
