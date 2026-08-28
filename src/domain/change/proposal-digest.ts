@@ -179,7 +179,7 @@ export function createImmutableProposal(proposal: ChangeProposalInput): Immutabl
     parameters,
     preconditions,
   };
-  if (content.target === "order:4821") {
+  if (content.target === "order:4821" || content.action === "SYNTHETIC_PARTIAL_REFUND") {
     if (!hasRefundProposalShape(content)) {
       throw new TypeError("Refund proposal must match the supported refund contract.");
     }

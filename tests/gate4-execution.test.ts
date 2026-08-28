@@ -10,11 +10,12 @@ import {
 import type {
   ChangeProposalInput,
   HumanApproval,
+  ImmutableChangeProposal,
   ImmutableRefundProposal,
   RefundProposalInput,
 } from "../src/domain/change/contracts";
 import { computeProposalDigest, createImmutableProposal } from "../src/domain/change/proposal-digest";
-import { createInitialState, reduceChangeGate, type ChangeGateState, type DomainAction } from "../src/domain/engine";
+import { createInitialState, isApprovalBoundToProposal, reduceChangeGate, type ChangeGateState, type DomainAction } from "../src/domain/engine";
 
 const gateway = {
   proposalId: "proposal-agent-gateway-restart",
@@ -36,6 +37,11 @@ const refund = {
 } as const satisfies RefundProposalInput;
 
 type BeginRefund = Extract<DomainAction, { type: "BEGIN_REFUND_EXECUTION" }>;
+
+const invalidReservedPairings = [
+  { ...gateway, action: refund.action },
+  { ...refund, action: gateway.action },
+] as const;
 
 function apply(state: ChangeGateState, action: DomainAction): ChangeGateState {
   const result = reduceChangeGate(state, action);
@@ -140,6 +146,24 @@ describe("Gate 4 bounded refund authority", () => {
     ]) {
       expect(computeProposalDigest(alternative as ChangeProposalInput)).not.toBe(proposal.proposalDigest);
     }
+  });
+
+  it.each(invalidReservedPairings)("rejects reserved action/target cross-pairing at construction: %j", (input) => {
+    expect(() => createImmutableProposal(input as ChangeProposalInput)).toThrow(TypeError);
+  });
+
+  it.each(invalidReservedPairings)("denies both execution paths for a cross-paired forged approval: %j", (input) => {
+    const approved = approve();
+    if (approved.change?.status !== "APPROVED") throw new Error("Expected approval.");
+    // Bypass construction deliberately, keeping digest and human authority consistent.
+    const proposal = {
+      ...input, proposalDigest: computeProposalDigest(input as ChangeProposalInput),
+    } as ImmutableChangeProposal;
+    const approval: HumanApproval = { ...approved.change.approval, ...proposal };
+    const forgedState: ChangeGateState = { ...approved, change: { ...approved.change, proposal, approval } };
+    expect(isApprovalBoundToProposal(approval, proposal)).toBe(true);
+    expectDenied(forgedState, { type: "BEGIN_EXECUTION" });
+    expectDenied(forgedState, begin(forgedState));
   });
 
   it("retains the trusted review identity without parsing the opaque approval ID", () => {

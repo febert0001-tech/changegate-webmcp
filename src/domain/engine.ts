@@ -306,7 +306,10 @@ export function reduceChangeGate(state: ChangeGateState, action: DomainAction): 
         ? success(state, { status: "EXPIRED", proposal: change.proposal }, "SYSTEM", action.type)
         : illegal(state, action);
     case "BEGIN_EXECUTION":
-      return change?.status === "APPROVED" && change.proposal.target !== "order:4821" && isApprovalBoundToProposal(change.approval, change.proposal)
+      return change?.status === "APPROVED" &&
+        change.proposal.target !== "order:4821" &&
+        change.proposal.action !== "SYNTHETIC_PARTIAL_REFUND" &&
+        isApprovalBoundToProposal(change.approval, change.proposal)
         ? success(state, { ...change, status: "EXECUTING", executionKind: "GATEWAY", approval: consumed(change.approval), preChangeSnapshot: cloneSnapshot(state.environment) }, "SYSTEM", action.type)
         : illegal(state, action);
     case "BEGIN_REFUND_EXECUTION": {
