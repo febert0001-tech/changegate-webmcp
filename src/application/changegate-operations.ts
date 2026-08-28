@@ -1,11 +1,15 @@
 import type { ChangeLifecycleState, ChangeTarget, JsonObject, JsonValue } from "../domain/change/contracts";
 import {
   createInitialState,
+  isApprovalBoundToProposal,
   reduceChangeGate,
   type AuditActor,
   type ChangeGateState,
 } from "../domain/engine";
 import type { ServiceHealth, ServiceId } from "../domain/scenario/types";
+import { isAuthorizedRefundProposal } from "../domain/refund";
+import { createRefundVerifier } from "./refund-verifier";
+import { createSyntheticRefundLedger, type RefundWriteResult } from "./synthetic-refund-ledger";
 
 const AUDIT_TRAIL_LIMIT = 50;
 
@@ -85,11 +89,43 @@ export interface ChangeGateWebMcpOperations {
   readonly requestChangeApproval: (proposalId: string) => ChangeCommandResult;
 }
 
+/** Human intent identifies an approval lifecycle; it supplies no business authority. */
+export interface HumanExecuteIdentity {
+  readonly proposalId: string;
+  readonly proposalDigest: string;
+  readonly reviewInstanceId: string;
+  readonly approvalId: string;
+}
+
 export interface ChangeGateOperations extends ChangeGateWebMcpOperations {
   readonly getRevision: () => number;
   readonly subscribe: (listener: () => void) => () => void;
   readonly approvePendingChange: () => ChangeCommandResult;
   readonly rejectPendingChange: () => ChangeCommandResult;
+  readonly getPendingRefundExecution: () => HumanExecuteIdentity | null;
+  readonly executeApprovedRefund: (expected: HumanExecuteIdentity) => ChangeCommandResult;
+}
+
+const HUMAN_EXECUTE_KEYS = ["proposalId", "proposalDigest", "reviewInstanceId", "approvalId"] as const;
+
+function captureExecuteIdentity(value: unknown): HumanExecuteIdentity | null {
+  if (typeof value !== "object" || value === null) return null;
+  try {
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== HUMAN_EXECUTE_KEYS.length) return null;
+    const identity = {} as Record<typeof HUMAN_EXECUTE_KEYS[number], string>;
+    for (const key of HUMAN_EXECUTE_KEYS) {
+      // Own data properties only: never invoke caller accessors or retain mutable input.
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !descriptor.enumerable || !("value" in descriptor) ||
+          typeof descriptor.value !== "string" || descriptor.value.length === 0) return null;
+      identity[key] = descriptor.value;
+    }
+    return Object.freeze(identity);
+  } catch {
+    // Malformed/revoked proxies are denied at the same boundary.
+    return null;
+  }
 }
 
 function isJsonArray(value: JsonValue): value is readonly JsonValue[] {
@@ -154,6 +190,9 @@ export function createWebMcpOperationsFacade(
 
 export function createChangeGateOperations(): ChangeGateOperations {
   let currentState = createInitialState();
+  // Trusted composition only. These capabilities never leave this closure.
+  const ledger = createSyntheticRefundLedger();
+  const verifier = createRefundVerifier(ledger.reader);
   let revision = 0;
   const listeners = new Set<() => void>();
 
@@ -273,6 +312,64 @@ export function createChangeGateOperations(): ChangeGateOperations {
     return completeTransition(result);
   };
 
+  const getPendingRefundExecution = (): HumanExecuteIdentity | null => {
+    const change = currentState.change;
+    if (change?.status !== "APPROVED" || !isAuthorizedRefundProposal(change.proposal) ||
+        !isApprovalBoundToProposal(change.approval, change.proposal) ||
+        change.approval.reviewInstanceId !== change.reviewInstanceId) return null;
+
+    return Object.freeze({
+      proposalId: change.proposal.proposalId,
+      proposalDigest: change.proposal.proposalDigest,
+      reviewInstanceId: change.reviewInstanceId,
+      approvalId: change.approval.approvalId,
+    });
+  };
+
+  const executeApprovedRefund = (expected: HumanExecuteIdentity): ChangeCommandResult => {
+    const identity = captureExecuteIdentity(expected);
+    const pending = getPendingRefundExecution();
+    if (identity === null || pending === null ||
+        HUMAN_EXECUTE_KEYS.some((key) => identity[key] !== pending[key])) return denied(currentState);
+
+    const begun = completeTransition(reduceChangeGate(currentState, {
+      type: "BEGIN_REFUND_EXECUTION",
+      expectedProposalId: identity.proposalId,
+      expectedProposalDigest: identity.proposalDigest,
+      expectedReviewInstanceId: identity.reviewInstanceId,
+      expectedApprovalId: identity.approvalId,
+    }));
+    if (begun.status !== "SUCCESS") return begun;
+
+    // Read authority from committed current state, after approval consumption/publication.
+    const executing = currentState.change;
+    if (executing?.status !== "EXECUTING" || executing.executionKind !== "REFUND") return denied(currentState);
+    const binding = executing.refundExecution;
+    const failExecution = (): ChangeCommandResult => completeTransition(reduceChangeGate(currentState, {
+      type: "REFUND_EXECUTION_FAILED", executionId: binding.executionId,
+    }));
+
+    let write: RefundWriteResult;
+    try {
+      write = ledger.writer.applyAuthorizedRefund(binding);
+    } catch {
+      // No rollback or retry: an attempted effect must never restore approval.
+      return failExecution();
+    }
+    // The private writer proves exact execution/effect equality for ALREADY_APPLIED.
+    if (write.status !== "APPLIED" && write.status !== "ALREADY_APPLIED") return failExecution();
+
+    const verifying = completeTransition(reduceChangeGate(currentState, {
+      type: "REFUND_EXECUTION_SUCCEEDED", executionId: binding.executionId,
+    }));
+    if (verifying.status !== "SUCCESS") return verifying;
+
+    const evidence = verifier.verify(binding);
+    return completeTransition(reduceChangeGate(currentState, {
+      type: "REFUND_VERIFICATION_COMPLETED", evidence,
+    }));
+  };
+
   return Object.freeze({
     getEnvironmentStatus,
     getServiceDetails,
@@ -285,5 +382,7 @@ export function createChangeGateOperations(): ChangeGateOperations {
     requestChangeApproval,
     approvePendingChange,
     rejectPendingChange,
+    getPendingRefundExecution,
+    executeApprovedRefund,
   });
 }

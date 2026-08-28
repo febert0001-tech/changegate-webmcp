@@ -346,6 +346,10 @@ describe("Gate 3 exact human authorization", () => {
     ]) {
       expect(registeredNames).not.toContain(forbiddenName);
     }
-    expect(Object.keys(operations).join(" ")).not.toMatch(/execut|verif|rollback/iu);
+    expect(Object.keys(facade).join(" ")).not.toMatch(/execut|verif|rollback/iu);
+    // Unit 3 adds only these human-only methods; none enter the WebMCP facade.
+    expect(Object.keys(operations).filter((key) => /execut|verif|rollback/iu.test(key))).toEqual([
+      "getPendingRefundExecution", "executeApprovedRefund",
+    ]);
   });
 });
