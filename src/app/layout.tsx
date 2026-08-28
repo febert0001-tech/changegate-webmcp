@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ChangeGate | Gate 0",
-  description: "Standalone 2026 OpenAI WebMCP Challenge scaffold.",
+  title: "ChangeGate | Verified Human Control Plane",
+  description: "AI proposes. Humans authorize. ChangeGate independently verifies synthetic refunds.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {

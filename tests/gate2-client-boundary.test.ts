@@ -97,7 +97,7 @@ describe("Gate 4 Unit 4A human Execute source boundary", () => {
     expect(ts.isJsxExpression(ancestor.parent) && ts.isJsxAttribute(ancestor.parent.parent)
       ? ancestor.parent.parent.name.getText(tree) : null).toBe("onClick");
     expect(client).toMatch(/proposal\.lifecycle === "APPROVED" \? \(\s*isRefund \? \(/u);
-    expect(client).toMatch(/pendingExecution !== null \? \([\s\S]*?Execute exact approved refund/u);
+    expect(client).toMatch(/pendingExecution !== null \? \([\s\S]*?Execute approved \{amount\} refund/u);
     expect(client).toContain("hasRefundProposalShape(proposal)");
   });
 
@@ -118,9 +118,10 @@ describe("Gate 4 Unit 4A human Execute source boundary", () => {
     for (const lifecycle of ["APPROVED", "EXECUTING", "VERIFYING", "SUCCEEDED", "FAILED"]) {
       expect(client).toContain(`proposal.lifecycle === "${lifecycle}"`);
     }
-    for (const copy of ["Approval does not execute.", "Approved, not executed.",
-      "Executing exact approved refund.", "Independent ledger verification in progress.",
-      "<strong>VERIFIED</strong>", "Independent readback matched the exact", "FAILED — fail closed.",
+    for (const copy of ["Approval does not execute.", "Approved — execution still blocked",
+      "Execution in progress", "Independent readback",
+      "<strong>VERIFIED</strong>", "Independent ledger readback matched the exact", "FAILED CLOSED",
+      "A failed result does not prove no ledger write occurred.",
       "Approved for authorization only. No change has executed."]) {
       expect(client).toContain(copy);
     }
@@ -130,7 +131,51 @@ describe("Gate 4 Unit 4A human Execute source boundary", () => {
     expect(client).toContain("{event.lifecycle.replaceAll");
     expect(client.slice(client.indexOf("<section"))).not.toMatch(/(?:result|command)\.status/u);
     expect(page).not.toContain("Consequential execution remains deliberately absent");
-    expect(page).toContain("Gate 4: verified synthetic refund");
-    expect(page).toContain("Refund execution requires a second human decision.");
+    expect(client).toContain("Refund execution requires a second human decision.");
+    expect(client).toContain("Gateway execution is unavailable.");
+  });
+});
+
+describe("Gate 4 Unit 4B presentation boundary", () => {
+  it("derives money, lifecycle and flow from existing projections without adding business capabilities", () => {
+    const client = source("src/app/changegate-webmcp.tsx");
+    expect(client).toContain("proposal.parameters.amountCents / 100");
+    expect(client).toContain('const lifecycle = proposal?.lifecycle ?? "NONE"');
+    expect(client).toContain('audit.events.at(-1)?.type === "REFUND_VERIFICATION_COMPLETED"');
+    for (const stage of ["AI proposal", "Human approval", "Human execute", "Independent verification"]) {
+      expect(client).toContain(stage);
+    }
+    const tree = ts.createSourceFile("client.tsx", client, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const calls = new Set<string>();
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && node.expression.getText(tree).startsWith("operations.")) {
+        calls.add(node.expression.getText(tree));
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(tree);
+    expect([...calls].sort()).toEqual([
+      "operations.approvePendingChange", "operations.executeApprovedRefund", "operations.getAuditTrail",
+      "operations.getChangeProposal", "operations.getPendingRefundExecution", "operations.rejectPendingChange",
+    ]);
+  });
+
+  it("keeps availability truthful, immutable details accessible, and audit actors and sequences visible", () => {
+    const client = source("src/app/changegate-webmcp.tsx");
+    expect(client).toContain('if (result.status === "REGISTERED") setAvailability("AVAILABLE")');
+    expect(client.match(/setAvailability\("AVAILABLE"\)/gu)).toHaveLength(1);
+    expect(client).toContain("{LABELS[availability]}");
+    expect(client).toContain("7 safe tools registered");
+    expect(client).toContain("7 tools</span>");
+    for (const field of ["proposalId", "proposalDigest", "target", "action", "parameters", "preconditions"]) {
+      expect(client).toContain(`proposal.${field}`);
+    }
+    expect(client).toContain('data-actor={event.actor}');
+    expect(client).toContain('String(event.sequence).padStart(2, "0")');
+    expect(client).toContain('aria-live="polite"');
+    expect(client).toContain('aria-current={state === "current" ? "step" : undefined}');
+    const css = source("src/app/page.module.css");
+    expect(css).toContain(":focus-visible");
+    expect(css).toContain("prefers-reduced-motion: reduce");
   });
 });
