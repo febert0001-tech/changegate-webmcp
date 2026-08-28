@@ -8,7 +8,7 @@ import * as ledgerModule from "../src/application/synthetic-refund-ledger";
 import * as verifierModule from "../src/application/refund-verifier";
 import * as engine from "../src/domain/engine";
 import type { ChangeProposalInput, RefundExecutionBinding } from "../src/domain/change/contracts";
-import { GATE_2_TOOL_NAMES } from "../src/webmcp/tool-catalog";
+import { createGate2ToolDefinitions, GATE_2_TOOL_NAMES } from "../src/webmcp/tool-catalog";
 
 const refund = {
   proposalId: "refund-order-4821", target: "order:4821", action: "SYNTHETIC_PARTIAL_REFUND",
@@ -123,6 +123,35 @@ function expectPreflightDenied(context: ReturnType<typeof setup>, input: unknown
 afterEach(() => vi.restoreAllMocks());
 
 describe("Gate 4 Unit 3 human Execute orchestration", () => {
+  it("Unit 4A: produces exactly one $25 ledger effect from the actual WebMCP proposal boundary", async () => {
+    const context = setup(realInitial());
+    const { operations } = context;
+    const definitions = createGate2ToolDefinitions(createWebMcpOperationsFacade(operations));
+    const invoke = (name: string, input: unknown) => {
+      const tool = definitions.find((definition) => definition.name === name);
+      if (!tool) throw new Error(`Missing ${name}`);
+      return tool.execute(input, { signal: new AbortController().signal });
+    };
+    expect(await invoke("propose_change", refund)).toMatchObject({ status: "SUCCESS", data: { lifecycle: "PROPOSED" } });
+    expect(await invoke("request_change_approval", { proposalId: refund.proposalId }))
+      .toMatchObject({ status: "SUCCESS", data: { lifecycle: "AWAITING_HUMAN_APPROVAL" } });
+    const identity = approve(context);
+    expect(context.write).not.toHaveBeenCalled();
+    expect(context.ledger.reader.readRefundState("4821").transactionCount).toBe(0);
+    expect(operations.executeApprovedRefund(identity)).toMatchObject({ status: "SUCCESS", proposal: { lifecycle: "SUCCEEDED" } });
+    expect(context.sequence).toEqual([
+      "PROPOSED", "AWAITING_HUMAN_APPROVAL", "APPROVED", "EXECUTING", "WRITE", "VERIFYING", "READ", "SUCCEEDED",
+    ]);
+    expect(context.ledger.reader.readRefundState("4821")).toMatchObject({
+      refundedAmountCents: 2500, transactionCount: 1,
+      transactions: [{ orderId: "4821", currency: "USD", amountCents: 2500 }],
+    });
+    expect(operations.executeApprovedRefund(identity).status).toBe("DENIED");
+    expect(context.write).toHaveBeenCalledTimes(1);
+    expect(context.read).toHaveBeenCalledTimes(1);
+    expect(context.verify).toHaveBeenCalledTimes(1);
+  });
+
   it("completes with unmodified production ledger and verifier factories", () => {
     vi.spyOn(engine, "createInitialState").mockReturnValue(review());
     const operations = createChangeGateOperations();

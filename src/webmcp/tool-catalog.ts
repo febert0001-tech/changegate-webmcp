@@ -126,7 +126,7 @@ export function createGate2ToolDefinitions(
     ),
     tool(
       "propose_change",
-      "Propose only the supported synthetic Agent Gateway restart; this grants no authority.",
+      "Propose a supported synthetic change: an Agent Gateway restart or an Order #4821 partial refund in USD, up to 3000 cents. This grants no approval or execution authority.",
       toWebMcpInputSchema(proposeChangeInputSchema),
       (input, context) =>
         executeValidated(proposeChangeInputSchema, input, context, (proposal) => {

@@ -121,9 +121,9 @@ describe("Gate 4 bounded refund authority", () => {
     expect(Object.isFrozen(first?.preconditions)).toBe(true);
   });
 
-  it("widens only the read target contract and retains the seven gateway-only operation signatures", () => {
+  it("retains seven operations with the explicit Unit 4A supported proposal union", () => {
     expectTypeOf<"order:4821">().toExtend<ChangeProposalProjection["target"]>();
-    expectTypeOf<Parameters<ChangeGateWebMcpOperations["proposeChange"]>[0]>().toEqualTypeOf<FlagshipChangeInput>();
+    expectTypeOf<Parameters<ChangeGateWebMcpOperations["proposeChange"]>[0]>().toEqualTypeOf<FlagshipChangeInput | RefundProposalInput>();
     expectTypeOf<RefundProposalInput>().not.toExtend<FlagshipChangeInput>();
     expect(Object.keys(createWebMcpOperationsFacade(createChangeGateOperations())).sort()).toEqual([
       "getAuditTrail", "getChangePolicy", "getChangeProposal", "getEnvironmentStatus",

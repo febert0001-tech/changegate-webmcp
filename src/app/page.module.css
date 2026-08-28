@@ -23,9 +23,16 @@
 .decisionActions button { min-width: 7rem; padding: .65rem 1rem; border: 0; border-radius: .45rem; color: #fff; font: inherit; font-weight: 800; cursor: pointer; }
 .approveButton { background: #047857; }
 .rejectButton { background: #b91c1c; }
+.executeButton { background: #1d4ed8; }
 .decisionActions button:focus-visible { outline: 3px solid #0f172a; outline-offset: 2px; }
 .approvedMessage { margin-top: 1rem; padding: .75rem; border-left: 4px solid #047857; color: #065f46; background: #ecfdf5; font-weight: 700; }
 .rejectedMessage { margin-top: 1rem; padding: .75rem; border-left: 4px solid #b91c1c; color: #991b1b; background: #fef2f2; font-weight: 700; }
+.verifiedMessage { margin-top: 1rem; padding: .75rem; border-left: 4px solid #047857; color: #065f46; background: #ecfdf5; }
+.failedMessage { margin-top: 1rem; padding: .75rem; border-left: 4px solid #b91c1c; color: #991b1b; background: #fef2f2; }
+.auditPanel { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #99f6e4; }
+.auditChain { display: grid; gap: .65rem; margin: .75rem 0 0; padding-left: 1.5rem; }
+.auditChain code { font-size: .75rem; overflow-wrap: anywhere; }
+.auditChain span { display: block; color: #475569; font-size: .75rem; }
 
 @media (max-width: 34rem) {
   .authorizationHeading { align-items: stretch; flex-direction: column; }

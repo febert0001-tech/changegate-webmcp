@@ -1,4 +1,4 @@
-import type { ChangeLifecycleState, ChangeTarget, JsonObject, JsonValue } from "../domain/change/contracts";
+import type { ChangeLifecycleState, ChangeTarget, JsonObject, JsonValue, RefundProposalInput } from "../domain/change/contracts";
 import {
   createInitialState,
   isApprovalBoundToProposal,
@@ -85,7 +85,7 @@ export interface ChangeGateWebMcpOperations {
   readonly getChangePolicy: () => ChangePolicyProjection;
   readonly getChangeProposal: () => ChangeProposalProjection | null;
   readonly getAuditTrail: () => AuditTrailProjection;
-  readonly proposeChange: (input: FlagshipChangeInput) => ChangeCommandResult;
+  readonly proposeChange: (input: FlagshipChangeInput | RefundProposalInput) => ChangeCommandResult;
   readonly requestChangeApproval: (proposalId: string) => ChangeCommandResult;
 }
 
@@ -267,7 +267,7 @@ export function createChangeGateOperations(): ChangeGateOperations {
     };
   };
 
-  const proposeChange = (input: FlagshipChangeInput): ChangeCommandResult => {
+  const proposeChange = (input: FlagshipChangeInput | RefundProposalInput): ChangeCommandResult => {
     const result = reduceChangeGate(currentState, {
       type: "PROPOSE_CHANGE",
       actor: "AGENT",

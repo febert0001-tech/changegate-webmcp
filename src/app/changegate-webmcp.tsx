@@ -6,6 +6,7 @@ import {
   createChangeGateOperations,
   createWebMcpOperationsFacade,
 } from "../application/changegate-operations";
+import { hasRefundProposalShape } from "../domain/refund";
 import { getWebMcpModelContext } from "../webmcp/native-contract";
 import { startWebMcpRegistration } from "../webmcp/registration";
 import styles from "./page.module.css";
@@ -26,6 +27,10 @@ export function ChangeGateWebMcp() {
   useSyncExternalStore(operations.subscribe, operations.getRevision, operations.getRevision);
 
   const proposal = operations.getChangeProposal();
+  // Capture the lifecycle the person sees, never fetch a newer approval on click.
+  const pendingExecution = operations.getPendingRefundExecution();
+  const isRefund = proposal !== null && hasRefundProposalShape(proposal);
+  const audit = operations.getAuditTrail();
 
   useEffect(() => {
     let mounted = true;
@@ -101,6 +106,7 @@ export function ChangeGateWebMcp() {
                 <p>
                   Review this exact proposal. Your decision applies only to the ID and
                   immutable content shown above.
+                  Approval does not execute. A refund requires a separate human Execute decision.
                 </p>
                 <div className={styles.decisionActions}>
                   <button
@@ -122,9 +128,61 @@ export function ChangeGateWebMcp() {
             ) : null}
 
             {proposal.lifecycle === "APPROVED" ? (
-              <p className={styles.approvedMessage}>
-                Approved for authorization only. No change has executed.
-              </p>
+              isRefund ? (
+                <div className={styles.decisionArea}>
+                  <p className={styles.approvedMessage}>
+                    Approved, not executed. The exact approved refund is ready for
+                    your separate Execute decision.
+                  </p>
+                  {pendingExecution !== null ? (
+                    <div className={styles.decisionActions}>
+                      <button
+                        className={styles.executeButton}
+                        type="button"
+                        onClick={() => {
+                          if (pendingExecution !== null) {
+                            operations.executeApprovedRefund(pendingExecution);
+                          }
+                        }}
+                      >
+                        Execute exact approved refund
+                      </button>
+                    </div>
+                  ) : (
+                    <p className={styles.authorizationMessage}>
+                      No valid execution identity is available. Execution is unavailable.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className={styles.approvedMessage}>
+                  Approved for authorization only. No change has executed.
+                </p>
+              )
+            ) : null}
+
+            {isRefund ? (
+              <div role="status" aria-live="polite">
+                {proposal.lifecycle === "EXECUTING" ? (
+                  <p className={styles.authorizationMessage}>Executing exact approved refund.</p>
+                ) : null}
+                {proposal.lifecycle === "VERIFYING" ? (
+                  <p className={styles.authorizationMessage}>Independent ledger verification in progress.</p>
+                ) : null}
+                {proposal.lifecycle === "SUCCEEDED" ? (
+                  <p className={styles.verifiedMessage}>
+                    <strong>VERIFIED</strong> — Independent readback matched the exact
+                    authorized refund in the synthetic ledger.
+                  </p>
+                ) : null}
+                {proposal.lifecycle === "FAILED" ? (
+                  <p className={styles.failedMessage}>
+                    <strong>FAILED — fail closed.</strong> Refund success is not verified.
+                    Approval is consumed; Execute is unavailable. A failed result does
+                    not prove that no ledger write occurred.
+                  </p>
+                ) : null}
+              </div>
             ) : null}
 
             {proposal.lifecycle === "REJECTED" ? (
@@ -134,6 +192,22 @@ export function ChangeGateWebMcp() {
             ) : null}
           </>
         )}
+      </section>
+      <section className={styles.auditPanel} aria-labelledby="audit-heading">
+        <h3 id="audit-heading">Audit chain</h3>
+        {audit.events.length === 0 ? (
+          <p>No audit events yet.</p>
+        ) : (
+          <ol className={styles.auditChain}>
+            {audit.events.map((event) => (
+              <li key={event.sequence}>
+                <code>{event.type}</code>
+                <span>{event.actor} → {event.lifecycle.replaceAll("_", " ")}</span>
+              </li>
+            ))}
+          </ol>
+        )}
+        {audit.truncated ? <p>Showing the latest {audit.events.length} of {audit.totalEvents} events.</p> : null}
       </section>
     </>
   );

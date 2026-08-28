@@ -8,15 +8,16 @@ export default function Home() {
         <p className={styles.eyebrow}>2026 OpenAI WebMCP Challenge</p>
         <h1>ChangeGate</h1>
         <p className={styles.summary}>
-          A human-controlled IT-operations simulator with a safe, inspection-first
-          browser agent boundary.
+          A synthetic change simulator with separate human approval, execution,
+          and independent refund verification.
         </p>
-        <section className={styles.notice} aria-label="Gate 3 scope">
-          <h2>Gate 3: human authorization plane</h2>
+        <section className={styles.notice} aria-label="Gate 4 scope">
+          <h2>Gate 4: verified synthetic refund</h2>
           <p>
             The agent may inspect, propose, and request review. Only a person using
             this visible interface may approve or reject the exact proposal.
-            Consequential execution remains deliberately absent.
+            Refund execution requires a second human decision. Success is shown
+            only after independent ledger verification. Gateway execution is unavailable.
           </p>
           <ChangeGateWebMcp />
         </section>

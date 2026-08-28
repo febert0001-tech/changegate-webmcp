@@ -21,7 +21,7 @@ export const serviceDetailsInputSchema = z
   })
   .strict();
 
-export const proposeChangeInputSchema = z
+const gatewayProposalInputSchema = z
   .object({
     proposalId: proposalIdSchema,
     target: z.literal(FLAGSHIP_TARGET),
@@ -35,6 +35,27 @@ export const proposeChangeInputSchema = z
     preconditions: z.tuple([z.literal(FLAGSHIP_PRECONDITION)]),
   })
   .strict();
+
+const refundProposalInputSchema = z
+  .object({
+    proposalId: proposalIdSchema,
+    target: z.literal("order:4821"),
+    action: z.literal("SYNTHETIC_PARTIAL_REFUND"),
+    parameters: z
+      .object({
+        currency: z.literal("USD"),
+        amountCents: z.number().int().min(1).max(3000),
+      })
+      .strict(),
+    preconditions: z.tuple([z.literal("order:4821 refunded amount is 0 cents")]),
+  })
+  .strict();
+
+// This transport allowlist grants no authority; the domain still enforces policy.
+export const proposeChangeInputSchema = z.discriminatedUnion("action", [
+  gatewayProposalInputSchema,
+  refundProposalInputSchema,
+]);
 
 export const requestChangeApprovalInputSchema = z
   .object({
