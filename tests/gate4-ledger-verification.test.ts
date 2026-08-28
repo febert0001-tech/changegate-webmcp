@@ -11,7 +11,7 @@ import {
   type SyntheticRefundReader,
   type SyntheticRefundWriter,
 } from "../src/application/synthetic-refund-ledger";
-import { verifyAuthorizedRefund } from "../src/application/refund-verifier";
+import { createRefundVerifier, type RefundVerifier } from "../src/application/refund-verifier";
 
 function apply(state: ChangeGateState, action: DomainAction): ChangeGateState {
   const result = reduceChangeGate(state, action);
@@ -70,9 +70,9 @@ describe("Gate 4 Unit 2A synthetic ledger and independent verification", () => {
     expect(Object.keys(reader)).toEqual(["readRefundState"]);
     expectTypeOf<Parameters<SyntheticRefundWriter["applyAuthorizedRefund"]>>().toEqualTypeOf<[RefundExecutionBinding]>();
     expectTypeOf<Parameters<SyntheticRefundReader["readRefundState"]>>().toEqualTypeOf<["4821"]>();
-    expectTypeOf<Parameters<typeof verifyAuthorizedRefund>>().toEqualTypeOf<[RefundExecutionBinding, SyntheticRefundReader]>();
+    expectTypeOf<Parameters<RefundVerifier["verify"]>>().toEqualTypeOf<[RefundExecutionBinding]>();
     expect(writer.applyAuthorizedRefund).toHaveLength(1);
-    expect(verifyAuthorizedRefund).toHaveLength(2);
+    expect(createRefundVerifier(reader).verify).toHaveLength(1);
   });
 
   it("applies the trusted $25 binding and independently verifies one exact immutable transaction", () => {
@@ -85,9 +85,9 @@ describe("Gate 4 Unit 2A synthetic ledger and independent verification", () => {
       transactions: [transaction(binding)],
     });
     const observedReader = { readRefundState: vi.fn(reader.readRefundState) };
-    const evidence = verifyAuthorizedRefund(binding, observedReader);
+    const evidence = createRefundVerifier(observedReader).verify(binding);
     expect(observedReader.readRefundState).toHaveBeenCalledExactlyOnceWith("4821");
-    expect(evidence).toEqual({ executionId: binding.executionId, expected: binding.effect, observed: snapshot, result: "VERIFIED" });
+    expect(evidence).toEqual({ authorization: binding, executionId: binding.executionId, expected: binding.effect, observed: snapshot, result: "VERIFIED" });
     expect(Object.isFrozen(evidence)).toBe(true);
     expect(Object.isFrozen(evidence.expected)).toBe(true);
     expect(Object.isFrozen(evidence.observed)).toBe(true);
@@ -168,13 +168,13 @@ describe("Gate 4 Unit 2A synthetic ledger and independent verification", () => {
     const verifying = apply(state, { type: "REFUND_EXECUTION_SUCCEEDED", executionId: binding.executionId });
     const { reader } = createSyntheticRefundLedger();
     expect(verifying.change?.status).toBe("VERIFYING");
-    expect(verifyAuthorizedRefund(binding, reader)).toMatchObject({ result: "MISMATCH", observed: { refundedAmountCents: 0, transactionCount: 0 } });
+    expect(createRefundVerifier(reader).verify(binding)).toMatchObject({ result: "MISMATCH", observed: { refundedAmountCents: 0, transactionCount: 0 } });
   });
 
   it("reads the private $20 faulty fixture and returns MISMATCH against the $25 authorization", () => {
     const { binding } = authorized();
     const reader = fixtureReader([{ ...transaction(binding), amountCents: 2000 }]);
-    expect(verifyAuthorizedRefund(binding, reader)).toMatchObject({
+    expect(createRefundVerifier(reader).verify(binding)).toMatchObject({
       result: "MISMATCH", expected: { amountCents: 2500 }, observed: { refundedAmountCents: 2000, transactionCount: 1 },
     });
     expect(reader.readRefundState).toHaveBeenCalledExactlyOnceWith("4821");
@@ -185,7 +185,7 @@ describe("Gate 4 Unit 2A synthetic ledger and independent verification", () => {
   ])("rejects a wrong ledger transaction field: %j", (replacement) => {
     const { binding } = authorized();
     const reader = fixtureReader([{ ...transaction(binding), ...replacement } as RefundTransaction]);
-    expect(verifyAuthorizedRefund(binding, reader).result).toBe("MISMATCH");
+    expect(createRefundVerifier(reader).verify(binding).result).toBe("MISMATCH");
   });
 
   it("rejects two transactions totaling $25", () => {
@@ -194,7 +194,7 @@ describe("Gate 4 Unit 2A synthetic ledger and independent verification", () => {
       { ...transaction(binding), amountCents: 1250 },
       { ...transaction(binding), executionId: "other", amountCents: 1250 },
     ]);
-    expect(verifyAuthorizedRefund(binding, reader)).toMatchObject({ result: "MISMATCH", observed: { refundedAmountCents: 2500, transactionCount: 2 } });
+    expect(createRefundVerifier(reader).verify(binding)).toMatchObject({ result: "MISMATCH", observed: { refundedAmountCents: 2500, transactionCount: 2 } });
   });
 
   it.each([
@@ -206,14 +206,14 @@ describe("Gate 4 Unit 2A synthetic ledger and independent verification", () => {
     const reader: SyntheticRefundReader = {
       readRefundState: (orderId) => ({ ...source.readRefundState(orderId), ...replacement }) as RefundLedgerSnapshot,
     };
-    expect(verifyAuthorizedRefund(binding, reader).result).toBe("MISMATCH");
+    expect(createRefundVerifier(reader).verify(binding).result).toBe("MISMATCH");
   });
 
   it("fails closed on a reader exception", () => {
     const { binding } = authorized();
     const reader: SyntheticRefundReader = { readRefundState: () => { throw new Error("Read failed"); } };
-    expect(verifyAuthorizedRefund(binding, reader)).toEqual({
-      executionId: binding.executionId, expected: binding.effect, observed: null, result: "MISMATCH", reason: "READ_FAILED",
+    expect(createRefundVerifier(reader).verify(binding)).toEqual({
+      authorization: binding, executionId: binding.executionId, expected: binding.effect, observed: null, result: "MISMATCH", reason: "READ_FAILED",
     });
   });
 
@@ -239,7 +239,7 @@ describe("Gate 4 Unit 2A synthetic ledger and independent verification", () => {
     const { binding } = authorized();
     const rows = [transaction(binding)];
     const snapshot = { orderId: "4821" as const, currency: "USD" as const, refundedAmountCents: 2500, transactionCount: 1, transactions: rows };
-    const evidence = verifyAuthorizedRefund(binding, { readRefundState: () => snapshot });
+    const evidence = createRefundVerifier({ readRefundState: () => snapshot }).verify(binding);
     Reflect.set(rows[0]!, "amountCents", 2000);
     rows.length = 0;
     snapshot.refundedAmountCents = 0;

@@ -1,18 +1,6 @@
 import type { RefundExecutionBinding } from "../domain/change/contracts";
-
-export type RefundEffect = RefundExecutionBinding["effect"];
-
-export interface RefundTransaction extends RefundEffect {
-  readonly executionId: string;
-}
-
-export interface RefundLedgerSnapshot {
-  readonly orderId: "4821";
-  readonly currency: "USD";
-  readonly refundedAmountCents: number;
-  readonly transactionCount: number;
-  readonly transactions: readonly RefundTransaction[];
-}
+import type { RefundEffect, RefundLedgerSnapshot, RefundTransaction, SyntheticRefundReader } from "../domain/refund-verification";
+export type { RefundEffect, RefundLedgerSnapshot, RefundTransaction, SyntheticRefundReader } from "../domain/refund-verification";
 
 export type RefundWriteResult =
   | Readonly<{ status: "APPLIED" | "ALREADY_APPLIED" }>
@@ -20,10 +8,6 @@ export type RefundWriteResult =
 
 export interface SyntheticRefundWriter {
   readonly applyAuthorizedRefund: (binding: RefundExecutionBinding) => RefundWriteResult;
-}
-
-export interface SyntheticRefundReader {
-  readonly readRefundState: (orderId: "4821") => RefundLedgerSnapshot;
 }
 
 /** Structural defense only: the caller must supply authority from the trusted domain. */

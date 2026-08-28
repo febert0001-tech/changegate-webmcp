@@ -11,6 +11,7 @@ import type {
 } from "./change/contracts";
 import { computeProposalDigest, createImmutableProposal } from "./change/proposal-digest";
 import { isAuthorizedRefundProposal } from "./refund";
+import { isTrustedRefundVerificationEvidence, type RefundVerificationEvidence } from "./refund-verification";
 
 export type AuditActor = "HUMAN" | "AGENT" | "SYSTEM";
 
@@ -52,6 +53,15 @@ interface RefundFailedState extends RefundExecutionState {
   readonly failureStage: "EXECUTION";
 }
 
+interface RefundVerifiedState extends RefundExecutionState {
+  readonly verificationEvidence: Extract<RefundVerificationEvidence, { result: "VERIFIED" }>;
+}
+
+interface RefundVerificationFailedState extends RefundExecutionState {
+  readonly verificationEvidence: Extract<RefundVerificationEvidence, { result: "MISMATCH" }>;
+  readonly failureStage: "VERIFICATION";
+}
+
 interface FailedState extends AwaitingHumanApprovalState {
   readonly executionKind: "GATEWAY";
   readonly failureStage: "EXECUTION" | "VERIFICATION";
@@ -74,8 +84,8 @@ export type ChangeLifecycle =
   | ({ readonly status: "APPROVED" } & ApprovedState)
   | ({ readonly status: "EXECUTING" } & (ExecutionState | RefundExecutionState))
   | ({ readonly status: "VERIFYING" } & (ExecutionState | RefundExecutionState))
-  | ({ readonly status: "SUCCEEDED" } & ApprovedState)
-  | ({ readonly status: "FAILED" } & (FailedState | RefundFailedState))
+  | ({ readonly status: "SUCCEEDED" } & ((ApprovedState & { readonly executionKind?: "GATEWAY" }) | RefundVerifiedState))
+  | ({ readonly status: "FAILED" } & (FailedState | RefundFailedState | RefundVerificationFailedState))
   | ({ readonly status: "ROLLBACK_AWAITING_APPROVAL" } & RollbackAwaitingApprovalState)
   | ({ readonly status: "ROLLING_BACK" } & RollingBackState)
   | ({ readonly status: "ROLLED_BACK" } & FailedState)
@@ -120,8 +130,7 @@ export type DomainAction =
     }
   | ({ readonly type: "REFUND_EXECUTION_SUCCEEDED" } & RefundExecutionIdentity)
   | ({ readonly type: "REFUND_EXECUTION_FAILED" } & RefundExecutionIdentity)
-  // Refund verification completion requires independent evidence in a later unit.
-  // There is deliberately no identity-only verification-success action.
+  | { readonly type: "REFUND_VERIFICATION_COMPLETED"; readonly evidence: RefundVerificationEvidence }
   | { readonly type: "EXECUTION_SUCCEEDED" }
   | { readonly type: "EXECUTION_FAILED" }
   | { readonly type: "VERIFICATION_SUCCEEDED" }
@@ -361,6 +370,45 @@ export function reduceChangeGate(state: ChangeGateState, action: DomainAction): 
         action.executionId === change.refundExecution.executionId
         ? success(state, { ...change, status: "FAILED", failureStage: "EXECUTION" }, "SYSTEM", action.type)
         : illegal(state, action);
+    case "REFUND_VERIFICATION_COMPLETED": {
+      if (
+        change?.status !== "VERIFYING" || change.executionKind !== "REFUND" ||
+        Reflect.ownKeys(action).length !== 2 ||
+        !Object.hasOwn(action, "type") || !Object.hasOwn(action, "evidence")
+      ) return illegal(state, action);
+      // Read once: even an accessor cannot swap the evidence after provenance validation.
+      const evidence = action.evidence;
+      const binding = change.refundExecution;
+      if (
+        binding === undefined || !isTrustedRefundVerificationEvidence(evidence) ||
+        evidence.authorization !== binding ||
+        evidence.executionId !== binding.executionId ||
+        evidence.expected.operation !== binding.effect.operation ||
+        evidence.expected.orderId !== binding.effect.orderId ||
+        evidence.expected.currency !== binding.effect.currency ||
+        evidence.expected.amountCents !== binding.effect.amountCents ||
+        binding.proposalId !== change.proposal.proposalId ||
+        binding.proposalDigest !== change.proposal.proposalDigest ||
+        binding.reviewInstanceId !== change.reviewInstanceId ||
+        binding.reviewInstanceId !== change.approval.reviewInstanceId ||
+        binding.approvalId !== change.approval.approvalId ||
+        change.approval.status !== "CONSUMED" ||
+        binding.effect.operation !== change.proposal.action ||
+        binding.effect.orderId !== "4821" || change.proposal.target !== "order:4821" ||
+        binding.effect.currency !== change.proposal.parameters.currency ||
+        binding.effect.amountCents !== change.proposal.parameters.amountCents ||
+        "verificationEvidence" in change
+      ) return illegal(state, action);
+
+      // The trusted verifier already performed exact independent readback comparison.
+      return evidence.result === "VERIFIED"
+        ? success(state, Object.freeze({
+            ...change, status: "SUCCEEDED", verificationEvidence: evidence,
+          }), "SYSTEM", action.type)
+        : success(state, Object.freeze({
+            ...change, status: "FAILED", failureStage: "VERIFICATION", verificationEvidence: evidence,
+          }), "SYSTEM", action.type);
+    }
     case "EXECUTION_SUCCEEDED":
       return change?.status === "EXECUTING" && change.executionKind === "GATEWAY"
         ? success(state, { ...change, status: "VERIFYING" }, "SYSTEM", action.type)
