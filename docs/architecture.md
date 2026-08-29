@@ -1,39 +1,110 @@
-# Architecture (Gate 2 safe WebMCP boundary)
+# Architecture (Gate 4)
 
-ChangeGate is a browser-hosted, deterministic IT-operations simulator. The domain operations, authorization policy, and state machine are authoritative. Human UI and WebMCP are separate interfaces; WebMCP is an adapter after runtime validation, not an authority.
+ChangeGate is a browser-hosted, deterministic change-control simulator. The domain state machine, policy checks, and trusted application composition own authority. Human UI and WebMCP are separate interfaces: WebMCP is an agent collaboration adapter after strict runtime validation, not an authority source.
 
-## Future simulated environment
+## Core collaboration chain
 
-| Service | Future responsibility | Initial incident posture |
-| --- | --- | --- |
-| Web Server | Simulated request handling and health reporting | Healthy |
-| Database | Simulated application data dependency | Healthy |
-| Agent Gateway | Simulated agent-facing routing and policy boundary | **DEGRADED** |
-| Knowledge Store | Simulated runbook and diagnostic data | Healthy |
+```text
+Agent inspection / proposal
+        ↓
+Exact immutable proposal
+        ↓
+Visible human review
+        ↓
+Human approval of exact proposal
+        ↓
+Separate human Execute decision
+        ↓
+Trusted authorized execution binding
+        ↓
+Constrained synthetic ledger write
+        ↓
+Independent ledger readback
+        ↓
+Exact comparison
+        ↓
+VERIFIED or FAILED
+```
 
-The flagship incident is `Agent Gateway = DEGRADED`.
+The flagship Gate 4 flow uses synthetic Order #4821:
 
-## Planned flow
+- order value: `$129.00`;
+- partial-refund policy maximum: `$30.00`;
+- proposed/approved refund: `$25.00`;
+- ledger before: `$0.00`;
+- authorized effect: `$25.00`;
+- independent readback: expected `$25.00`, observed `$25.00`;
+- terminal result: `SUCCEEDED` / **VERIFIED**.
 
-`read-only inspection -> diagnosis event -> proposed change -> visible human approval -> scoped execution -> independent verification -> audit record -> optional rollback`
+## WebMCP boundary
 
-The UI will present future approval controls. It does not directly mutate domain state. Gate 2 mounts a small Client Component that feature-detects native WebMCP, creates one component-scoped operations instance, and registers seven tools. WebMCP cannot bypass UI approval or policy checks.
+`document.modelContext -> seven-tool catalog -> strict Zod validation -> scoped application operations -> domain reducer`
 
-## Gate 2 boundary
+Exactly seven tools are agent-facing:
 
-`document.modelContext -> seven-tool catalog -> Zod validation -> scoped operations -> pure reducer`
+- five bounded reads;
+- `propose_change`; and
+- `request_change_approval`.
 
-- The operations closure privately owns current reducer state; registered callbacks query it at invocation time and cannot capture a stale React snapshot.
-- Query operations return bounded, recursively copied projections rather than authoritative references.
-- A shared registration `AbortController` gives the seven registrations all-or-cleanup behavior. Partial failure aborts registrations that already succeeded.
-- Registration lifetime and per-invocation cancellation use distinct signals.
-- The component reads `document` only inside `useEffect`, so SSR and module evaluation remain browser-API free.
-- Missing `document.modelContext` is an ordinary unsupported-browser state; no polyfill or fake capability is installed.
+No WebMCP tool can approve, reject, execute, verify, or manufacture human authority.
 
-## Deterministic reset
+Registered callbacks query a current application operations instance rather than relying on stale React snapshots. Registration lifetime and per-invocation cancellation remain separate. Unsupported browsers render normally without a WebMCP polyfill.
 
-A future visible UI reset will restore the fixed seed state, including `Agent Gateway = DEGRADED`; remove proposals, approvals, execution and rollback authorization; invalidate every transient authorization; restore deterministic audit state; and reset sequence counters.
+## Human authority boundary
+
+Human review is lifecycle-bound. Trusted application/domain state retains the exact proposal ID, proposal digest, review-instance identity, and internally derived approval identity.
+
+The visible **Approve exact proposal** action accepts no caller-supplied business payload or approval material.
+
+Approval does not execute. After approval, the webpage presents a separate **Execute approved $25.00 refund** action.
+
+The Execute controller receives only expected lifecycle identity captured from the rendered trusted state. It does not accept fresh:
+
+- refund amount;
+- order ID;
+- currency;
+- action;
+- policy fields;
+- execution ID; or
+- verification result.
+
+The actual authorized execution binding is derived internally from trusted approved state.
+
+## Execution boundary
+
+The refund side effect is intentionally synthetic and narrow.
+
+A private in-memory ledger stores effects keyed by trusted execution identity. The approval is consumed before the asynchronous writer path proceeds, preventing replay/duplicate execution from reusing the same human decision.
+
+Preflight denial occurs before side effects and leaves the approval unconsumed.
+
+## Independent verification boundary
+
+Executor success is diagnostic, not proof.
+
+A separate reader interface reads the synthetic ledger after execution. A verifier captures that trusted reader at the application composition boundary and compares observed ledger evidence with the exact authorized effect.
+
+Only trusted verification evidence for the exact active execution binding can transition:
+
+- `VERIFYING -> SUCCEEDED` on exact match; or
+- `VERIFYING -> FAILED` on mismatch/failure.
+
+A test-only faulty reader is used to prove that an observed `$20` result cannot be relabeled as success when `$25` was authorized.
+
+## Deterministic authority identities
+
+Review instances are monotonic and fail closed at the JavaScript safe-integer boundary. Reset/reproposal cannot recreate a previously valid approval lifecycle.
+
+Execution identity is derived internally from trusted lifecycle material; callers do not choose it.
+
+## Synthetic environment boundary
+
+ChangeGate contains no real payment integration, infrastructure credentials, external production database, or real consequential side effect. The ledger and Order #4821 are demonstration data.
 
 ## Deployment boundary
 
-This is a Vercel-ready Next.js app. The simulator will use only synthetic local scenario state and will not connect to real infrastructure or private data.
+The accepted Gate 4 app is deployed on Vercel:
+
+https://changegate-webmcp.vercel.app
+
+Production was visually verified and passed a native WebMCP `get_audit_trail` smoke test with exactly seven tools registered.
