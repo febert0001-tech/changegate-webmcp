@@ -244,6 +244,31 @@ describe("Gate 2 WebMCP tool catalog", () => {
     expect(operations.getChangeProposal()).toBeNull();
   });
 
+  it("tolerates Chrome 151 invocations without a usable cancellation signal", async () => {
+    const operations = createChangeGateOperations();
+    const definitions = createGate2ToolDefinitions(operations);
+    const auditTool = findTool(definitions, "get_audit_trail");
+    const proposalTool = findTool(definitions, "propose_change");
+
+    expect(await Reflect.apply(auditTool.execute, undefined, [{}])).toMatchObject({
+      status: "SUCCESS",
+      data: { events: [] },
+    });
+    expect(await Reflect.apply(proposalTool.execute, undefined, [validProposal, {}])).toMatchObject({
+      status: "SUCCESS",
+      data: { lifecycle: "PROPOSED" },
+    });
+    expect(operations.getPendingRefundExecution()).toBeNull();
+    expect(operations.getAuditTrail().events).toEqual([
+      {
+        sequence: 1,
+        actor: "AGENT",
+        type: "PROPOSE_CHANGE",
+        lifecycle: "PROPOSED",
+      },
+    ]);
+  });
+
   it("contains unexpected handler failures without leaking Error details", async () => {
     const base = createChangeGateOperations();
     const throwingOperations: ChangeGateOperations = Object.freeze({

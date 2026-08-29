@@ -39,16 +39,20 @@ function cancelled(): Gate2ToolResult {
   return Object.freeze({ status: "CANCELLED" });
 }
 
+function isInvocationAborted(context: WebMcpInvocationContext | undefined): boolean {
+  return context?.signal?.aborted === true;
+}
+
 async function executeValidated<Schema extends ZodType>(
   schema: Schema,
   input: unknown,
-  context: WebMcpInvocationContext,
+  context: WebMcpInvocationContext | undefined,
   operation: (value: output<Schema>) => Gate2ToolResult,
 ): Promise<Gate2ToolResult> {
-  if (context.signal.aborted) return cancelled();
+  if (isInvocationAborted(context)) return cancelled();
   const parsed = parseExternalInput(schema, input);
   if (!parsed.success) return invalidInput();
-  if (context.signal.aborted) return cancelled();
+  if (isInvocationAborted(context)) return cancelled();
 
   try {
     return operation(parsed.data);
