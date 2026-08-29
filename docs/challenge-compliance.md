@@ -13,7 +13,7 @@ ChangeGate is a standalone repository created for the 2026 OpenAI WebMCP Challen
 | WebMCP use | Exactly seven native WebMCP tools are registered through `document.modelContext`. |
 | Human + agent collaboration | Agent can inspect, propose, and request review; human approval and human execution remain separate visible UI actions. |
 | Text description | Public README and submission packet explain WebMCP fit, UX, human/agent collaboration, and implementation. |
-| Public repository | Required before submission; repository remains private until final publication review is complete. |
+| Public repository | Release URL: https://github.com/febert0001-tech/changegate-webmcp. Public visibility must be confirmed before final submission. |
 | Open-source license | MIT `LICENSE` is present. |
 | Demo video | Required public YouTube video under three minutes with audio; production recording remains a submission task. |
 
@@ -84,7 +84,7 @@ Chrome 151 testing exposed a compatibility case where native tool callbacks coul
 Before final submission:
 
 1. Complete public-documentation review.
-2. Make the GitHub repository public and confirm the MIT license is detected/visible.
+2. Confirm the GitHub repository is public and the MIT license is detected/visible.
 3. Record and publish the required `<3 minute` YouTube demo with audio.
 4. Complete every required Devpost field.
 5. Re-test the public live URL and native WebMCP path.
