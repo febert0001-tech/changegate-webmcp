@@ -1,22 +1,92 @@
-# Challenge compliance (Gate 2)
+# Challenge compliance (Gate 4 release)
 
 ## Scope boundary
 
-This is a standalone repository for the 2026 OpenAI WebMCP Challenge. Gate 0 contains no employer, client, private-project, proprietary, credential, or production-infrastructure material.
+ChangeGate is a standalone repository created for the 2026 OpenAI WebMCP Challenge. It uses only synthetic scenario data and does not contain employer, client, proprietary private-project, credential, or production-infrastructure material.
 
-## Verified evidence
+## Challenge requirements mapping
 
-- Next.js/React/TypeScript scaffold is configured with strict TypeScript.
-- WebMCP direction was verified against current official Chrome documentation.
-- The design documents the four synthetic services and flagship `Agent Gateway = DEGRADED` incident.
-- The tool catalog explicitly excludes `approve_change` and equivalent agent approval capabilities.
-- The pure domain authority, approval model, deterministic reset, audit foundation, and lifecycle remain intact beneath a runtime-validated adapter.
-- Exactly seven safe WebMCP tools are registered through the native imperative API: five reads and two non-authoritative commands.
-- The proposal command supports only the flagship synthetic Agent Gateway restart; the review request is bound to the exact proposal ID.
-- A mounted Client Component provides real browser-bundle proof, cleanup, unsupported-browser handling, and current-state callbacks without SSR browser access.
-- Adversarial tests prove that caller authority claims, mutable aliases, stale callbacks, partial registrations, and consequential capabilities are excluded.
-- `.gitignore` excludes environment files, dependencies, build output, Vercel metadata, and PEM files.
+| Requirement | ChangeGate evidence |
+| --- | --- |
+| Working WebMCP-powered web app | Gate 4 production console is deployed and publicly reachable. |
+| Working live URL | https://changegate-webmcp.vercel.app |
+| WebMCP use | Exactly seven native WebMCP tools are registered through `document.modelContext`. |
+| Human + agent collaboration | Agent can inspect, propose, and request review; human approval and human execution remain separate visible UI actions. |
+| Text description | Public README and submission packet explain WebMCP fit, UX, human/agent collaboration, and implementation. |
+| Public repository | Required before submission; repository remains private until final publication review is complete. |
+| Open-source license | MIT `LICENSE` is present. |
+| Demo video | Required public YouTube video under three minutes with audio; production recording remains a submission task. |
 
-## Deferred work
+Official submission deadline: **September 3, 2026 at 1:00 p.m. Pacific Time**.
 
-Human approval UI, consequential execution/rollback tools, dashboard, persistence, real execution effects, and infrastructure integration are deliberately deferred beyond Gate 2.
+## Accepted Gate 4 evidence
+
+- Final accepted implementation checkpoint: `869694380b9f3f2d18ff7339aa35419d962fc528`.
+- Full regression suite: **335/335 tests PASS**.
+- Typecheck: PASS.
+- Lint: PASS.
+- Production build: PASS.
+- `git diff --check`: PASS.
+- Exactly seven WebMCP tools remain exposed.
+- No agent-callable human approval or execution capability exists.
+- Native Chrome WebMCP Inspector proof completed for the seven-tool surface.
+- Native end-to-end local proof completed: proposal → review request → human approval → separate human Execute → independent readback → `SUCCEEDED` / **VERIFIED**.
+- Public Vercel production page renders correctly and reports **WebMCP · Available · 7 safe tools registered**.
+- Native production `get_audit_trail` with `{}` returned `SUCCESS` with a clean initial audit state.
+
+## Human/agent authority split
+
+The WebMCP agent may:
+
+- read bounded synthetic environment state;
+- read service details, change policy, proposal state, and audit state;
+- propose a strictly validated supported change; and
+- request human review for the exact current proposal.
+
+The WebMCP agent may **not**:
+
+- approve or reject a proposal;
+- execute a consequential action;
+- create, choose, or replay human approval authority;
+- mark execution as verified; or
+- invoke rollback authority.
+
+Human approval and human Execute are separate application actions outside the WebMCP tool surface.
+
+## Flagship challenge scenario
+
+- Synthetic Order #4821: `$129.00`.
+- Policy maximum partial refund: `$30.00`.
+- Agent proposal: `$25.00`.
+- Human approves the exact immutable proposal.
+- Approval alone does not execute.
+- Human separately executes the exact approved refund.
+- Synthetic ledger records the constrained effect.
+- A separate reader independently inspects ledger state.
+- Exact authorized/readback match produces visible **VERIFIED**.
+
+## Fail-closed proofs
+
+- `$75` refund above the `$30` maximum is rejected before approval/execution.
+- Post-approval execution substitution to `$75` is blocked.
+- Post-approval execution substitution to `$20` is blocked because it is not the exact authorization.
+- Stale/replayed approval identity is denied.
+- Duplicate execution is denied/contained.
+- Forged or cloned verification evidence is rejected.
+- Expected `$25` with independent readback of `$20` reaches terminal verification failure rather than success.
+
+## Browser compatibility note
+
+Chrome 151 testing exposed a compatibility case where native tool callbacks could arrive without a usable cancellation context. The accepted compatibility patch treats a missing cancellation context as “not cancelled” while preserving cancellation when a real signal is aborted. The patch changes no schemas, authority surfaces, business payloads, human controls, or verification trust boundaries.
+
+## Release rules
+
+Before final submission:
+
+1. Complete public-documentation review.
+2. Make the GitHub repository public and confirm the MIT license is detected/visible.
+3. Record and publish the required `<3 minute` YouTube demo with audio.
+4. Complete every required Devpost field.
+5. Re-test the public live URL and native WebMCP path.
+
+After the submission period closes, the submitted Devpost entry, repository, and live site must remain frozen through judging. Future development should use a separate fork/copy.
