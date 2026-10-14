@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import {randomUUID} from 'node:crypto';
 import {generateReview, canonicalJson, renderHtml, EvidenceError, parseJson} from './report.mjs';
 
 const usage = 'Usage: node releaseproof/cli.mjs --expected trusted-expectation.json --packet evidence-packet.json --out review-output';
@@ -47,36 +48,56 @@ try {
     for (const filename of [options.get('--expected'), options.get('--packet')]) {
       if (outputs.includes(path.resolve(filename))) throw new EvidenceError('output must not overwrite an input');
     }
-    // stat follows symlinks; device/inode identity also detects hard links.
-    for (const filename of outputs) {
-      let identity;
-      try { identity = fs.statSync(filename, {bigint: true}); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
-      if (identity) protectInput(identity);
-    }
+    const protectDestinations = filenames => {
+      // Read-only identity checks preserve the input and output-alias contract.
+      // Publishing never opens these destination paths for writing.
+      const existing = filenames.map(filename => {
+        let identity;
+        try { identity = fs.statSync(filename, {bigint: true}); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+        if (identity) protectInput(identity);
+        return identity;
+      });
+      if (existing.every(Boolean) && sameFile(existing[0], existing[1])) throw new EvidenceError('output files must be distinct');
+    };
+    protectDestinations(outputs);
     const report = generateReview(packet, expected);
     const json = canonicalJson(report);
     const html = renderHtml(report);
     fs.mkdirSync(output, {recursive: true});
-    let jsonDescriptor;
-    let htmlDescriptor;
+    // The caller must trust this directory and its ancestors against concurrent
+    // replacement. Same-directory renames replace links, never their targets.
+    const trustedDirectory = fs.realpathSync(output);
+    const destinations = ['review.json', 'review.html'].map(name => path.join(trustedDirectory, name));
+    const temporary = new Set();
+    const stage = (name, content) => {
+      const filename = path.join(trustedDirectory, `.releaseproof-${randomUUID()}-${name}.tmp`);
+      const descriptor = fs.openSync(filename, 'wx', 0o600);
+      // Track only files this invocation exclusively created.
+      temporary.add(filename);
+      try {
+        fs.writeFileSync(descriptor, content);
+        fs.fsyncSync(descriptor);
+      } finally {
+        fs.closeSync(descriptor);
+      }
+      return filename;
+    };
     try {
-      // Open without truncation, then recheck both actual destinations before
-      // changing either file. This covers aliases changed after the preflight.
-      jsonDescriptor = fs.openSync(outputs[0], fs.constants.O_WRONLY | fs.constants.O_CREAT, 0o666);
-      htmlDescriptor = fs.openSync(outputs[1], fs.constants.O_WRONLY | fs.constants.O_CREAT, 0o666);
-      const jsonIdentity = fs.fstatSync(jsonDescriptor, {bigint: true});
-      const htmlIdentity = fs.fstatSync(htmlDescriptor, {bigint: true});
-      protectInput(jsonIdentity);
-      protectInput(htmlIdentity);
-      if (sameFile(jsonIdentity, htmlIdentity)) throw new EvidenceError('output files must be distinct');
-      fs.ftruncateSync(jsonDescriptor, 0);
-      fs.writeFileSync(jsonDescriptor, json);
-      fs.ftruncateSync(htmlDescriptor, 0);
-      fs.writeFileSync(htmlDescriptor, html);
+      const stagedJson = stage('review.json', json);
+      const stagedHtml = stage('review.html', html);
+      protectDestinations(destinations);
+      fs.renameSync(stagedJson, destinations[0]);
+      temporary.delete(stagedJson);
+      fs.renameSync(stagedHtml, destinations[1]);
+      temporary.delete(stagedHtml);
     } finally {
-      try { if (htmlDescriptor !== undefined) fs.closeSync(htmlDescriptor); }
-      finally { if (jsonDescriptor !== undefined) fs.closeSync(jsonDescriptor); }
+      let cleanupError;
+      for (const filename of temporary) {
+        try { fs.unlinkSync(filename); }
+        catch (error) { if (error.code !== 'ENOENT') cleanupError ??= error; }
+      }
+      if (cleanupError) throw cleanupError;
     }
     console.log(`Report generated: ${report.qc_verdict}; ${report.provenance_status}; human release PENDING.`);
   }

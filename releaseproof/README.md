@@ -25,7 +25,7 @@ The input contract is `releaseproof-packet/v1`; trusted expectation is `releasep
 - Both historical unknowns are retained. The report cannot approve G0/G1, rewrite the historical audit waiver, grant release authority, execute a transaction or deploy anything.
 - Model notes are historical interpretation only. Extra authority fields are rejected. Text is escaped in HTML; the page has no scripts, external resources, forms or commands.
 - Historical model capture time cannot postdate the explicit review time. Risk scope, expiry, accepted advisory IDs and pipeline binding are visible in HTML as well as JSON. Missing bindings do not revoke or expand the original human decision.
-- CLI reads remain bounded to 32,768 expectation bytes and 1,048,576 packet bytes, with at most one extra byte to detect oversize. File identities are checked before writes and again on opened output descriptors before truncation, protecting inputs from symlink and hard-link overwrite aliases.
+- CLI reads remain bounded to 32,768 expectation bytes and 1,048,576 packet bytes, with at most one extra byte to detect oversize. Input and output-to-output alias identities are checked before staging and again before publication. Destination files are never opened for writing or truncated.
 - Private evidence packets, owner records, private source and credentials stay outside this public review branch. The example and GitHub test artifacts contain synthetic data only.
 
 ## Synthetic demonstration
@@ -37,8 +37,18 @@ node releaseproof/cli.mjs --expected releaseproof-example/expected.json --packet
 
 Open `releaseproof-output/review.html`. It shows five synthetic High records, successful command execution, a failed QC verdict, incomplete native provenance and pending human release approval.
 
+## Trusted output directory
+
+The collector must choose an output directory whose resolved path and ancestor directories are trusted against concurrent rename, replacement or modification by other actors for the duration of the command. The CLI resolves the directory once after creation. Portable Node path APIs do not provide a directory-descriptor-relative publication guarantee against an attacker replacing directory entries concurrently; this command is not a writer for a hostile shared directory.
+
+Each report is staged in that resolved directory using a random name, exclusive `wx` creation and mode `0600`. Contents are written through the created descriptor, flushed and closed before publication. An existing temporary name, including a symlink, causes exclusive creation to fail rather than following or overwriting it. Only successfully created temporary files are owned by this invocation.
+
+Same-directory atomic rename replaces the destination entry rather than writing through its existing symlink or hard link. Unrelated linked targets retain their original bytes. Input aliases and aliases between the two outputs are rejected; existing ordinary reports can be replaced. Remaining owned temporary files are removed on failure, and a file that caused an exclusive-create collision is left untouched. No destination is opened based on a preceding link check.
+
+Each file replacement is atomic; the JSON/HTML pair is not a transaction. Both files are fully staged before either rename. If the second rename fails, the JSON may already be replaced while the previous HTML remains. The CLI returns exit 2 and removes the unpublished temporary file. Inspect the failure and rerun in the trusted directory; no partial file content is published.
+
 ## Code QC
 
-The isolated GitHub branch runs `node --test releaseproof/report.test.mjs releaseproof/cli.test.mjs releaseproof/corrections.test.mjs`. It retains the existing 60 tests and adds focused synthetic regressions for review 5524518701. Existing risk test fixtures now explicitly bind their synthetic pipeline; existing audit fixtures explicitly declare their synthetic comparable snapshots. No local or GitLab code-QC run is substituted for those GitHub results. A passing report-code check does not accept private artifact provenance or approve the full application release.
+The isolated GitHub branch runs `node --test releaseproof/report.test.mjs releaseproof/cli.test.mjs releaseproof/corrections.test.mjs releaseproof/output.test.mjs`. It retains all 150 existing tests and adds focused synthetic output-publication regressions for discussion 4276399088. No local or GitLab code-QC run is substituted for those GitHub results. A passing report-code check does not accept private artifact provenance or approve the full application release.
 
 The branch's `vercel.json` disables automatic Git deployment. The GitHub workflow has contents-read permission, no deployment job, no provider credentials and no model invocation. It never runs the original Next.js build or changes the original application release.
