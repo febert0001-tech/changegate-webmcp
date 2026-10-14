@@ -16,9 +16,20 @@ try {
       options.set(name, argumentsList[index + 1]);
     }
     const read = (filename, maxBytes, label) => {
-      const bytes = fs.readFileSync(filename);
-      if (bytes.length > maxBytes) throw new EvidenceError(`${label}: input too large`);
-      try { return JSON.parse(bytes.toString('utf8')); }
+      const bytes = Buffer.alloc(maxBytes + 1);
+      const descriptor = fs.openSync(filename, 'r');
+      let length = 0;
+      try {
+        while (length < bytes.length) {
+          const count = fs.readSync(descriptor, bytes, length, bytes.length - length, null);
+          if (count === 0) break;
+          length += count;
+        }
+      } finally {
+        fs.closeSync(descriptor);
+      }
+      if (length > maxBytes) throw new EvidenceError(`${label}: input too large`);
+      try { return JSON.parse(bytes.subarray(0, length).toString('utf8')); }
       catch { throw new EvidenceError(`${label}: malformed JSON`); }
     };
     const expected = read(options.get('--expected'), 32_768, 'expectation');
