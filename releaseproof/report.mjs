@@ -46,11 +46,36 @@ const timestamp = (value, label) => {
   requireEvidence(new Date(value).toISOString() === normalized, `${label}: invalid UTC timestamp`);
   return value;
 };
-// Native parsing checks the grammar; this iterative token walk rejects
+const wellFormedUnicode = value => {
+  for (let index = 0; index < value.length; index++) {
+    const unit = value.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(++index);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) return false;
+  }
+  return true;
+};
+const validateUnicode = (value, label) => {
+  const pending = [value];
+  const seen = new WeakSet();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (typeof current === 'string') {
+      requireEvidence(wellFormedUnicode(current), `${label}: unpaired Unicode surrogate`);
+    } else if (current !== null && typeof current === 'object' && !seen.has(current)) {
+      seen.add(current);
+      for (const [key, child] of Object.entries(current)) pending.push(key, child);
+    }
+  }
+};
+// Native parsing checks the grammar; validation rejects unpaired surrogates
+// throughout parsed values and keys without changing evidence. The token walk rejects
 // ambiguous object members, including names encoded with JSON escapes.
 export function parseJson(raw, label) {
   try {
     const value = JSON.parse(raw);
+    validateUnicode(value, label);
     const containers = [];
     const tokens = /"(?:[^"\\]|\\[\s\S])*"|[{}\[\]]/g;
     for (const match of raw.matchAll(tokens)) {
@@ -231,6 +256,9 @@ function modelNote(value, reviewedAt) {
 }
 
 export function generateReview(packet, trustedExpectation) {
+  // Apply the same rule to object callers that parsed their JSON separately.
+  validateUnicode(packet, 'packet');
+  validateUnicode(trustedExpectation, 'expectation');
   const expected = expectation(trustedExpectation);
   exactKeys(packet, ['contract', 'native', 'qc_summary_raw', 'validation_exits_raw', 'provenance'], ['model'], 'packet');
   requireEvidence(packet.contract === 'releaseproof-packet/v1', 'packet: wrong contract');
