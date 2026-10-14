@@ -1,0 +1,45 @@
+name: ReleaseProof report QC
+
+on:
+  push:
+    branches: [review/releaseproof-report-20261014]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: releaseproof-report-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  report-contract:
+    if: github.repository == 'febert0001-tech/changegate-webmcp' && github.ref == 'refs/heads/review/releaseproof-report-20261014'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Verify report contracts and failure controls
+        run: node --test releaseproof/report.test.mjs
+      - name: Generate synthetic review example
+        run: |
+          node releaseproof/write-example.mjs releaseproof-example
+          node releaseproof/cli.mjs --expected releaseproof-example/expected.json --packet releaseproof-example/packet.json --out releaseproof-output
+      - name: Preserve GitHub QC identity and synthetic outputs
+        env:
+          REPORT_SHA: ${{ github.sha }}
+          REPORT_RUN_ID: ${{ github.run_id }}
+          REPORT_RUN_ATTEMPT: ${{ github.run_attempt }}
+          REPORT_REPOSITORY: ${{ github.repository }}
+        run: |
+          node --input-type=module -e 'import fs from "node:fs"; fs.writeFileSync("releaseproof-output/github-qc.json", JSON.stringify({repository:process.env.REPORT_REPOSITORY,sha:process.env.REPORT_SHA,run_id:process.env.REPORT_RUN_ID,attempt:process.env.REPORT_RUN_ATTEMPT,scope:"report-code and synthetic fixtures only",release_approved:false},null,2)+"\n");'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: releaseproof-report-${{ github.sha }}
+          path: releaseproof-output/
+          retention-days: 35
+          if-no-files-found: error
