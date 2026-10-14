@@ -18,6 +18,10 @@ CLI envelopes require well-formed UTF-8 before JSON parsing. Malformed byte sequ
 
 After JSON parsing, every string value and object key is checked for unpaired UTF-16 surrogates, including nested objects and arrays and raw artifact documents. Lone high/low surrogates and broken pairs are rejected rather than replaced. Valid surrogate pairs, valid literal Unicode and literal text such as a backslash followed by `ud800` remain unchanged. The public object-based report API applies the same validation when callers parsed JSON separately.
 
+U+0000 is also rejected in string values and object keys, including direct report-renderer inputs, before any HTML is produced. Evidence records, advisory/finding IDs and accepted advisory IDs are rendered as separate escaped list items. Commas and line breaks inside an identifier remain inside that item; they are never treated as separators or used to rewrite the source evidence.
+
+Optional `target_count` is retained in each normalized finding row and displayed in the HTML's Target findings column. A missing field remains absent in JSON and displays `Not supplied`; a supplied zero remains `0` in both outputs. Supplied values must still be nonnegative safe integers no greater than that row's finding count.
+
 A pipeline-bound risk decision is active only while `reviewed_at < expires_at`. At the expiry instant and afterwards (`reviewed_at >= expires_at`), its status is `EXPIRED`. A missing pipeline binding remains `UNBOUND_PIPELINE`; it is never attributed to the reviewed execution.
 
 ## Evidence boundary
@@ -56,6 +60,6 @@ Each file replacement is atomic; the JSON/HTML pair is not a transaction. Both f
 
 ## Code QC
 
-The isolated GitHub branch runs `node --test releaseproof/report.test.mjs releaseproof/cli.test.mjs releaseproof/corrections.test.mjs releaseproof/output.test.mjs releaseproof/input-review.test.mjs releaseproof/unicode.test.mjs`. It retains all 207 existing tests and adds focused synthetic regressions for discussion 4276736113. No local or GitLab code-QC run is substituted for those GitHub results. A passing report-code check does not accept private artifact provenance or approve the full application release.
+The isolated GitHub branch runs `node --test releaseproof/report.test.mjs releaseproof/cli.test.mjs releaseproof/corrections.test.mjs releaseproof/output.test.mjs releaseproof/input-review.test.mjs releaseproof/unicode.test.mjs releaseproof/evidence-items.test.mjs`. It retains all 252 existing tests and adds focused synthetic regressions for review 5525472023. No local or GitLab code-QC run is substituted for those GitHub results. A passing report-code check does not accept private artifact provenance or approve the full application release.
 
 The branch's `vercel.json` disables automatic Git deployment. The GitHub workflow has contents-read permission, no deployment job, no provider credentials and no model invocation. It never runs the original Next.js build or changes the original application release.

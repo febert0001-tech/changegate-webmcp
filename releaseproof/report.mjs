@@ -62,6 +62,7 @@ const validateUnicode = (value, label) => {
   while (pending.length > 0) {
     const current = pending.pop();
     if (typeof current === 'string') {
+      requireEvidence(!current.includes('\u0000'), `${label}: null character`);
       requireEvidence(wellFormedUnicode(current), `${label}: unpaired Unicode surrogate`);
     } else if (current !== null && typeof current === 'object' && !seen.has(current)) {
       seen.add(current);
@@ -182,8 +183,9 @@ function summaryResult(value, expected) {
     requireEvidence(record(findings) && findings.status === 'KNOWN' && integer(findings.count), 'summary findings incomplete');
     const entries = strings(name.startsWith('dependencies_') ? findings.records : findings.ids, 'findings');
     requireEvidence(entries.length === findings.count, 'findings count mismatch');
-    if (findings.target_count !== undefined) requireEvidence(integer(findings.target_count) && findings.target_count <= findings.count, 'target findings disagree');
+    if (Object.hasOwn(findings, 'target_count')) requireEvidence(integer(findings.target_count) && findings.target_count <= findings.count, 'target findings disagree');
     const row = {name, execution: 'SUCCEEDED', coverage: 'COMPLETE', findings_count: findings.count, records: entries};
+    if (Object.hasOwn(findings, 'target_count')) row.target_count = findings.target_count;
     if (name.startsWith('dependencies_')) {
       const counts = findings.severity_counts;
       exactKeys(counts, [...SEVERITIES, 'total'], [], 'dependency severities');
@@ -289,14 +291,18 @@ export const escapeHtml = value => String(value).replace(/[&<>"']/g, character =
 
 export function renderHtml(report) {
   requireEvidence(record(report) && report.contract === REPORT_VERSION && report.human_release?.approved === false && report.deployment?.authorized === false, 'invalid review output');
+  validateUnicode(report, 'review output');
   const e = escapeHtml;
+  const evidenceList = values => values.length
+    ? `<ul class="evidence-list">${values.map(value => `<li><code class="evidence-text">${e(value)}</code></li>`).join('')}</ul>`
+    : '<span class="muted">None reported</span>';
   const cards = [['QC verdict', report.qc_verdict], ['Evidence consistency', report.consistency], ['Artifact provenance', report.provenance_status], ['Human release', report.human_release.status]];
   const jobs = report.jobs.map(job => `<tr><td>${e(job.name)}</td><td>${e(job.id)}</td><td>${e(job.status)}</td></tr>`).join('');
   const findings = report.findings.map(row => {
     const severities = row.severity_counts
       ? [...SEVERITIES, 'total'].map(key => `${key[0].toUpperCase() + key.slice(1)}: ${row.severity_counts[key]}`).join('; ')
       : 'Not applicable';
-    return `<tr><td>${e(row.name)}</td><td>${e(row.execution)}</td><td>${e(row.coverage)}</td><td>${e(row.findings_count)}</td><td>${e(row.severity_counts ? row.records.join(', ') || 'None reported' : 'Not applicable')}</td><td>${e((row.advisory_ids ?? row.records).join(', ') || 'None reported')}</td><td>${e(severities)}</td></tr>`;
+    return `<tr><td>${e(row.name)}</td><td>${e(row.execution)}</td><td>${e(row.coverage)}</td><td>${e(row.findings_count)}</td><td>${e(Object.hasOwn(row, 'target_count') ? row.target_count : 'Not supplied')}</td><td>${row.severity_counts ? evidenceList(row.records) : '<span class="muted">Not applicable</span>'}</td><td>${evidenceList(row.advisory_ids ?? row.records)}</td><td>${e(severities)}</td></tr>`;
   }).join('');
   const snapshots = report.audit_comparison.snapshots ??
     [report.audit_comparison.snapshot ?? null, report.audit_comparison.snapshot ?? null];
@@ -306,14 +312,14 @@ export function renderHtml(report) {
       : '<p class="muted">Snapshot identities not supplied.</p>')).join('');
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>ChangeGate · Release review</title>
-<style>body{margin:0;background:#f3f5f8;color:#182330;font:16px/1.55 system-ui,sans-serif}main{max-width:1080px;margin:auto;padding:40px 24px}h1{margin:0;font-size:34px;letter-spacing:-.8px}h2{font-size:20px;margin:28px 0 12px}.eyebrow{font-weight:700;color:#405a78;letter-spacing:1px;font-size:12px}.muted{color:#526174}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:24px 0}.card,section{background:white;border:1px solid #d9e0e8;border-radius:12px;padding:18px}.card small{display:block;color:#526174;margin-bottom:8px}.card strong{display:block;font-size:14px;overflow-wrap:anywhere}.warning{border-left:5px solid #b56112;padding:14px 18px;background:#fff5e7;border-radius:6px}.table{overflow:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:12px;border-bottom:1px solid #e2e7ed}code{font-size:13px;overflow-wrap:anywhere}pre{font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;margin:0}.note{white-space:pre-wrap}footer{margin-top:24px;font-size:12px;color:#526174}</style></head>
+<style>body{margin:0;background:#f3f5f8;color:#182330;font:16px/1.55 system-ui,sans-serif}main{max-width:1080px;margin:auto;padding:40px 24px}h1{margin:0;font-size:34px;letter-spacing:-.8px}h2{font-size:20px;margin:28px 0 12px}.eyebrow{font-weight:700;color:#405a78;letter-spacing:1px;font-size:12px}.muted{color:#526174}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:24px 0}.card,section{background:white;border:1px solid #d9e0e8;border-radius:12px;padding:18px}.card small{display:block;color:#526174;margin-bottom:8px}.card strong{display:block;font-size:14px;overflow-wrap:anywhere}.warning{border-left:5px solid #b56112;padding:14px 18px;background:#fff5e7;border-radius:6px}.table{overflow:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:12px;border-bottom:1px solid #e2e7ed}code{font-size:13px;overflow-wrap:anywhere}pre{font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;margin:0}.note{white-space:pre-wrap}footer{margin-top:24px;font-size:12px;color:#526174}.evidence-list{margin:0;padding-left:20px}.evidence-list li{margin:4px 0}.evidence-text{white-space:pre-wrap;overflow-wrap:anywhere}</style></head>
 <body><main><div class="eyebrow">CHANGEGATE RELEASEPROOF</div><h1>Release review</h1><p class="muted">Project ${e(report.expected.project)} · Pipeline ${e(report.expected.pipeline)}<br>Commit <code>${e(report.expected.sha)}</code> · Review time ${e(report.expected.reviewed_at)}</p>
 <div class="warning"><strong>Human release approval is pending.</strong> This report supplies evidence for review. It performs no deployment and grants no release authority.</div>
 <div class="cards">${cards.map(([label, value]) => `<div class="card"><small>${e(label)}</small><strong>${e(value)}</strong></div>`).join('')}</div>
 <h2>Required jobs</h2><section class="table"><table><thead><tr><th>Job</th><th>ID</th><th>Native status</th></tr></thead><tbody>${jobs}</tbody></table></section>
-<h2>Execution, coverage and findings</h2><section class="table"><table><thead><tr><th>Check</th><th>Execution</th><th>Coverage</th><th>Findings count</th><th>Affected dependency records</th><th>Advisory / finding IDs</th><th>Dependency severities</th></tr></thead><tbody>${findings}</tbody></table></section>
+<h2>Execution, coverage and findings</h2><section class="table"><table><thead><tr><th>Check</th><th>Execution</th><th>Coverage</th><th>Findings count</th><th>Target findings</th><th>Affected dependency records</th><th>Advisory / finding IDs</th><th>Dependency severities</th></tr></thead><tbody>${findings}</tbody></table></section>
 <h2>Audit comparability</h2><section><strong>${e(report.audit_comparison.status)}</strong><p>${e(report.audit_comparison.reason ?? 'Production findings are a subset under the declared comparable snapshots.')}</p><p class="muted">${e(report.audit_comparison.basis)}</p>${snapshotDetails}</section>
-<h2>Risk disposition</h2><section><strong>${e(report.owner_risk_disposition.status)}</strong>${report.owner_risk_disposition.scope ? `<dl><dt>Supplied decision</dt><dd>${e(report.owner_risk_disposition.supplied_status)}</dd><dt>Scope</dt><dd>${e(report.owner_risk_disposition.scope)}</dd><dt>Pipeline binding</dt><dd>${e(report.owner_risk_disposition.pipeline ?? 'Not supplied; decision is not attributed to this pipeline')}</dd><dt>Expiry (UTC)</dt><dd>${e(report.owner_risk_disposition.expires_at)}</dd><dt>Accepted advisory IDs</dt><dd>${e(report.owner_risk_disposition.advisory_ids.join(', '))}</dd></dl>` : ''}<p class="muted">Acceptance applies only to the displayed bounds. A recorded risk acceptance does not change the QC verdict or grant release approval.</p></section>
+<h2>Risk disposition</h2><section><strong>${e(report.owner_risk_disposition.status)}</strong>${report.owner_risk_disposition.scope ? `<dl><dt>Supplied decision</dt><dd>${e(report.owner_risk_disposition.supplied_status)}</dd><dt>Scope</dt><dd>${e(report.owner_risk_disposition.scope)}</dd><dt>Pipeline binding</dt><dd>${e(report.owner_risk_disposition.pipeline ?? 'Not supplied; decision is not attributed to this pipeline')}</dd><dt>Expiry (UTC)</dt><dd>${e(report.owner_risk_disposition.expires_at)}</dd><dt>Accepted advisory IDs</dt><dd>${evidenceList(report.owner_risk_disposition.advisory_ids)}</dd></dl>` : ''}<p class="muted">Acceptance applies only to the displayed bounds. A recorded risk acceptance does not change the QC verdict or grant release approval.</p></section>
 <h2>Historical unknowns</h2><section><ul>${report.historical_unknowns.map(unknown => `<li>${e(unknown)}</li>`).join('')}</ul></section>
 ${report.model_note ? `<h2>Historical model interpretation</h2><section><p class="muted">Session ${e(report.model_note.source.id)} · ${e(report.model_note.source.captured_at)} · Interpretation only</p><div class="note">${e(report.model_note.text)}</div></section>` : ''}
 <h2>Receipt and byte-integrity details</h2><section><p class="muted">${e(report.provenance_limit)}</p><pre>${e(canonicalJson({artifacts: report.artifacts, human_release: report.human_release, deployment: report.deployment}))}</pre></section>
