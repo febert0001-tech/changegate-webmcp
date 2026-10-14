@@ -7,6 +7,7 @@ export function fixture({sourceKind = 'synthetic-fixture', findings = true} = {}
   const count = findings ? 5 : 0;
   const scan = name => ({execution: {status: 'SUCCEEDED', job: expected.jobs[name], exit: 0}, coverage: {status: 'COMPLETE', issues: []}, findings: {status: 'KNOWN', count: 0, ids: []}});
   const audit = number => ({execution: {status: 'SUCCEEDED', job: expected.jobs['npm-dependency-audit'], exit: 0}, coverage: {status: 'COMPLETE', issues: []},
+    snapshot: {lockfile_sha256: 'd'.repeat(64), advisory_snapshot_sha256: 'e'.repeat(64)},
     findings: {status: 'KNOWN', count: number, records: Array.from({length: number}, (_, index) => `synthetic-package-${index + 1}`), advisory_ids: number ? ['GHSA-example-synthetic'] : [],
       severity_counts: {info: 0, low: 0, moderate: 0, high: number, critical: 0, total: number}}, command_exit: number ? 1 : 0});
   const summary = {project: expected.project, sha: expected.sha, pipeline: expected.pipeline,

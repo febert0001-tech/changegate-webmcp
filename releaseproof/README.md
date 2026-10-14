@@ -8,7 +8,7 @@ This standalone module produces deterministic JSON and an offline HTML review of
 node releaseproof/cli.mjs --expected trusted-expectation.json --packet evidence-packet.json --out review-output
 ```
 
-The expectation file comes from the human collector, separately from model text and evidence. It fixes the project, commit, pipeline, all five job IDs and explicit UTC review time. Optional `owner_disposition` records a bounded human risk decision for that exact source; this report does not authenticate the record. The packet carries native metadata, raw UTF-8 summary/exits strings and their byte-count/digest/provenance descriptors. See `fixtures.mjs` for a synthetic contract example.
+The expectation file comes from the human collector, separately from model text and evidence. It fixes the project, commit, pipeline, all five job IDs and explicit calendar-valid UTC review time. Optional `owner_disposition` records a bounded human risk decision; this report does not authenticate the record. A supplied `pipeline` must match the reviewed pipeline. A legacy decision without that binding is preserved as `UNBOUND_PIPELINE`, with its original supplied status, scope, expiry and advisory IDs; no pipeline is invented and it is not labelled acceptance of the current execution. See `fixtures.mjs` for a synthetic contract example.
 
 Outputs are `review.json` and `review.html`. Exit 0 means report generation succeeded; it does **not** mean the pipeline passed or release was approved. Invalid evidence returns exit 2 before creating outputs.
 
@@ -19,9 +19,13 @@ The input contract is `releaseproof-packet/v1`; trusted expectation is `releasep
 - Successful application and scanner/audit execution is required. Findings are separate from command execution. A full audit exit 1 with findings can be a valid completed audit.
 - A failed assessment and failed pipeline remain failed when complete evidence explains the findings. Zero findings require successful native assessment/pipeline records.
 - Raw-file SHA-256 and byte counts are checked. These establish integrity within the supplied packet, not provider authenticity. `native-artifact` is a collector-supplied provenance label; it is reported as `NATIVE_BYTES_DECLARED` and never as a signed attestation.
+- JSON input envelopes and raw artifacts reject duplicate object member names, including escaped aliases. QC summaries and their result/execution/coverage/findings/severity objects reject unexpected fields. Embedded job pipeline statuses must agree with the completed top-level pipeline receipt.
+- Full and production audit findings are compared only when both audit results supply matching `snapshot` objects with `lockfile_sha256` and `advisory_snapshot_sha256`. These declare the same underlying dependency lockfile and advisory snapshot; a shared audit job ID alone does not establish comparability. Under that explicit assumption, production records and advisory IDs must be subsets, and counts and each severity total cannot exceed the full audit. The identities are collector declarations, not provider authentication. Missing identities produce `NOT_ESTABLISHED`; different identities produce `DIFFERENT_SNAPSHOTS`; both yield `INCOMPLETE_AUDIT_COMPARABILITY` rather than `PASSED` consistency. Do not populate these identities without evidence. Synthetic fixtures declare only synthetic snapshots.
 - Trace-derived and synthetic inputs remain `INCOMPLETE_NATIVE_ARTIFACT_PROVENANCE`. Do not relabel printed log JSON as downloaded native artifact bytes.
 - Both historical unknowns are retained. The report cannot approve G0/G1, rewrite the historical audit waiver, grant release authority, execute a transaction or deploy anything.
 - Model notes are historical interpretation only. Extra authority fields are rejected. Text is escaped in HTML; the page has no scripts, external resources, forms or commands.
+- Historical model capture time cannot postdate the explicit review time. Risk scope, expiry, accepted advisory IDs and pipeline binding are visible in HTML as well as JSON. Missing bindings do not revoke or expand the original human decision.
+- CLI reads remain bounded to 32,768 expectation bytes and 1,048,576 packet bytes, with at most one extra byte to detect oversize. File identities are checked before writes and again on opened output descriptors before truncation, protecting inputs from symlink and hard-link overwrite aliases.
 - Private evidence packets, owner records, private source and credentials stay outside this public review branch. The example and GitHub test artifacts contain synthetic data only.
 
 ## Synthetic demonstration
@@ -35,6 +39,6 @@ Open `releaseproof-output/review.html`. It shows five synthetic High records, su
 
 ## Code QC
 
-The isolated GitHub branch runs `node --test releaseproof/report.test.mjs`. Its checks cover identity binding, malformed/missing data, failed/skipped execution, tampered raw bytes, inconsistent findings, retained unknowns, forged approvals, deterministic output, escaped HTML and CLI behavior. No local or GitLab code-QC run is substituted for those GitHub results. A passing report-code check does not accept private artifact provenance or approve the full application release.
+The isolated GitHub branch runs `node --test releaseproof/report.test.mjs releaseproof/cli.test.mjs releaseproof/corrections.test.mjs`. It retains the existing 60 tests and adds focused synthetic regressions for review 5524518701. Existing risk test fixtures now explicitly bind their synthetic pipeline; existing audit fixtures explicitly declare their synthetic comparable snapshots. No local or GitLab code-QC run is substituted for those GitHub results. A passing report-code check does not accept private artifact provenance or approve the full application release.
 
 The branch's `vercel.json` disables automatic Git deployment. The GitHub workflow has contents-read permission, no deployment job, no provider credentials and no model invocation. It never runs the original Next.js build or changes the original application release.

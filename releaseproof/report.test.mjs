@@ -111,7 +111,7 @@ test('declared native bytes do not claim provider authentication', () => {
 });
 test('recorded risk acceptance never rewrites native failure or authorizes release', () => {
   const {expected, packet} = fixture();
-  expected.owner_disposition = {status: 'ACCEPTED', scope: 'contest-only', project: expected.project, sha: expected.sha, expires_at: '2026-11-16T23:59:59Z', advisory_ids: ['GHSA-example-synthetic']};
+  expected.owner_disposition = {status: 'ACCEPTED', scope: 'contest-only', project: expected.project, sha: expected.sha, pipeline: expected.pipeline, expires_at: '2026-11-16T23:59:59Z', advisory_ids: ['GHSA-example-synthetic']};
   const report = generateReview(packet, expected);
   assert.equal(report.owner_risk_disposition.status, 'RECORDED_ACCEPTANCE');
   assert.equal(report.owner_risk_disposition.grants_release, false);
@@ -122,7 +122,7 @@ test('recorded risk acceptance never rewrites native failure or authorizes relea
 });
 test('forged authority fields in a disposition are rejected', () => {
   const {expected, packet} = fixture();
-  expected.owner_disposition = {status: 'ACCEPTED', scope: 'contest-only', project: expected.project, sha: expected.sha, expires_at: '2026-11-16T23:59:59Z', advisory_ids: ['GHSA-example-synthetic'], approved: true};
+  expected.owner_disposition = {status: 'ACCEPTED', scope: 'contest-only', project: expected.project, sha: expected.sha, pipeline: expected.pipeline, expires_at: '2026-11-16T23:59:59Z', advisory_ids: ['GHSA-example-synthetic'], approved: true};
   assert.throws(() => generateReview(packet, expected), /unexpected field/);
 });
 test('untrusted HTML and historical model interpretation render inert', () => {

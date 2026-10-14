@@ -41,12 +41,43 @@ const strings = (value, label) => {
 };
 const timestamp = (value, label) => {
   requireEvidence(typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value) && Number.isFinite(Date.parse(value)), `${label}: invalid UTC timestamp`);
+  const normalized = value.replace(/(?:\.(\d{1,3}))?Z$/, (_, fraction = '') => '.' + fraction.padEnd(3, '0') + 'Z');
+  requireEvidence(new Date(value).toISOString() === normalized, `${label}: invalid UTC timestamp`);
   return value;
 };
+// Native parsing checks the grammar; this iterative token walk rejects
+// ambiguous object members, including names encoded with JSON escapes.
+export function parseJson(raw, label) {
+  try {
+    const value = JSON.parse(raw);
+    const containers = [];
+    const tokens = /"(?:[^"\\]|\\[\s\S])*"|[{}\[\]]/g;
+    for (const match of raw.matchAll(tokens)) {
+      const token = match[0];
+      if (token === '{') containers.push(new Set());
+      else if (token === '[') containers.push(null);
+      else if (token === '}' || token === ']') containers.pop();
+      else {
+        let next = match.index + token.length;
+        while (next < raw.length && /[ \t\r\n]/.test(raw[next])) next++;
+        if (raw[next] === ':') {
+          const name = JSON.parse(token);
+          const names = containers.at(-1);
+          requireEvidence(!names.has(name), `${label}: duplicate JSON member`);
+          names.add(name);
+        }
+      }
+    }
+    return value;
+  } catch (error) {
+    if (error instanceof EvidenceError) throw error;
+    throw new EvidenceError(`${label}: malformed JSON`);
+  }
+}
 const readJson = (raw, label) => {
   requireEvidence(typeof raw === 'string' && Buffer.byteLength(raw, 'utf8') <= 262_144, `${label}: invalid or oversized bytes`);
   try {
-    const value = JSON.parse(raw);
+    const value = parseJson(raw, label);
     requireEvidence(record(value), `${label}: expected an object`);
     return value;
   } catch (error) {
@@ -88,6 +119,7 @@ function nativeJobs(native, expected) {
     requireEvidence(id(job.id, 'native job') === expected.jobs[name], 'native job ID mismatch');
     requireEvidence(record(job.commit) && sha(job.commit.id, 'job commit') === expected.sha, 'native job commit mismatch');
     requireEvidence(record(job.pipeline) && id(job.pipeline.id, 'job pipeline') === expected.pipeline && id(job.pipeline.project_id, 'job project') === expected.project && sha(job.pipeline.sha, 'job pipeline commit') === expected.sha, 'native job pipeline mismatch');
+    requireEvidence(job.pipeline.status === pipeline.status, 'native job pipeline status contradicts pipeline receipt');
     requireEvidence(['success', 'failed'].includes(job.status), 'native job is missing, skipped or unfinished');
     requireEvidence(name === 'qc-assessment' || job.status === 'success', 'required command or scanner execution failed');
     return {name, id: expected.jobs[name], status: job.status};
@@ -107,14 +139,20 @@ function artifact(raw, provenance, expected, jobName, path) {
 }
 
 function summaryResult(value, expected) {
+  exactKeys(value, ['project', 'sha', 'pipeline', 'results', 'coverage_complete', 'findings_present', 'status', 'historical_audit_waiver', 'historical_unknowns', 'g0', 'g1'], [], 'QC summary');
   requireEvidence(id(value.project, 'summary project') === expected.project && sha(value.sha, 'summary commit') === expected.sha && id(value.pipeline, 'summary pipeline') === expected.pipeline, 'summary identity mismatch');
   exactKeys(value.results, ['sast', 'secrets', 'dependencies_full', 'dependencies_production'], [], 'summary results');
   const mapping = {sast: 'semgrep-sast', secrets: 'secret_detection', dependencies_full: 'npm-dependency-audit', dependencies_production: 'npm-dependency-audit'};
   const results = Object.entries(mapping).map(([name, jobName]) => {
     const result = value.results[name];
+    const dependency = name.startsWith('dependencies_');
+    exactKeys(result, ['execution', 'coverage', 'findings', ...(dependency ? ['command_exit'] : [])], dependency ? ['snapshot'] : [], 'summary result');
+    exactKeys(result.execution, ['status', 'job', 'exit'], [], 'summary execution');
+    exactKeys(result.coverage, ['status', 'issues'], [], 'summary coverage');
     requireEvidence(record(result) && record(result.execution) && result.execution.status === 'SUCCEEDED' && id(result.execution.job, 'scan job') === expected.jobs[jobName] && result.execution.exit === 0, 'summary execution mismatch or failure');
     requireEvidence(record(result.coverage) && result.coverage.status === 'COMPLETE' && Array.isArray(result.coverage.issues) && result.coverage.issues.length === 0, 'summary coverage incomplete');
     const findings = result.findings;
+    exactKeys(findings, ['status', 'count', ...(dependency ? ['records', 'advisory_ids', 'severity_counts'] : ['ids'])], ['target_count'], 'summary findings');
     requireEvidence(record(findings) && findings.status === 'KNOWN' && integer(findings.count), 'summary findings incomplete');
     const entries = strings(name.startsWith('dependencies_') ? findings.records : findings.ids, 'findings');
     requireEvidence(entries.length === findings.count, 'findings count mismatch');
@@ -122,6 +160,7 @@ function summaryResult(value, expected) {
     const row = {name, execution: 'SUCCEEDED', coverage: 'COMPLETE', findings_count: findings.count, records: entries};
     if (name.startsWith('dependencies_')) {
       const counts = findings.severity_counts;
+      exactKeys(counts, [...SEVERITIES, 'total'], [], 'dependency severities');
       requireEvidence(record(counts) && [...SEVERITIES, 'total'].every(key => integer(counts[key])) && counts.total === findings.count && SEVERITIES.reduce((total, key) => total + counts[key], 0) === counts.total, 'dependency severity counts disagree');
       requireEvidence(result.command_exit === (findings.count > 0 ? 1 : 0), 'audit command exit disagrees with findings');
       row.command_exit = result.command_exit;
@@ -136,29 +175,57 @@ function summaryResult(value, expected) {
   requireEvidence(value.g0 === 'OPEN / NOT APPROVED' && value.g1 === 'CLOSED', 'summary cannot grant a gate approval');
   const unknowns = strings(value.historical_unknowns, 'historical unknowns');
   requireEvidence(unknowns.includes('diagnostic_artifact_capture_time') && unknowns.includes('lifecycle_approval_configuration_comparison'), 'historical unknowns were removed');
-  return {results, findings_present: findingsPresent, historical_unknowns: unknowns};
+  return {results, findings_present: findingsPresent, historical_unknowns: unknowns,
+    audit_comparison: compareAudits(value.results, results)};
+}
+
+function compareAudits(supplied, rows) {
+  const snapshots = ['dependencies_full', 'dependencies_production'].map(name => {
+    const value = supplied[name].snapshot;
+    if (value === undefined) return null;
+    exactKeys(value, ['lockfile_sha256', 'advisory_snapshot_sha256'], [], 'audit snapshot');
+    requireEvidence(Object.values(value).every(digest => typeof digest === 'string' && /^[a-f0-9]{64}$/.test(digest)), 'audit snapshot: invalid digest');
+    return value;
+  });
+  const declaration = 'Collector-supplied lockfile and advisory snapshot identities; not independently authenticated by this report.';
+  if (snapshots.some(value => value === null)) return {status: 'NOT_ESTABLISHED', basis: declaration, reason: 'Both audit snapshot identities are required to establish comparability.'};
+  if (snapshots[0].lockfile_sha256 !== snapshots[1].lockfile_sha256 || snapshots[0].advisory_snapshot_sha256 !== snapshots[1].advisory_snapshot_sha256) {
+    return {status: 'DIFFERENT_SNAPSHOTS', basis: declaration, reason: 'Audit snapshots differ; no subset relationship is inferred.', snapshots};
+  }
+  const full = rows.find(row => row.name === 'dependencies_full');
+  const production = rows.find(row => row.name === 'dependencies_production');
+  requireEvidence(production.records.every(value => full.records.includes(value)) &&
+    production.advisory_ids.every(value => full.advisory_ids.includes(value)) &&
+    production.findings_count <= full.findings_count &&
+    [...SEVERITIES, 'total'].every(key => production.severity_counts[key] <= full.severity_counts[key]), 'production audit findings contradict comparable full audit');
+  return {status: 'SUBSET_CONFIRMED', basis: declaration, snapshot: snapshots[0]};
 }
 
 function disposition(value, expected, findings) {
   if (value === undefined) return {status: 'NOT_SUPPLIED', grants_release: false};
-  exactKeys(value, ['status', 'scope', 'project', 'sha', 'expires_at', 'advisory_ids'], [], 'owner disposition');
+  exactKeys(value, ['status', 'scope', 'project', 'sha', 'expires_at', 'advisory_ids'], ['pipeline'], 'owner disposition');
   requireEvidence(value.status === 'ACCEPTED' && value.scope === 'contest-only', 'owner disposition: unsupported scope');
   requireEvidence(id(value.project, 'disposition project') === expected.project && sha(value.sha, 'disposition commit') === expected.sha, 'owner disposition identity mismatch');
   const expires = timestamp(value.expires_at, 'disposition expiry');
   const advisories = strings(value.advisory_ids, 'disposition advisories');
   const observed = [...new Set(findings.flatMap(row => row.advisory_ids ?? []))];
   requireEvidence(advisories.length > 0 && advisories.every(advisory => observed.includes(advisory)), 'owner disposition advisory mismatch');
-  return {status: Date.parse(expires) >= Date.parse(expected.reviewed_at) ? 'RECORDED_ACCEPTANCE' : 'EXPIRED', scope: 'contest-only', expires_at: expires, advisory_ids: advisories, grants_release: false,
+  const pipeline = value.pipeline === undefined ? null : id(value.pipeline, 'disposition pipeline');
+  requireEvidence(pipeline === null || pipeline === expected.pipeline, 'owner disposition pipeline mismatch');
+  return {status: pipeline === null ? 'UNBOUND_PIPELINE' : Date.parse(expires) >= Date.parse(expected.reviewed_at) ? 'RECORDED_ACCEPTANCE' : 'EXPIRED',
+    supplied_status: value.status, project: expected.project, sha: expected.sha, pipeline, scope: value.scope, expires_at: expires, advisory_ids: advisories, grants_release: false,
     authenticity: 'HUMAN_SUPPLIED_RECORD_NOT_AUTHENTICATED_BY_THIS_REPORT'};
 }
 
-function modelNote(value) {
+function modelNote(value, reviewedAt) {
   if (value === undefined) return null;
   exactKeys(value, ['text', 'source'], [], 'model note');
   exactKeys(value.source, ['kind', 'id', 'captured_at'], ['input_sha'], 'model provenance');
   requireEvidence(value.source.kind === 'historical-interpretation', 'model note cannot supply current approval');
+  const capturedAt = timestamp(value.source.captured_at, 'model capture time');
+  requireEvidence(Date.parse(capturedAt) <= Date.parse(reviewedAt), 'model capture time postdates review');
   return {text: text(value.text, 'model text'), source: {kind: 'historical-interpretation', id: id(value.source.id, 'model session'),
-    captured_at: timestamp(value.source.captured_at, 'model capture time'), input_sha: value.source.input_sha === undefined ? null : sha(value.source.input_sha, 'model input commit')}, authority: 'INTERPRETATION_ONLY'};
+    captured_at: capturedAt, input_sha: value.source.input_sha === undefined ? null : sha(value.source.input_sha, 'model input commit')}, authority: 'INTERPRETATION_ONLY'};
 }
 
 export function generateReview(packet, trustedExpectation) {
@@ -177,14 +244,15 @@ export function generateReview(packet, trustedExpectation) {
   const receipts = [summary.receipt, validation.receipt];
   const hasNativeBytes = receipts.every(receipt => receipt.source_kind === 'native-artifact');
   return {contract: REPORT_VERSION, expected: {project: expected.project, sha: expected.sha, pipeline: expected.pipeline, reviewed_at: expected.reviewed_at},
-    consistency: 'PASSED', provenance_status: hasNativeBytes ? 'NATIVE_BYTES_DECLARED' : 'INCOMPLETE_NATIVE_ARTIFACT_PROVENANCE',
+    consistency: result.audit_comparison.status === 'SUBSET_CONFIRMED' ? 'PASSED' : 'INCOMPLETE_AUDIT_COMPARABILITY',
+    audit_comparison: result.audit_comparison, provenance_status: hasNativeBytes ? 'NATIVE_BYTES_DECLARED' : 'INCOMPLETE_NATIVE_ARTIFACT_PROVENANCE',
     provenance_limit: 'Byte integrity and packet consistency only; this report does not authenticate the provider or the collecting actor.',
     command_execution: {status: 'SUCCEEDED', application_exits: validation.data}, jobs: native.jobs, scan_coverage: 'COMPLETE',
     findings: result.results, qc_verdict: nativeVerdict === 'failed' ? 'FAILED_WITH_FINDINGS' : 'NO_FINDINGS_IN_SUPPLIED_COVERAGE',
     native_pipeline_status: native.pipeline_status, artifacts: receipts, historical_unknowns: result.historical_unknowns,
     owner_risk_disposition: disposition(expected.owner_disposition, expected, result.results),
     human_release: {status: 'PENDING', approved: false, authority: 'SEPARATE_HUMAN_DECISION_REQUIRED'},
-    deployment: {authorized: false, action: 'NONE'}, model_note: modelNote(packet.model)};
+    deployment: {authorized: false, action: 'NONE'}, model_note: modelNote(packet.model, expected.reviewed_at)};
 }
 
 export const escapeHtml = value => String(value).replace(/[&<>"']/g, character => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[character]));
@@ -203,7 +271,8 @@ export function renderHtml(report) {
 <div class="cards">${cards.map(([label, value]) => `<div class="card"><small>${e(label)}</small><strong>${e(value)}</strong></div>`).join('')}</div>
 <h2>Required jobs</h2><section class="table"><table><thead><tr><th>Job</th><th>ID</th><th>Native status</th></tr></thead><tbody>${jobs}</tbody></table></section>
 <h2>Execution, coverage and findings</h2><section class="table"><table><thead><tr><th>Check</th><th>Execution</th><th>Coverage</th><th>Records</th><th>Advisory / finding IDs</th></tr></thead><tbody>${findings}</tbody></table></section>
-<h2>Risk disposition</h2><section><strong>${e(report.owner_risk_disposition.status)}</strong><p class="muted">A recorded risk acceptance does not change the QC verdict or grant release approval.</p></section>
+<h2>Audit comparability</h2><section><strong>${e(report.audit_comparison.status)}</strong><p>${e(report.audit_comparison.reason ?? 'Production findings are a subset under the declared comparable snapshots.')}</p><p class="muted">${e(report.audit_comparison.basis)}</p></section>
+<h2>Risk disposition</h2><section><strong>${e(report.owner_risk_disposition.status)}</strong>${report.owner_risk_disposition.scope ? `<dl><dt>Supplied decision</dt><dd>${e(report.owner_risk_disposition.supplied_status)}</dd><dt>Scope</dt><dd>${e(report.owner_risk_disposition.scope)}</dd><dt>Pipeline binding</dt><dd>${e(report.owner_risk_disposition.pipeline ?? 'Not supplied; decision is not attributed to this pipeline')}</dd><dt>Expiry (UTC)</dt><dd>${e(report.owner_risk_disposition.expires_at)}</dd><dt>Accepted advisory IDs</dt><dd>${e(report.owner_risk_disposition.advisory_ids.join(', '))}</dd></dl>` : ''}<p class="muted">Acceptance applies only to the displayed bounds. A recorded risk acceptance does not change the QC verdict or grant release approval.</p></section>
 <h2>Historical unknowns</h2><section><ul>${report.historical_unknowns.map(unknown => `<li>${e(unknown)}</li>`).join('')}</ul></section>
 ${report.model_note ? `<h2>Historical model interpretation</h2><section><p class="muted">Session ${e(report.model_note.source.id)} · ${e(report.model_note.source.captured_at)} · Interpretation only</p><div class="note">${e(report.model_note.text)}</div></section>` : ''}
 <h2>Receipt and byte-integrity details</h2><section><p class="muted">${e(report.provenance_limit)}</p><pre>${e(canonicalJson({artifacts: report.artifacts, human_release: report.human_release, deployment: report.deployment}))}</pre></section>
