@@ -14,6 +14,10 @@ Outputs are `review.json` and `review.html`. Exit 0 means report generation succ
 
 The input contract is `releaseproof-packet/v1`; trusted expectation is `releaseproof-expectation/v1`; output is `releaseproof-review/v1`. Use explicit `reviewed_at`, not an implicit clock, so identical inputs produce identical bytes.
 
+CLI envelopes require well-formed UTF-8 before JSON parsing. Malformed byte sequences are rejected rather than replaced with U+FFFD; valid Unicode is preserved without normalization. Evidence records and advisory IDs must contain a non-whitespace character. Validation never trims or rewrites accepted evidence strings.
+
+A pipeline-bound risk decision is active only while `reviewed_at < expires_at`. At the expiry instant and afterwards (`reviewed_at >= expires_at`), its status is `EXPIRED`. A missing pipeline binding remains `UNBOUND_PIPELINE`; it is never attributed to the reviewed execution.
+
 ## Evidence boundary
 
 - Successful application and scanner/audit execution is required. Findings are separate from command execution. A full audit exit 1 with findings can be a valid completed audit.
@@ -21,6 +25,7 @@ The input contract is `releaseproof-packet/v1`; trusted expectation is `releasep
 - Raw-file SHA-256 and byte counts are checked. These establish integrity within the supplied packet, not provider authenticity. `native-artifact` is a collector-supplied provenance label; it is reported as `NATIVE_BYTES_DECLARED` and never as a signed attestation.
 - JSON input envelopes and raw artifacts reject duplicate object member names, including escaped aliases. QC summaries and their result/execution/coverage/findings/severity objects reject unexpected fields. Embedded job pipeline statuses must agree with the completed top-level pipeline receipt.
 - Full and production audit findings are compared only when both audit results supply matching `snapshot` objects with `lockfile_sha256` and `advisory_snapshot_sha256`. These declare the same underlying dependency lockfile and advisory snapshot; a shared audit job ID alone does not establish comparability. Under that explicit assumption, production records and advisory IDs must be subsets, and counts and each severity total cannot exceed the full audit. The identities are collector declarations, not provider authentication. Missing identities produce `NOT_ESTABLISHED`; different identities produce `DIFFERENT_SNAPSHOTS`; both yield `INCOMPLETE_AUDIT_COMPARABILITY` rather than `PASSED` consistency. Do not populate these identities without evidence. Synthetic fixtures declare only synthetic snapshots.
+- The HTML audit-comparability section displays escaped lockfile and advisory-snapshot hashes for both audits. Matching declarations appear under both audit names; different declarations remain separate. A supplied identity remains visible when the other audit is unknown, and missing identities are labelled as not supplied without changing the incomplete comparability state.
 - Trace-derived and synthetic inputs remain `INCOMPLETE_NATIVE_ARTIFACT_PROVENANCE`. Do not relabel printed log JSON as downloaded native artifact bytes.
 - Both historical unknowns are retained. The report cannot approve G0/G1, rewrite the historical audit waiver, grant release authority, execute a transaction or deploy anything.
 - Model notes are historical interpretation only. Extra authority fields are rejected. Text is escaped in HTML; the page has no scripts, external resources, forms or commands.
@@ -49,6 +54,6 @@ Each file replacement is atomic; the JSON/HTML pair is not a transaction. Both f
 
 ## Code QC
 
-The isolated GitHub branch runs `node --test releaseproof/report.test.mjs releaseproof/cli.test.mjs releaseproof/corrections.test.mjs releaseproof/output.test.mjs`. It retains all 150 existing tests and adds focused synthetic output-publication regressions for discussion 4276399088. No local or GitLab code-QC run is substituted for those GitHub results. A passing report-code check does not accept private artifact provenance or approve the full application release.
+The isolated GitHub branch runs `node --test releaseproof/report.test.mjs releaseproof/cli.test.mjs releaseproof/corrections.test.mjs releaseproof/output.test.mjs releaseproof/input-review.test.mjs`. It retains all 164 existing tests and adds focused synthetic regressions for review 5525084285. No local or GitLab code-QC run is substituted for those GitHub results. A passing report-code check does not accept private artifact provenance or approve the full application release.
 
 The branch's `vercel.json` disables automatic Git deployment. The GitHub workflow has contents-read permission, no deployment job, no provider credentials and no model invocation. It never runs the original Next.js build or changes the original application release.

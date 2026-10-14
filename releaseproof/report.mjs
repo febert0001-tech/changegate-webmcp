@@ -36,6 +36,7 @@ const text = (value, label, max = MAX_TEXT) => {
 };
 const strings = (value, label) => {
   requireEvidence(Array.isArray(value) && value.length <= 256 && value.every(item => typeof item === 'string' && item.length <= 256), `${label}: invalid string list`);
+  requireEvidence(value.every(item => item.trim().length > 0), `${label}: blank entry`);
   requireEvidence(new Set(value).size === value.length, `${label}: duplicate values`);
   return [...value];
 };
@@ -189,7 +190,7 @@ function compareAudits(supplied, rows) {
     return value;
   });
   const declaration = 'Collector-supplied lockfile and advisory snapshot identities; not independently authenticated by this report.';
-  if (snapshots.some(value => value === null)) return {status: 'NOT_ESTABLISHED', basis: declaration, reason: 'Both audit snapshot identities are required to establish comparability.'};
+  if (snapshots.some(value => value === null)) return {status: 'NOT_ESTABLISHED', basis: declaration, reason: 'Both audit snapshot identities are required to establish comparability.', snapshots};
   if (snapshots[0].lockfile_sha256 !== snapshots[1].lockfile_sha256 || snapshots[0].advisory_snapshot_sha256 !== snapshots[1].advisory_snapshot_sha256) {
     return {status: 'DIFFERENT_SNAPSHOTS', basis: declaration, reason: 'Audit snapshots differ; no subset relationship is inferred.', snapshots};
   }
@@ -213,7 +214,7 @@ function disposition(value, expected, findings) {
   requireEvidence(advisories.length > 0 && advisories.every(advisory => observed.includes(advisory)), 'owner disposition advisory mismatch');
   const pipeline = value.pipeline === undefined ? null : id(value.pipeline, 'disposition pipeline');
   requireEvidence(pipeline === null || pipeline === expected.pipeline, 'owner disposition pipeline mismatch');
-  return {status: pipeline === null ? 'UNBOUND_PIPELINE' : Date.parse(expires) >= Date.parse(expected.reviewed_at) ? 'RECORDED_ACCEPTANCE' : 'EXPIRED',
+  return {status: pipeline === null ? 'UNBOUND_PIPELINE' : Date.parse(expires) > Date.parse(expected.reviewed_at) ? 'RECORDED_ACCEPTANCE' : 'EXPIRED',
     supplied_status: value.status, project: expected.project, sha: expected.sha, pipeline, scope: value.scope, expires_at: expires, advisory_ids: advisories, grants_release: false,
     authenticity: 'HUMAN_SUPPLIED_RECORD_NOT_AUTHENTICATED_BY_THIS_REPORT'};
 }
@@ -269,6 +270,12 @@ export function renderHtml(report) {
       : 'Not applicable';
     return `<tr><td>${e(row.name)}</td><td>${e(row.execution)}</td><td>${e(row.coverage)}</td><td>${e(row.findings_count)}</td><td>${e(row.severity_counts ? row.records.join(', ') || 'None reported' : 'Not applicable')}</td><td>${e((row.advisory_ids ?? row.records).join(', ') || 'None reported')}</td><td>${e(severities)}</td></tr>`;
   }).join('');
+  const snapshots = report.audit_comparison.snapshots ??
+    [report.audit_comparison.snapshot ?? null, report.audit_comparison.snapshot ?? null];
+  const snapshotDetails = snapshots.map((snapshot, index) =>
+    `<h3>${e(['dependencies_full', 'dependencies_production'][index])}</h3>` +
+    (snapshot ? `<dl><dt>Lockfile SHA-256</dt><dd><code>${e(snapshot.lockfile_sha256)}</code></dd><dt>Advisory snapshot SHA-256</dt><dd><code>${e(snapshot.advisory_snapshot_sha256)}</code></dd></dl>`
+      : '<p class="muted">Snapshot identities not supplied.</p>')).join('');
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>ChangeGate · Release review</title>
 <style>body{margin:0;background:#f3f5f8;color:#182330;font:16px/1.55 system-ui,sans-serif}main{max-width:1080px;margin:auto;padding:40px 24px}h1{margin:0;font-size:34px;letter-spacing:-.8px}h2{font-size:20px;margin:28px 0 12px}.eyebrow{font-weight:700;color:#405a78;letter-spacing:1px;font-size:12px}.muted{color:#526174}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:24px 0}.card,section{background:white;border:1px solid #d9e0e8;border-radius:12px;padding:18px}.card small{display:block;color:#526174;margin-bottom:8px}.card strong{display:block;font-size:14px;overflow-wrap:anywhere}.warning{border-left:5px solid #b56112;padding:14px 18px;background:#fff5e7;border-radius:6px}.table{overflow:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:12px;border-bottom:1px solid #e2e7ed}code{font-size:13px;overflow-wrap:anywhere}pre{font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;margin:0}.note{white-space:pre-wrap}footer{margin-top:24px;font-size:12px;color:#526174}</style></head>
@@ -277,7 +284,7 @@ export function renderHtml(report) {
 <div class="cards">${cards.map(([label, value]) => `<div class="card"><small>${e(label)}</small><strong>${e(value)}</strong></div>`).join('')}</div>
 <h2>Required jobs</h2><section class="table"><table><thead><tr><th>Job</th><th>ID</th><th>Native status</th></tr></thead><tbody>${jobs}</tbody></table></section>
 <h2>Execution, coverage and findings</h2><section class="table"><table><thead><tr><th>Check</th><th>Execution</th><th>Coverage</th><th>Findings count</th><th>Affected dependency records</th><th>Advisory / finding IDs</th><th>Dependency severities</th></tr></thead><tbody>${findings}</tbody></table></section>
-<h2>Audit comparability</h2><section><strong>${e(report.audit_comparison.status)}</strong><p>${e(report.audit_comparison.reason ?? 'Production findings are a subset under the declared comparable snapshots.')}</p><p class="muted">${e(report.audit_comparison.basis)}</p></section>
+<h2>Audit comparability</h2><section><strong>${e(report.audit_comparison.status)}</strong><p>${e(report.audit_comparison.reason ?? 'Production findings are a subset under the declared comparable snapshots.')}</p><p class="muted">${e(report.audit_comparison.basis)}</p>${snapshotDetails}</section>
 <h2>Risk disposition</h2><section><strong>${e(report.owner_risk_disposition.status)}</strong>${report.owner_risk_disposition.scope ? `<dl><dt>Supplied decision</dt><dd>${e(report.owner_risk_disposition.supplied_status)}</dd><dt>Scope</dt><dd>${e(report.owner_risk_disposition.scope)}</dd><dt>Pipeline binding</dt><dd>${e(report.owner_risk_disposition.pipeline ?? 'Not supplied; decision is not attributed to this pipeline')}</dd><dt>Expiry (UTC)</dt><dd>${e(report.owner_risk_disposition.expires_at)}</dd><dt>Accepted advisory IDs</dt><dd>${e(report.owner_risk_disposition.advisory_ids.join(', '))}</dd></dl>` : ''}<p class="muted">Acceptance applies only to the displayed bounds. A recorded risk acceptance does not change the QC verdict or grant release approval.</p></section>
 <h2>Historical unknowns</h2><section><ul>${report.historical_unknowns.map(unknown => `<li>${e(unknown)}</li>`).join('')}</ul></section>
 ${report.model_note ? `<h2>Historical model interpretation</h2><section><p class="muted">Session ${e(report.model_note.source.id)} · ${e(report.model_note.source.captured_at)} · Interpretation only</p><div class="note">${e(report.model_note.text)}</div></section>` : ''}

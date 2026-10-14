@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
+import {TextDecoder} from 'node:util';
 import {generateReview, canonicalJson, renderHtml, EvidenceError, parseJson} from './report.mjs';
 
 const usage = 'Usage: node releaseproof/cli.mjs --expected trusted-expectation.json --packet evidence-packet.json --out review-output';
@@ -32,7 +33,13 @@ try {
         fs.closeSync(descriptor);
       }
       if (length > maxBytes) throw new EvidenceError(`${label}: input too large`);
-      return {value: parseJson(bytes.subarray(0, length).toString('utf8'), label), identity};
+      let decoded;
+      try {
+        decoded = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes.subarray(0, length));
+      } catch {
+        throw new EvidenceError(`${label}: invalid UTF-8`);
+      }
+      return {value: parseJson(decoded, label), identity};
     };
     const expectedInput = read(options.get('--expected'), 32_768, 'expectation');
     const packetInput = read(options.get('--packet'), 1_048_576, 'packet');
