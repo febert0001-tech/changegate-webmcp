@@ -306,3 +306,96 @@ test('CLI detects input alias through a symlinked parent directory', () => {
     assert.equal(result.stderr, 'output must not overwrite an input\n');
   });
 });
+
+for (const alias of ['hard-link', 'html-symlink', 'json-symlink', 'two-symlinks']) {
+  test('CLI rejects aliased output files before truncation: ' + alias, () => {
+    const original = 'synthetic pre-existing output bytes\n';
+    cliCase(({directory, output}) => {
+      fs.mkdirSync(output);
+      const json = path.join(output, 'review.json');
+      const html = path.join(output, 'review.html');
+      if (alias === 'hard-link') {
+        fs.writeFileSync(json, original);
+        fs.linkSync(json, html);
+      } else if (alias === 'html-symlink') {
+        fs.writeFileSync(json, original);
+        fs.symlinkSync(json, html);
+      } else if (alias === 'json-symlink') {
+        fs.writeFileSync(html, original);
+        fs.symlinkSync(html, json);
+      } else {
+        const shared = path.join(directory, 'synthetic-shared-output');
+        fs.writeFileSync(shared, original);
+        fs.symlinkSync(shared, json);
+        fs.symlinkSync(shared, html);
+      }
+    }, ({result, output}) => {
+      assert.equal(result.status, 2);
+      assert.equal(result.stderr, 'output files must be distinct\n');
+      assert.equal(result.stdout, '');
+      for (const name of ['review.json', 'review.html']) {
+        assert.equal(fs.readFileSync(path.join(output, name), 'utf8'), original, 'neither destination may be truncated');
+      }
+    });
+  });
+}
+
+const dependencyHtmlRow = (html, name) => {
+  const match = html.match(new RegExp('<tr><td>' + name + '</td>.*?</tr>'));
+  assert.ok(match, 'dependency audit row must be visible');
+  return match[0];
+};
+test('HTML displays all dependency severity counts and affected records', () => {
+  const {expected, packet} = fixture();
+  const report = generateReview(packet, expected);
+  const html = renderHtml(report);
+  assert.ok(html.includes('<th>Affected dependency records</th>'));
+  assert.ok(html.includes('<th>Dependency severities</th>'));
+  const full = dependencyHtmlRow(html, 'dependencies_full');
+  for (const value of ['Info: 0', 'Low: 0', 'Moderate: 0', 'High: 5', 'Critical: 0', 'Total: 5']) assert.ok(full.includes(value));
+  for (const record of report.findings.find(row => row.name === 'dependencies_full').records) assert.ok(full.includes(record));
+  const production = dependencyHtmlRow(html, 'dependencies_production');
+  for (const value of ['Info: 0', 'Low: 0', 'Moderate: 0', 'High: 0', 'Critical: 0', 'Total: 0']) assert.ok(production.includes(value));
+  retained(report);
+});
+for (const severity of ['low', 'critical']) {
+  test('HTML distinguishes five ' + severity + ' findings from five High findings', () => {
+    const {expected, packet} = fixture();
+    const high = dependencyHtmlRow(renderHtml(generateReview(packet, expected)), 'dependencies_full');
+    replaceSummary(packet, summary => {
+      const counts = summary.results.dependencies_full.findings.severity_counts;
+      counts.high = 0;
+      counts[severity] = 5;
+    });
+    const report = generateReview(packet, expected);
+    const row = dependencyHtmlRow(renderHtml(report), 'dependencies_full');
+    assert.ok(row.includes(severity[0].toUpperCase() + severity.slice(1) + ': 5'));
+    assert.ok(row.includes('High: 0'));
+    assert.notEqual(row, high);
+    retained(report);
+  });
+}
+test('HTML escapes affected dependency records and advisory IDs beside severity counts', () => {
+  const {expected, packet} = fixture();
+  replaceSummary(packet, summary => {
+    const findings = summary.results.dependencies_full.findings;
+    findings.records[0] = '<img src=x onerror="synthetic"> & \'record\'';
+    findings.advisory_ids = ['<script>synthetic & "advisory"</script>'];
+  });
+  const html = renderHtml(generateReview(packet, expected));
+  const row = dependencyHtmlRow(html, 'dependencies_full');
+  assert.ok(!html.includes('<img ') && !html.includes('<script>'));
+  assert.ok(row.includes('&lt;img src=x onerror=&quot;synthetic&quot;&gt; &amp; &#39;record&#39;'));
+  assert.ok(row.includes('&lt;script&gt;synthetic &amp; &quot;advisory&quot;&lt;/script&gt;'));
+  assert.ok(row.includes('High: 5'));
+});
+
+for (const name of ['dependencies_full', 'dependencies_production']) {
+  test('rejects advisory IDs on zero-finding audit: ' + name, () => {
+    const {expected, packet} = fixture({findings: false});
+    replaceSummary(packet, summary => {
+      summary.results[name].findings.advisory_ids = ['GHSA-synthetic-contradiction'];
+    });
+    assert.throws(() => generateReview(packet, expected), /zero audit findings must not contain advisory IDs/);
+  });
+}

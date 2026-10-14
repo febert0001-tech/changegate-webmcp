@@ -65,8 +65,11 @@ try {
       // changing either file. This covers aliases changed after the preflight.
       jsonDescriptor = fs.openSync(outputs[0], fs.constants.O_WRONLY | fs.constants.O_CREAT, 0o666);
       htmlDescriptor = fs.openSync(outputs[1], fs.constants.O_WRONLY | fs.constants.O_CREAT, 0o666);
-      protectInput(fs.fstatSync(jsonDescriptor, {bigint: true}));
-      protectInput(fs.fstatSync(htmlDescriptor, {bigint: true}));
+      const jsonIdentity = fs.fstatSync(jsonDescriptor, {bigint: true});
+      const htmlIdentity = fs.fstatSync(htmlDescriptor, {bigint: true});
+      protectInput(jsonIdentity);
+      protectInput(htmlIdentity);
+      if (sameFile(jsonIdentity, htmlIdentity)) throw new EvidenceError('output files must be distinct');
       fs.ftruncateSync(jsonDescriptor, 0);
       fs.writeFileSync(jsonDescriptor, json);
       fs.ftruncateSync(htmlDescriptor, 0);
