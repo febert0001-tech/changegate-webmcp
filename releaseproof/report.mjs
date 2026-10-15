@@ -165,6 +165,19 @@ function artifact(raw, provenance, expected, jobName, path) {
   return {data, receipt: {source_kind: provenance.source_kind, job: expected.jobs[jobName], path, sha256: actual, byte_count: provenance.byte_count}};
 }
 
+function toolMetadata(value) {
+  exactKeys(value, ['id', 'name', 'url', 'vendor', 'version'], [], 'tool metadata');
+  exactKeys(value.vendor, ['name'], [], 'tool vendor');
+  const field = (value, max = 256) => {
+    const supplied = text(value, 'tool metadata', max);
+    requireEvidence(supplied.trim().length > 0, 'tool metadata: blank text');
+    return supplied;
+  };
+  // URLs are bounded opaque evidence text, never navigation targets.
+  return {id: field(value.id), name: field(value.name), url: field(value.url, 2048),
+    vendor: {name: field(value.vendor.name)}, version: field(value.version)};
+}
+
 function summaryResult(value, expected) {
   exactKeys(value, ['project', 'sha', 'pipeline', 'results', 'coverage_complete', 'findings_present', 'status', 'historical_audit_waiver', 'historical_unknowns', 'g0', 'g1'], [], 'QC summary');
   requireEvidence(id(value.project, 'summary project') === expected.project && sha(value.sha, 'summary commit') === expected.sha && id(value.pipeline, 'summary pipeline') === expected.pipeline, 'summary identity mismatch');
@@ -173,18 +186,29 @@ function summaryResult(value, expected) {
   const results = Object.entries(mapping).map(([name, jobName]) => {
     const result = value.results[name];
     const dependency = name.startsWith('dependencies_');
-    exactKeys(result, ['execution', 'coverage', 'findings', ...(dependency ? ['command_exit'] : [])], dependency ? ['snapshot'] : [], 'summary result');
-    exactKeys(result.execution, ['status', 'job', 'exit'], [], 'summary execution');
+    exactKeys(result, ['execution', 'coverage', 'findings', ...(dependency ? ['command_exit'] : [])], dependency ? ['snapshot'] : ['analyzer', 'scanner'], 'summary result');
+    exactKeys(result.execution, ['status', 'job', 'exit'], ['issues', ...(name === 'sast' ? ['target_exit'] : [])], 'summary execution');
     exactKeys(result.coverage, ['status', 'issues'], [], 'summary coverage');
     requireEvidence(record(result) && record(result.execution) && result.execution.status === 'SUCCEEDED' && id(result.execution.job, 'scan job') === expected.jobs[jobName] && result.execution.exit === 0, 'summary execution mismatch or failure');
+    if (Object.hasOwn(result.execution, 'issues')) requireEvidence(Array.isArray(result.execution.issues) && result.execution.issues.length === 0, 'summary execution issues: unsuccessful or incomplete');
+    if (Object.hasOwn(result.execution, 'target_exit')) requireEvidence(result.execution.target_exit === 0, 'summary target execution failed or incomplete');
     requireEvidence(record(result.coverage) && result.coverage.status === 'COMPLETE' && Array.isArray(result.coverage.issues) && result.coverage.issues.length === 0, 'summary coverage incomplete');
     const findings = result.findings;
-    exactKeys(findings, ['status', 'count', ...(dependency ? ['records', 'advisory_ids', 'severity_counts'] : ['ids'])], ['target_count'], 'summary findings');
+    exactKeys(findings, ['status', 'count', ...(dependency ? ['records', 'advisory_ids', 'severity_counts'] : ['ids'])], ['target_count', ...(name === 'sast' ? ['details'] : [])], 'summary findings');
     requireEvidence(record(findings) && findings.status === 'KNOWN' && integer(findings.count), 'summary findings incomplete');
     const entries = strings(name.startsWith('dependencies_') ? findings.records : findings.ids, 'findings');
     requireEvidence(entries.length === findings.count, 'findings count mismatch');
     if (Object.hasOwn(findings, 'target_count')) requireEvidence(integer(findings.target_count) && findings.target_count <= findings.count, 'target findings disagree');
     const row = {name, execution: 'SUCCEEDED', coverage: 'COMPLETE', findings_count: findings.count, records: entries};
+    if (Object.hasOwn(result.execution, 'issues')) row.execution_issues = [];
+    if (Object.hasOwn(result.execution, 'target_exit')) row.target_exit = result.execution.target_exit;
+    if (Object.hasOwn(findings, 'details')) {
+      requireEvidence(findings.count === 0 && Array.isArray(findings.details) && findings.details.length === 0, 'summary findings details: unsupported shape');
+      row.details = [];
+    }
+    for (const kind of ['analyzer', 'scanner']) {
+      if (Object.hasOwn(result, kind)) row[kind] = toolMetadata(result[kind]);
+    }
     if (Object.hasOwn(findings, 'target_count')) row.target_count = findings.target_count;
     if (name.startsWith('dependencies_')) {
       const counts = findings.severity_counts;
@@ -304,6 +328,17 @@ export function renderHtml(report) {
       : 'Not applicable';
     return `<tr><td>${e(row.name)}</td><td>${e(row.execution)}</td><td>${e(row.coverage)}</td><td>${e(row.findings_count)}</td><td>${e(Object.hasOwn(row, 'target_count') ? row.target_count : 'Not supplied')}</td><td>${row.severity_counts ? evidenceList(row.records) : '<span class="muted">Not applicable</span>'}</td><td>${evidenceList(row.advisory_ids ?? row.records)}</td><td>${e(severities)}</td></tr>`;
   }).join('');
+  const suppliedMetadata = report.findings.filter(row => ['execution_issues', 'target_exit', 'details', 'analyzer', 'scanner'].some(key => Object.hasOwn(row, key)));
+  const producerDetails = suppliedMetadata.map(row => {
+    const fields = [['Execution issues', 'execution_issues'], ['Target exit', 'target_exit'], ['Finding details', 'details']]
+      .map(([label, key]) => `<dt>${e(label)}</dt><dd><code class="evidence-text">${e(Object.hasOwn(row, key) ? canonicalJson(row[key]).trimEnd() : 'Not supplied')}</code></dd>`).join('');
+    const tools = ['analyzer', 'scanner'].map(kind => {
+      const tool = row[kind];
+      return `<h4>${e(kind)}</h4>` + (tool ? `<dl>${[['ID', tool.id], ['Name', tool.name], ['URL (inert text)', tool.url], ['Vendor name', tool.vendor.name], ['Version', tool.version]]
+        .map(([label, value]) => `<dt>${e(label)}</dt><dd><code class="evidence-text">${e(value)}</code></dd>`).join('')}</dl>` : '<p class="muted">Not supplied</p>');
+    }).join('');
+    return `<h3>${e(row.name)}</h3><dl>${fields}</dl>${tools}`;
+  }).join('');
   const snapshots = report.audit_comparison.snapshots ??
     [report.audit_comparison.snapshot ?? null, report.audit_comparison.snapshot ?? null];
   const snapshotDetails = snapshots.map((snapshot, index) =>
@@ -318,6 +353,7 @@ export function renderHtml(report) {
 <div class="cards">${cards.map(([label, value]) => `<div class="card"><small>${e(label)}</small><strong>${e(value)}</strong></div>`).join('')}</div>
 <h2>Required jobs</h2><section class="table"><table><thead><tr><th>Job</th><th>ID</th><th>Native status</th></tr></thead><tbody>${jobs}</tbody></table></section>
 <h2>Execution, coverage and findings</h2><section class="table"><table><thead><tr><th>Check</th><th>Execution</th><th>Coverage</th><th>Findings count</th><th>Target findings</th><th>Affected dependency records</th><th>Advisory / finding IDs</th><th>Dependency severities</th></tr></thead><tbody>${findings}</tbody></table></section>
+${suppliedMetadata.length ? `<h2>Producer execution and tool metadata</h2><section>${producerDetails}</section>` : ''}
 <h2>Audit comparability</h2><section><strong>${e(report.audit_comparison.status)}</strong><p>${e(report.audit_comparison.reason ?? 'Production findings are a subset under the declared comparable snapshots.')}</p><p class="muted">${e(report.audit_comparison.basis)}</p>${snapshotDetails}</section>
 <h2>Risk disposition</h2><section><strong>${e(report.owner_risk_disposition.status)}</strong>${report.owner_risk_disposition.scope ? `<dl><dt>Supplied decision</dt><dd>${e(report.owner_risk_disposition.supplied_status)}</dd><dt>Scope</dt><dd>${e(report.owner_risk_disposition.scope)}</dd><dt>Pipeline binding</dt><dd>${e(report.owner_risk_disposition.pipeline ?? 'Not supplied; decision is not attributed to this pipeline')}</dd><dt>Expiry (UTC)</dt><dd>${e(report.owner_risk_disposition.expires_at)}</dd><dt>Accepted advisory IDs</dt><dd>${evidenceList(report.owner_risk_disposition.advisory_ids)}</dd></dl>` : ''}<p class="muted">Acceptance applies only to the displayed bounds. A recorded risk acceptance does not change the QC verdict or grant release approval.</p></section>
 <h2>Historical unknowns</h2><section><ul>${report.historical_unknowns.map(unknown => `<li>${e(unknown)}</li>`).join('')}</ul></section>
