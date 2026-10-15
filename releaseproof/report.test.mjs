@@ -156,3 +156,94 @@ test('CLI writes both outputs for valid evidence and writes nothing on wrong ide
     assert.equal(existsSync(badOutput), false);
   } finally { rmSync(directory, {recursive: true, force: true}); }
 });
+
+// Invented synthetic receipts only. Exercise every accepted native object boundary,
+// including each of the five jobs rather than a representative job alone.
+const nativeBoundaries = [
+  ['native project', packet => packet.native.project],
+  ['native commit', packet => packet.native.commit],
+  ['native pipeline', packet => packet.native.pipeline],
+  ...fixture().packet.native.jobs.flatMap((job, index) => [
+    [job.name + ' job', packet => packet.native.jobs[index]],
+    [job.name + ' project', packet => packet.native.jobs[index].project],
+    [job.name + ' commit', packet => packet.native.jobs[index].commit],
+    [job.name + ' pipeline', packet => packet.native.jobs[index].pipeline],
+  ]),
+];
+const withJobProjects = () => {
+  const source = fixture();
+  for (const job of source.packet.native.jobs) job.project = {id: source.expected.project};
+  return source;
+};
+
+for (const [label, select] of nativeBoundaries) {
+  test(`native receipts reject nested approval claim at ${label} without rewriting evidence`, () => {
+    const {packet, expected} = withJobProjects();
+    select(packet).release_approval = {approved: true};
+    const before = canonicalJson(packet);
+    assert.throws(() => generateReview(packet, expected), /unexpected field/);
+    assert.equal(canonicalJson(packet), before);
+  });
+}
+
+for (const projects of [false, true]) test(`supported native receipt shape with job projects ${projects ? 'present' : 'absent'} retains evidence and limits`, () => {
+  const {packet, expected} = projects ? withJobProjects() : fixture();
+  // Numeric and string ID forms were already supported; neither is rewritten.
+  packet.native.project.id = expected.project;
+  packet.native.pipeline.id = expected.pipeline;
+  const before = canonicalJson(packet);
+  const report = generateReview(packet, expected);
+  assert.equal(canonicalJson(packet), before);
+  assert.equal(report.qc_verdict, 'FAILED_WITH_FINDINGS');
+  assert.equal(report.native_pipeline_status, 'failed');
+  assert.equal(report.findings.find(row => row.name === 'dependencies_full').severity_counts.high, 5);
+  assert.equal(report.provenance_status, 'INCOMPLETE_NATIVE_ARTIFACT_PROVENANCE');
+  assert.equal(report.human_release.status, 'PENDING');
+  assert.equal(report.human_release.approved, false);
+  assert.equal(report.deployment.authorized, false);
+  for (const job of packet.native.jobs) assert.equal(Object.hasOwn(job, 'project'), projects);
+});
+
+for (const [label, mutate] of [
+  ['null native project', packet => {packet.native.project = null;}],
+  ['array native commit', packet => {packet.native.commit = [];}],
+  ['scalar native pipeline', packet => {packet.native.pipeline = 'failed';}],
+  ['missing pipeline status', packet => {delete packet.native.pipeline.status;}],
+  ['null job project', packet => {packet.native.jobs[0].project = null;}],
+  ['array job project', packet => {packet.native.jobs[0].project = [];}],
+  ['missing job project ID', packet => {packet.native.jobs[0].project = {};}],
+  ['wrong job project ID', packet => {packet.native.jobs[0].project = {id: '99'};}],
+  ['invalid job project ID', packet => {packet.native.jobs[0].project = {id: false};}],
+  ['null job commit', packet => {packet.native.jobs[0].commit = null;}],
+  ['array job pipeline', packet => {packet.native.jobs[0].pipeline = [];}],
+  ['missing job pipeline project ID', packet => {delete packet.native.jobs[0].pipeline.project_id;}],
+  ['unmodelled raw project metadata', packet => {packet.native.project.web_url = 'https://synthetic.example.invalid/';}],
+  ['unmodelled raw job metadata', packet => {packet.native.jobs[0].artifacts = [];}],
+]) test(`native receipt shape rejects ${label}`, () => {
+  const {packet, expected} = fixture(); mutate(packet);
+  assert.throws(() => generateReview(packet, expected), EvidenceError);
+});
+
+for (const [label, select] of nativeBoundaries) test(`CLI rejects native approval at ${label} before producing reports`, () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'releaseproof-native-authority-'));
+  try {
+    const {packet, expected} = withJobProjects();
+    select(packet).release_approval = {approved: true};
+    const expectedPath = path.join(directory, 'expected.json');
+    const packetPath = path.join(directory, 'packet.json');
+    const expectedBytes = canonicalJson(expected);
+    const packetBytes = canonicalJson(packet);
+    writeFileSync(expectedPath, expectedBytes); writeFileSync(packetPath, packetBytes);
+    const output = path.join(directory, 'fresh-output');
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL('./cli.mjs', import.meta.url)),
+      '--expected', expectedPath, '--packet', packetPath, '--out', output], {encoding: 'utf8', timeout: 10_000});
+    assert.ifError(result.error);
+    assert.equal(result.signal, null);
+    assert.equal(result.status, 2);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /unexpected field/);
+    assert.equal(existsSync(output), false);
+    assert.equal(readFileSync(expectedPath, 'utf8'), expectedBytes);
+    assert.equal(readFileSync(packetPath, 'utf8'), packetBytes);
+  } finally { rmSync(directory, {recursive: true, force: true}); }
+});

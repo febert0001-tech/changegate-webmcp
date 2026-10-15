@@ -28,6 +28,23 @@ A pipeline-bound risk decision is active only while `reviewed_at < expires_at`. 
 
 ## Evidence boundary
 
+The `native` section is a closed collector-supplied identity receipt, using the shapes in `fixtures.mjs`; it is not an unrestricted raw provider API response. Required keys are:
+
+| Object | Required keys | Optional keys |
+| --- | --- | --- |
+| `native` | `project`, `commit`, `pipeline`, `jobs` | None |
+| `native.project` | `id` | None |
+| `native.commit` | `id` | None |
+| `native.pipeline` | `id`, `project_id`, `sha`, `status` | None |
+| Each native job | `id`, `name`, `status`, `commit`, `pipeline` | `project` |
+| Job `project`, when supplied | `id` | None |
+| Job `commit` | `id` | None |
+| Job `pipeline` | `id`, `project_id`, `sha`, `status` | None |
+
+Every object must have the stated shape; unexpected fields, including approval/deployment claims, are rejected before report generation. Project/commit/pipeline/job identities must match the separate trusted expectation, including an optional job project. Omitting that optional object never fabricates one. Existing completed-status, execution and failed-findings checks still apply. Validation leaves supplied input bytes/objects unchanged, and the normalized report contract is unchanged.
+
+A full raw provider response containing extra fields (for example a project `web_url` or job `artifacts`) is outside this native receipt shape and is rejected, not silently stripped or authenticated. Existing producer-compatibility cases cover QC-summary execution and analyzer/scanner metadata; that supported metadata and its original byte/digest checks remain intact. This change does not claim compatibility with unmodelled provider receipt metadata. Any such compatibility requirement needs an explicit evidence-grounded schema decision; do not remove fields from retained original evidence to bypass rejection.
+
 - Producer execution objects may optionally supply `issues`, which must be exactly an empty array. SAST execution may also supply `target_exit`, which must be the number `0`. Nonempty issues, nonzero exits and unsupported types are unsuccessful or incomplete evidence and fail report generation. These optional fields are retained as `execution_issues` and `target_exit` in the normalized finding row and displayed in HTML; absence remains absence in JSON.
 - SAST findings may optionally supply `details` only as `[]` when `count` is zero. The empty array is preserved in JSON and HTML. Nonempty arrays, objects and other shapes are unsupported; this does not define a details contract for nonzero findings.
 - SAST and secrets results may optionally supply independent `analyzer` and `scanner` objects. Each supplied object requires exactly `id`, `name`, `url`, `vendor` and `version`; `vendor` requires exactly `name`. All values are nonblank strings, bounded to 256 UTF-16 code units per field except `url` (2,048). They are validated without trimming or normalization, copied into the normalized finding row and rendered as individually labelled escaped HTML text. URLs are opaque evidence text, never links or resource addresses. These metadata declarations confer no authenticity or approval authority. Unknown keys are rejected at every new object boundary; existing minimal summaries remain supported.

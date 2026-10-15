@@ -133,6 +133,9 @@ function expectation(value) {
 
 function nativeJobs(native, expected) {
   exactKeys(native, ['project', 'commit', 'pipeline', 'jobs'], [], 'native receipts');
+  exactKeys(native.project, ['id'], [], 'native project');
+  exactKeys(native.commit, ['id'], [], 'native commit');
+  exactKeys(native.pipeline, ['id', 'project_id', 'sha', 'status'], [], 'native pipeline');
   requireEvidence(record(native.project) && id(native.project.id, 'native project') === expected.project, 'native project mismatch');
   requireEvidence(record(native.commit) && sha(native.commit.id, 'native commit') === expected.sha, 'native commit mismatch');
   const pipeline = native.pipeline;
@@ -143,6 +146,13 @@ function nativeJobs(native, expected) {
     const matching = native.jobs.filter(job => record(job) && job.name === name);
     requireEvidence(matching.length === 1, 'native jobs: missing or duplicate name');
     const job = matching[0];
+    exactKeys(job, ['id', 'name', 'status', 'commit', 'pipeline'], ['project'], 'native job');
+    exactKeys(job.commit, ['id'], [], 'job commit');
+    exactKeys(job.pipeline, ['id', 'project_id', 'sha', 'status'], [], 'job pipeline');
+    if (Object.hasOwn(job, 'project')) {
+      exactKeys(job.project, ['id'], [], 'job project');
+      requireEvidence(id(job.project.id, 'job project') === expected.project, 'native job project mismatch');
+    }
     requireEvidence(id(job.id, 'native job') === expected.jobs[name], 'native job ID mismatch');
     requireEvidence(record(job.commit) && sha(job.commit.id, 'job commit') === expected.sha, 'native job commit mismatch');
     requireEvidence(record(job.pipeline) && id(job.pipeline.id, 'job pipeline') === expected.pipeline && id(job.pipeline.project_id, 'job project') === expected.project && sha(job.pipeline.sha, 'job pipeline commit') === expected.sha, 'native job pipeline mismatch');
