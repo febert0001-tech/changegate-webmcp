@@ -72,7 +72,7 @@ jobs:
       - name: Typecheck application integration
         run: npm run typecheck 2>&1 | tee work/hosted-smoke/typecheck.log
       - name: Lint changed integration sources
-        run: npx eslint src/app/page.tsx src/app/releaseproof/page.tsx next.config.ts releaseproof/hosted-build.mjs releaseproof/hosted-build.test.mjs releaseproof/hosted-smoke.mjs 2>&1 | tee work/hosted-smoke/lint.log
+        run: npx eslint src/app/page.tsx src/app/releaseproof/page.tsx next.config.ts releaseproof/hosted-build.mjs releaseproof/hosted-build.test.mjs releaseproof/hosted-smoke.mjs releaseproof/dependency-audit.mjs releaseproof/dependency-audit.test.mjs 2>&1 | tee work/hosted-smoke/lint.log
       - name: Install isolated pinned browser for GitHub-only smoke
         run: |
           npm install --prefix "$RUNNER_TEMP/releaseproof-browser" --no-save --package-lock=false --ignore-scripts playwright@1.56.1
@@ -116,29 +116,3 @@ jobs:
           retention-days: 35
           if-no-files-found: error
 
-  dependency-lockfile-authoring:
-    if: github.repository == 'febert0001-tech/changegate-webmcp' && github.ref == 'refs/heads/review/releaseproof-report-20261014'
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: '24'
-      - name: Author only supported patch corrections with audit and lifecycle scripts disabled
-        run: |
-          mkdir -p work/dependency-candidate
-          node --input-type=module -e 'import fs from "node:fs"; const p=JSON.parse(fs.readFileSync("package.json","utf8")); p.dependencies.next="16.3.8"; p.devDependencies["eslint-config-next"]="16.3.8"; fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n");'
-          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-          npm update brace-expansion js-yaml sharp source-map-js --package-lock-only --ignore-scripts --no-audit --no-fund
-          cp package.json package-lock.json work/dependency-candidate/
-          node --input-type=module -e 'import fs from "node:fs"; for(const name of ["package.json","package-lock.json"]){ console.log("BEGIN CANDIDATE "+name); console.log(fs.readFileSync(name,"utf8")); console.log("END CANDIDATE "+name); }'
-      - if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: releaseproof-dependency-candidate-${{ github.sha }}
-          path: work/dependency-candidate/
-          retention-days: 35
-          if-no-files-found: error

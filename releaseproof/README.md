@@ -116,3 +116,21 @@ This increment uses only the public PR. The separate private GitLab application 
 ## Native public dependency evidence
 
 The GitHub-only `dependency-evidence` job captures full and production `npm audit --json --package-lock-only` results against the same unchanged manifest/lockfile. Original stdout JSON, stderr, command exit/signal/spawn status, tool versions, input digests, invocation times and actual GitHub SHA/run/attempt are retained. Completed findings fail the audit job with collector exit 1; command/registry/malformed-evidence failures return 2. Collector exit 0 requires both completed native reports to contain zero findings. Install exit 0 is never a clean audit verdict. Separate registry requests do not establish an atomic shared advisory snapshot. These native public dependency records are separate from the synthetic ReleaseProof fixtures and confer no release authority or private-app waiver.
+
+### Public dependency remediation evidence (2026-10-15)
+
+Baseline capture at commit `2e3f141b846eadba0063a2bb400a4165dfec77aa`, [run 38753507742](https://github.com/febert0001-tech/changegate-webmcp/actions/runs/38753507742), retained [native audit artifact 11982755877](https://github.com/febert0001-tech/changegate-webmcp/actions/runs/38753507742/artifacts/11982755877). Both native audit commands exited 1 and completed with findings, empty stderr and no process error: full 9 High + 1 Critical package records; production 2 High + 1 Critical. The lockfile digest before/after was `1b0bb9856286f62b7c6a09d06eab606e3b28bac57847afe2cc817ce58796bebc`, using Node v24.21.0 and npm 11.19.0. These are public dependency findings, not the synthetic five-High example and not covered by any private-app waiver.
+
+Evidence-supported compatible corrections:
+
+| Package family | Baseline | Selected correction | Basis |
+| --- | --- | --- | --- |
+| `next`, `eslint-config-next`, matching Next env/SWC/plugin packages | 16.3.3 | 16.3.8 | [Official 16.3.8 security release](https://github.com/vercel/next.js/releases/tag/v16.3.8); also includes the [16.3.6 ImageResponse RCE fix](https://github.com/vercel/next.js/releases/tag/v16.3.6) |
+| `sharp` and its matching platform/libvips binaries | 0.35.4 / 1.3.3 | 0.35.5 / 1.3.4 | [GHSA-wq5f-xc86-pv6w](https://github.com/lovell/sharp/security/advisories/GHSA-wq5f-xc86-pv6w) |
+| `source-map-js` | 1.2.1 | 1.2.2 | [Official patch release](https://github.com/7rulnik/source-map-js/releases/tag/v1.2.2), GHSA-68fv-2mgg-jv7q |
+| `brace-expansion` (both installed major lines) | 1.1.18 / 5.0.9 | 1.1.21 / 5.0.12 | [GHSA-q2hr-2g5m-vwhr](https://github.com/juliangruber/brace-expansion/security/advisories/GHSA-q2hr-2g5m-vwhr), also beyond the two earlier stack-exhaustion fix ranges |
+| `js-yaml` | 4.3.1 | 4.3.2 | [Official changelog](https://github.com/nodeca/js-yaml/blob/4.3.2/CHANGELOG.md), GHSA-2883-xcg3-v3hh |
+
+The lockfile candidate was authored in GitHub with `--package-lock-only --ignore-scripts --no-audit --no-fund`; only selected patch corrections and their required matching binaries were retained. The unrelated `fastq` update produced by resolution was restored to its baseline entry. No direct package was removed, no force fix/override/major migration was applied, and the temporary authoring job is not retained in the final workflow. Raw baseline and subsequent audit evidence stay in distinct SHA/run/attempt artifacts; the latest native reports, not this table, establish observed remaining findings.
+
+A concrete unresolved dev-tooling conflict is [GHSA-vfj7-8cjw-p6xm](https://github.com/micromatch/braces/issues/70): the published advisory affects `braces` through 3.0.3 with no fixed version identified. It propagates through `micromatch` → `fast-glob` → `@next/eslint-plugin-next` → `eslint-config-next`. npm's baseline proposed change is `eslint-config-next@14.2.35`, a major downgrade from 16.x, not a compatible correction. The matched 16.3.8 plugin still depends on `fast-glob@3.3.1`. This scope does not replace that toolchain, import a private vendor patch, exclude scanners or grant a waiver. Any remaining findings keep the audit job failed; application/report/build/browser success is separate. No deployment or release is authorized. G0 OPEN / NOT APPROVED; G1 CLOSED.
