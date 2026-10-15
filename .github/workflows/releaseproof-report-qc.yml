@@ -91,3 +91,27 @@ jobs:
             public/releaseproof-demo/
           retention-days: 35
           if-no-files-found: error
+
+  dependency-evidence:
+    if: github.repository == 'febert0001-tech/changegate-webmcp' && github.ref == 'refs/heads/review/releaseproof-report-20261014'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Capture native full and production audits and fail on findings
+        run: node releaseproof/dependency-audit.mjs
+      - name: Verify audit failure classification
+        if: always()
+        run: node --test releaseproof/dependency-audit.test.mjs
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: releaseproof-dependency-audit-${{ github.sha }}-${{ github.run_attempt }}
+          path: work/dependency-audit/
+          retention-days: 35
+          if-no-files-found: error
