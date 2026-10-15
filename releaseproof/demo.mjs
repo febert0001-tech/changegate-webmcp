@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {canonicalJson, digest, renderHtml} from './report.mjs';
+import {observeDemoFiles, renderDemoPage} from './demo-page.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const limitations = 'SYNTHETIC inputs and outcomes only. Report-generation recovery is not clean native QC, deployment verification, human approval or production release. G0 OPEN / NOT APPROVED; G1 CLOSED.';
@@ -51,6 +52,7 @@ export function runDemo(directory, {spawn = spawnSync, env = process.env} = {}) 
     receipt.attempts.push(attempt);
     return {result, attempt};
   };
+  let primaryFailure;
   try {
     if (env.GITHUB_ACTIONS === 'true') {
       for (const name of ['GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT']) assert.ok(env[name], `Missing Actions identity ${name}`);
@@ -94,15 +96,29 @@ export function runDemo(directory, {spawn = spawnSync, env = process.env} = {}) 
     assert.deepEqual(read('valid-input/packet.json'), validBytes);
     assert.deepEqual(read('valid-input/expected.json'), expectedBytes);
     assert.deepEqual(read('recovery-packet.json'), validBytes);
+    receipt.recovery_byte_identity_established = true;
     receipt.outcome = 'SYNTHETIC_DEMONSTRATION_PASSED';
     receipt.recovery_boundary = {qc_verdict: report.qc_verdict, provenance_status: report.provenance_status,
       human_release: report.human_release, deployment: report.deployment, synthetic_high_findings: 5};
   } catch (error) {
+    primaryFailure = error;
     receipt.failure = error.message;
     throw error;
   } finally {
-    write('receipt.json', canonicalJson(receipt));
-    write('WALKTHROUGH.md', `# SYNTHETIC ReleaseProof judge walkthrough\n\n${limitations}\n\nObserved demo outcome: ${receipt.outcome}.\n\n1. Inspect valid-input/packet.json and the separate valid-input/expected.json; receipt.json records their exact byte counts and SHA-256 digests. All provider-like identities are invented fixture data, separate from actual GitHub execution identity.\n2. Compare negative-packet.json: only required validation_exits_raw is omitted; its provenance is retained. Inspect negative.stdout, negative.stderr and the negative attempt in receipt.json. Accepted rejection requires real exit 2, the missing-field diagnostic and an empty fresh negative-output directory. Spawn errors fail the demo.\n3. Inspect recovery-packet.json: it is byte-identical to the original valid packet. The single correction restores validation_exits_raw. The recovery is a separate invocation into recovery-output, with separate stdout/stderr and receipts.\n4. Open recovery-output/review.html and review.json. Successful generation requires exit 0, matching valid JSON/HTML, five visible synthetic High findings, FAILED_WITH_FINDINGS, incomplete synthetic provenance, pending human release and deployment.authorized=false.\n5. Check receipt.json outcome and actual Actions identity (null outside Actions). A failed runner exits nonzero and retains its failure receipt; never treat an incomplete attempt as successful evidence.\n\n${receipt.failure ? `Failure: ${receipt.failure}\n` : ''}`);
+    // Retain each deliverable independently. Presentation failures must never mask
+    // the original CLI/demo error or prevent the machine receipt being written.
+    let retentionFailure;
+    const retain = action => {
+      try { action(); }
+      catch (error) {
+        retentionFailure ??= error;
+        console.error(`Synthetic demo retention failed: ${error.message}`);
+      }
+    };
+    retain(() => write('receipt.json', canonicalJson(receipt)));
+    retain(() => write('WALKTHROUGH.md', `# SYNTHETIC ReleaseProof judge walkthrough\n\n${limitations}\n\nOpen index.html first for the observed attempt sequence and available artifact links. If the entry page could not be written, use this Markdown and receipt.json; absent files remain unavailable.\n\nObserved demo outcome: ${receipt.outcome}.\n\n1. Inspect valid-input/packet.json and the separate valid-input/expected.json; receipt.json records their exact byte counts and SHA-256 digests. All provider-like identities are invented fixture data, separate from actual GitHub execution identity.\n2. Compare negative-packet.json: only required validation_exits_raw is omitted; its provenance is retained. Inspect negative.stdout, negative.stderr and the negative attempt in receipt.json. Accepted rejection requires real exit 2, the missing-field diagnostic and an empty fresh negative-output directory. Spawn errors fail the demo.\n3. If available, inspect recovery-packet.json. The intended single correction restores validation_exits_raw using the original bytes. The receipt records recovery_byte_identity_established only after the runner verifies the byte relationship; do not infer it from a partial run. The recovery is a separate invocation into recovery-output, with separate stdout/stderr and receipts.\n4. Open recovery-output/review.html and review.json. Successful generation requires exit 0, matching valid JSON/HTML, five visible synthetic High findings, FAILED_WITH_FINDINGS, incomplete synthetic provenance, pending human release and deployment.authorized=false.\n5. Check receipt.json outcome and actual Actions identity (null outside Actions). A failed runner exits nonzero and retains its failure receipt; never treat an incomplete attempt as successful evidence.\n\n${receipt.failure ? `Failure: ${receipt.failure}\n` : ''}`));
+    retain(() => write('index.html', renderDemoPage(receipt, observeDemoFiles(root))));
+    if (!primaryFailure && retentionFailure) throw retentionFailure;
   }
   return receipt;
 }

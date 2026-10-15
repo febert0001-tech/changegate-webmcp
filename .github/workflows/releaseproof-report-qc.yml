@@ -24,7 +24,7 @@ jobs:
         with:
           node-version: '24'
       - name: Verify report contracts and failure controls
-        run: node --test releaseproof/report.test.mjs releaseproof/cli.test.mjs releaseproof/corrections.test.mjs releaseproof/output.test.mjs releaseproof/input-review.test.mjs releaseproof/unicode.test.mjs releaseproof/evidence-items.test.mjs releaseproof/html-provenance.test.mjs releaseproof/producer-compat.test.mjs releaseproof/audit-risk-review.test.mjs releaseproof/demo.test.mjs
+        run: node --test releaseproof/report.test.mjs releaseproof/cli.test.mjs releaseproof/corrections.test.mjs releaseproof/output.test.mjs releaseproof/input-review.test.mjs releaseproof/unicode.test.mjs releaseproof/evidence-items.test.mjs releaseproof/html-provenance.test.mjs releaseproof/producer-compat.test.mjs releaseproof/audit-risk-review.test.mjs releaseproof/demo.test.mjs releaseproof/demo-page.test.mjs
       - name: Generate synthetic review example
         run: |
           node releaseproof/write-example.mjs releaseproof-example
