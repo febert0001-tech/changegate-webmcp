@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Owned, build-generated synthetic ReleaseProof evidence; never commit run receipts
+/public/releaseproof-demo/
+/work/
+/releaseproof-output/
+/releaseproof-example/

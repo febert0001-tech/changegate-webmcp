@@ -24,7 +24,7 @@ jobs:
         with:
           node-version: '24'
       - name: Verify report contracts and failure controls
-        run: node --test releaseproof/report.test.mjs releaseproof/cli.test.mjs releaseproof/corrections.test.mjs releaseproof/output.test.mjs releaseproof/input-review.test.mjs releaseproof/unicode.test.mjs releaseproof/evidence-items.test.mjs releaseproof/html-provenance.test.mjs releaseproof/producer-compat.test.mjs releaseproof/audit-risk-review.test.mjs releaseproof/demo.test.mjs releaseproof/demo-page.test.mjs
+        run: node --test releaseproof/report.test.mjs releaseproof/cli.test.mjs releaseproof/corrections.test.mjs releaseproof/output.test.mjs releaseproof/input-review.test.mjs releaseproof/unicode.test.mjs releaseproof/evidence-items.test.mjs releaseproof/html-provenance.test.mjs releaseproof/producer-compat.test.mjs releaseproof/audit-risk-review.test.mjs releaseproof/demo.test.mjs releaseproof/demo-page.test.mjs releaseproof/hosted-build.test.mjs
       - name: Generate synthetic review example
         run: |
           node releaseproof/write-example.mjs releaseproof-example
@@ -44,5 +44,50 @@ jobs:
         with:
           name: releaseproof-report-${{ github.sha }}
           path: releaseproof-output/
+          retention-days: 35
+          if-no-files-found: error
+
+  hosted-app:
+    if: github.repository == 'febert0001-tech/changegate-webmcp' && github.ref == 'refs/heads/review/releaseproof-report-20261014'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install existing locked application dependencies
+        run: |
+          mkdir -p work/hosted-smoke
+          npm ci 2>&1 | tee work/hosted-smoke/install.log
+      - name: Preserve existing application and authority coverage
+        run: npm test -- src/domain tests 2>&1 | tee work/hosted-smoke/application-tests.log
+      - name: Generate synthetic bundle and validate production build
+        run: npm run build 2>&1 | tee work/hosted-smoke/build.log
+      - name: Typecheck application integration
+        run: npm run typecheck 2>&1 | tee work/hosted-smoke/typecheck.log
+      - name: Lint changed integration sources
+        run: npx eslint src/app/page.tsx src/app/releaseproof/page.tsx next.config.ts releaseproof/hosted-build.mjs releaseproof/hosted-build.test.mjs releaseproof/hosted-smoke.mjs 2>&1 | tee work/hosted-smoke/lint.log
+      - name: Install isolated pinned browser for GitHub-only smoke
+        run: |
+          npm install --prefix "$RUNNER_TEMP/releaseproof-browser" --no-save --package-lock=false --ignore-scripts playwright@1.56.1
+          node "$RUNNER_TEMP/releaseproof-browser/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Check production routes and retained links in ordinary Chromium
+        run: |
+          cp releaseproof/hosted-smoke.mjs "$RUNNER_TEMP/releaseproof-browser/smoke.mjs"
+          node "$RUNNER_TEMP/releaseproof-browser/smoke.mjs"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: releaseproof-hosted-${{ github.sha }}
+          path: |
+            work/hosted-smoke/
+            work/releaseproof-hosted-demo/
+            public/releaseproof-demo/
           retention-days: 35
           if-no-files-found: error
