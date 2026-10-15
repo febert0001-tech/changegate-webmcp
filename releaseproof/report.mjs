@@ -219,6 +219,7 @@ function summaryResult(value, expected) {
       row.severity_counts = Object.fromEntries([...SEVERITIES, 'total'].map(key => [key, counts[key]]));
       row.advisory_ids = strings(findings.advisory_ids, 'advisories');
       requireEvidence(findings.count !== 0 || row.advisory_ids.length === 0, 'zero audit findings must not contain advisory IDs');
+      requireEvidence(findings.count === 0 || row.advisory_ids.length > 0, 'nonzero audit findings require advisory IDs');
     }
     return row;
   });
@@ -251,6 +252,9 @@ function compareAudits(supplied, rows) {
     production.advisory_ids.every(value => full.advisory_ids.includes(value)) &&
     production.findings_count <= full.findings_count &&
     [...SEVERITIES, 'total'].every(key => production.severity_counts[key] <= full.severity_counts[key]), 'production audit findings contradict comparable full audit');
+  if (Object.hasOwn(full, 'target_count') && Object.hasOwn(production, 'target_count')) {
+    requireEvidence(production.target_count <= full.target_count, 'production target findings contradict comparable full audit');
+  }
   return {status: 'SUBSET_CONFIRMED', basis: declaration, snapshot: snapshots[0]};
 }
 
@@ -326,7 +330,7 @@ export function renderHtml(report) {
     const severities = row.severity_counts
       ? [...SEVERITIES, 'total'].map(key => `${key[0].toUpperCase() + key.slice(1)}: ${row.severity_counts[key]}`).join('; ')
       : 'Not applicable';
-    return `<tr><td>${e(row.name)}</td><td>${e(row.execution)}</td><td>${e(row.coverage)}</td><td>${e(row.findings_count)}</td><td>${e(Object.hasOwn(row, 'target_count') ? row.target_count : 'Not supplied')}</td><td>${row.severity_counts ? evidenceList(row.records) : '<span class="muted">Not applicable</span>'}</td><td>${evidenceList(row.advisory_ids ?? row.records)}</td><td>${e(severities)}</td></tr>`;
+    return `<tr><td>${e(row.name)}</td><td>${e(row.execution)}</td><td>${e(row.coverage)}</td><td>${e(row.findings_count)}</td><td>${e(Object.hasOwn(row, 'target_count') ? row.target_count : 'Not supplied')}</td><td>${row.severity_counts ? evidenceList(row.records) : '<span class="muted">Not applicable</span>'}</td><td>${evidenceList(row.advisory_ids ?? row.records)}</td><td>${e(severities)}</td><td>${e(row.name.startsWith('dependencies_') ? row.command_exit : 'Not applicable')}</td></tr>`;
   }).join('');
   const suppliedMetadata = report.findings.filter(row => ['execution_issues', 'target_exit', 'details', 'analyzer', 'scanner'].some(key => Object.hasOwn(row, key)));
   const producerDetails = suppliedMetadata.map(row => {
@@ -352,10 +356,10 @@ export function renderHtml(report) {
 <div class="warning"><strong>Human release approval is pending.</strong> This report supplies evidence for review. It performs no deployment and grants no release authority.</div>
 <div class="cards">${cards.map(([label, value]) => `<div class="card"><small>${e(label)}</small><strong>${e(value)}</strong></div>`).join('')}</div>
 <h2>Required jobs</h2><section class="table"><table><thead><tr><th>Job</th><th>ID</th><th>Native status</th></tr></thead><tbody>${jobs}</tbody></table></section>
-<h2>Execution, coverage and findings</h2><section class="table"><table><thead><tr><th>Check</th><th>Execution</th><th>Coverage</th><th>Findings count</th><th>Target findings</th><th>Affected dependency records</th><th>Advisory / finding IDs</th><th>Dependency severities</th></tr></thead><tbody>${findings}</tbody></table></section>
+<h2>Execution, coverage and findings</h2><section class="table"><table><thead><tr><th>Check</th><th>Execution</th><th>Coverage</th><th>Findings count</th><th>Target findings</th><th>Affected dependency records</th><th>Advisory / finding IDs</th><th>Dependency severities</th><th>Dependency command exit</th></tr></thead><tbody>${findings}</tbody></table></section>
 ${suppliedMetadata.length ? `<h2>Producer execution and tool metadata</h2><section>${producerDetails}</section>` : ''}
 <h2>Audit comparability</h2><section><strong>${e(report.audit_comparison.status)}</strong><p>${e(report.audit_comparison.reason ?? 'Production findings are a subset under the declared comparable snapshots.')}</p><p class="muted">${e(report.audit_comparison.basis)}</p>${snapshotDetails}</section>
-<h2>Risk disposition</h2><section><strong>${e(report.owner_risk_disposition.status)}</strong>${report.owner_risk_disposition.scope ? `<dl><dt>Supplied decision</dt><dd>${e(report.owner_risk_disposition.supplied_status)}</dd><dt>Scope</dt><dd>${e(report.owner_risk_disposition.scope)}</dd><dt>Pipeline binding</dt><dd>${e(report.owner_risk_disposition.pipeline ?? 'Not supplied; decision is not attributed to this pipeline')}</dd><dt>Expiry (UTC)</dt><dd>${e(report.owner_risk_disposition.expires_at)}</dd><dt>Accepted advisory IDs</dt><dd>${evidenceList(report.owner_risk_disposition.advisory_ids)}</dd></dl>` : ''}<p class="muted">Acceptance applies only to the displayed bounds. A recorded risk acceptance does not change the QC verdict or grant release approval.</p></section>
+<h2>Risk disposition</h2><section><strong>${e(report.owner_risk_disposition.status)}</strong>${report.owner_risk_disposition.scope ? `<dl><dt>Supplied decision</dt><dd>${e(report.owner_risk_disposition.supplied_status)}</dd><dt>Scope</dt><dd>${e(report.owner_risk_disposition.scope)}</dd><dt>Pipeline binding</dt><dd>${e(report.owner_risk_disposition.pipeline ?? 'Not supplied; decision is not attributed to this pipeline')}</dd><dt>Expiry (UTC)</dt><dd>${e(report.owner_risk_disposition.expires_at)}</dd><dt>Accepted advisory IDs</dt><dd>${evidenceList(report.owner_risk_disposition.advisory_ids)}</dd><dt>Record authenticity</dt><dd>${e(report.owner_risk_disposition.authenticity)}</dd></dl><p class="muted">The supplied owner record is not authenticated by this report.</p>` : ''}<p class="muted">Acceptance applies only to the displayed bounds. A recorded risk acceptance does not change the QC verdict or grant release approval.</p></section>
 <h2>Historical unknowns</h2><section><ul>${report.historical_unknowns.map(unknown => `<li>${e(unknown)}</li>`).join('')}</ul></section>
 ${report.model_note ? `<h2>Historical model interpretation</h2><section><p class="muted">Session ${e(report.model_note.source.id)} · ${e(report.model_note.source.captured_at)} · Interpretation only</p><p class="muted">Historical model input commit: <code>${e(report.model_note.source.input_sha ?? 'Not supplied')}</code></p><div class="note">${e(report.model_note.text)}</div></section>` : ''}
 <h2>Receipt and byte-integrity details</h2><section><p class="muted">${e(report.provenance_limit)}</p><pre>${e(canonicalJson({artifacts: report.artifacts, human_release: report.human_release, deployment: report.deployment}))}</pre></section>
