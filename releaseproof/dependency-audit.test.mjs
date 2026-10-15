@@ -69,3 +69,35 @@ test('tallies multiple entries across all buckets without changing raw bytes', (
   assert.deepEqual(classifyAudit(value), {outcome: 'MALFORMED_EVIDENCE'});
   assert.deepEqual(value.stdout, inconsistentBytes);
 });
+
+for (const [label, change] of [
+  ['literal entry severity', raw => raw.replace('"severity":"high"', '"severity":"critical","severity":"high"')],
+  ['escaped-equivalent entry severity', raw => raw.replace('"severity":"high"', String.raw`"severity":"critical","severit\u0079":"high"`)],
+  ['vulnerability package member', raw => raw.replace('"vulnerabilities":{"synthetic":', '"vulnerabilities":{"synthetic":{"name":"synthetic","severity":"critical","via":[]},"synthetic":')],
+  ['metadata severity bucket', raw => raw.replace('"critical":0', '"critical":1,"critical":0')],
+  ['nested dependency metadata', raw => raw.replace('"metadata":{', '"metadata":{"dependencies":{"prod":99,"prod":1},')],
+  ['escaped-equivalent member in nested advisory array', raw => raw.replace('"via":[]', String.raw`"via":[{"source":1,"severity":"critical","severit\u0079":"high"}]`)],
+  ['top-level audit version', raw => raw.replace('"auditReportVersion":2', '"auditReportVersion":1,"auditReportVersion":2')],
+  ['top-level vulnerabilities object', raw => raw.replace('"vulnerabilities":{', '"vulnerabilities":{"hidden":{"name":"hidden","severity":"critical","via":[]}},"vulnerabilities":{')],
+]) test(`native audit rejects duplicate ${label} before reconciliation without rewriting raw bytes`, () => {
+  const value = result(1);
+  value.stdout = Buffer.from(change(value.stdout.toString('utf8')));
+  // Ordinary parsing would erase the conflicting member and let these fixtures
+  // pass the existing shape and severity checks; strict parsing must reject them.
+  assert.doesNotThrow(() => JSON.parse(value.stdout.toString('utf8')));
+  const bytes = Buffer.from(value.stdout);
+  assert.deepEqual(classifyAudit(value), {outcome: 'MALFORMED_EVIDENCE'});
+  assert.deepEqual(value.stdout, bytes);
+});
+
+test('native audit allows repeated names in separate objects and JSON-looking evidence text', () => {
+  const value = result(1);
+  const report = JSON.parse(value.stdout);
+  report.vulnerabilities.synthetic.via = [{name: 'synthetic', severity: 'high',
+    title: 'Literal text: "severity":"critical","severity":"high"'}];
+  report.metadata.dependencies = {prod: 1, dev: 0};
+  value.stdout = Buffer.from(JSON.stringify(report));
+  const bytes = Buffer.from(value.stdout);
+  assert.equal(classifyAudit(value).outcome, 'COMPLETED_WITH_FINDINGS');
+  assert.deepEqual(value.stdout, bytes);
+});

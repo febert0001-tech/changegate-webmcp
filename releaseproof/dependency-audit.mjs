@@ -4,6 +4,7 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
+import {parseJson} from './report.mjs';
 
 const severities = ['info', 'low', 'moderate', 'high', 'critical'];
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -12,7 +13,7 @@ const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 export function classifyAudit(result) {
   if (result.error || result.signal !== null || ![0, 1].includes(result.status)) return {outcome: 'COMMAND_FAILURE'};
   let report;
-  try { report = JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(result.stdout)); }
+  try { report = parseJson(new TextDecoder('utf-8', {fatal: true}).decode(result.stdout), 'native npm audit'); }
   catch { return {outcome: 'MALFORMED_EVIDENCE'}; }
   const counts = report?.metadata?.vulnerabilities;
   if (!object(report) || Object.hasOwn(report, 'error') || report.auditReportVersion !== 2 || !object(report.vulnerabilities) || !object(counts) ||

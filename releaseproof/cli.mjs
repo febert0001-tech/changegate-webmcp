@@ -106,7 +106,7 @@ try {
       const filename = path.join(trustedDirectory, `.releaseproof-${randomUUID()}-${path.basename(destination)}.rollback`);
       // Both operations create exclusively; never overwrite a colliding name,
       // open a destination for writing, or follow its link to modify a target.
-      if (entry.isSymbolicLink()) fs.symlinkSync(fs.readlinkSync(destination), filename);
+      if (entry.isSymbolicLink()) fs.symlinkSync(fs.readlinkSync(destination, {encoding: 'buffer'}), filename);
       else if (entry.isFile()) fs.linkSync(destination, filename);
       else throw new EvidenceError('report output must be a file or symbolic link');
       backups.set(index, filename);

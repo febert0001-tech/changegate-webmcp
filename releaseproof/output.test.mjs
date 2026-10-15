@@ -371,3 +371,50 @@ test('reserved recovery marker colliding with an input link is never overwritten
     assert.equal(fs.readFileSync(html, 'utf8'), previous.html);
   });
 });
+
+for (const name of ['review.json', 'review.html']) for (const form of ['absolute', 'relative']) {
+  test(`POSIX rollback preserves non-UTF8 ${form} symlink target bytes for ${name}`, {skip: process.platform === 'win32'}, () => {
+    runOutputCase({mode: 'rename-second', setup: ({directory, output}) => {
+      const basename = Buffer.concat([Buffer.from('synthetic-target-'), Buffer.from([0xff, 0x80, 0xfe])]);
+      const target = Buffer.concat([Buffer.from(directory + path.sep), basename]);
+      const linkTarget = form === 'absolute' ? target : Buffer.concat([Buffer.from('../'), basename]);
+      const bytes = Buffer.from('synthetic unrelated original target\n');
+      fs.writeFileSync(target, bytes);
+      const destination = path.join(output, name);
+      fs.unlinkSync(destination);
+      fs.symlinkSync(linkTarget, destination);
+      assert.deepEqual(fs.readlinkSync(destination, {encoding: 'buffer'}), linkTarget);
+      return {target, linkTarget, bytes};
+    }}, ({result, output, json, html, previous, observation, extra}) => {
+      assert.equal(result.status, 2);
+      assert.equal(result.stdout, '');
+      assert.equal(result.stderr, 'Report generation failed; inspect the trusted local inputs and output directory.\n');
+      assert.equal(observation.firstDestinationPublished, true);
+      const destination = path.join(output, name);
+      assert.equal(fs.lstatSync(destination).isSymbolicLink(), true);
+      assert.deepEqual(fs.readlinkSync(destination, {encoding: 'buffer'}), extra.linkTarget);
+      assert.deepEqual(fs.readFileSync(extra.target), extra.bytes);
+      assert.deepEqual(fs.readFileSync(destination), extra.bytes);
+      assert.equal(fs.readFileSync(name === 'review.json' ? html : json, 'utf8'), name === 'review.json' ? previous.html : previous.json);
+      assert.equal(fs.existsSync(path.join(output, 'review-publication-error.json')), false);
+    });
+  });
+}
+
+test('POSIX non-UTF8 symlink target aliasing an input is rejected without changing link or input bytes', {skip: process.platform === 'win32'}, () => {
+  runOutputCase({setup: ({directory, json, expected}) => {
+    const target = Buffer.concat([Buffer.from(directory + '/synthetic-input-alias-'), Buffer.from([0xff, 0x80])]);
+    fs.linkSync(expected, target);
+    fs.unlinkSync(json);
+    fs.symlinkSync(target, json);
+    return {target, bytes: fs.readFileSync(expected)};
+  }}, ({result, json, html, previous, observation, extra}) => {
+    assert.equal(result.status, 2);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr, 'output must not overwrite an input\n');
+    assert.equal(observation.firstDestinationPublished, false);
+    assert.deepEqual(fs.readlinkSync(json, {encoding: 'buffer'}), extra.target);
+    assert.deepEqual(fs.readFileSync(extra.target), extra.bytes);
+    assert.equal(fs.readFileSync(html, 'utf8'), previous.html);
+  });
+});
