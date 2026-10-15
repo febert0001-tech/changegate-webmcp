@@ -46,6 +46,11 @@ try {
     const expected = expectedInput.value;
     const packet = packetInput.value;
     const output = path.resolve(options.get('--out'));
+    const recoveryMarker = path.join(output, 'review-publication-error.json');
+    try {
+      fs.lstatSync(recoveryMarker);
+      throw new EvidenceError('Report publication recovery required; inspect the output directory before retrying.');
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
     const outputs = ['review.json', 'review.html'].map(name => path.join(output, name));
     const sameFile = (left, right) => left.dev === right.dev && left.ino === right.ino;
     const identities = [expectedInput.identity, packetInput.identity];
@@ -90,21 +95,81 @@ try {
       }
       return filename;
     };
+    const backups = new Map();
+    const published = new Set();
+    let retainBackups = false;
+    let primaryFailure;
+    const backup = (destination, index) => {
+      let entry;
+      try { entry = fs.lstatSync(destination); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; else return; }
+      const filename = path.join(trustedDirectory, `.releaseproof-${randomUUID()}-${path.basename(destination)}.rollback`);
+      // Both operations create exclusively; never overwrite a colliding name,
+      // open a destination for writing, or follow its link to modify a target.
+      if (entry.isSymbolicLink()) fs.symlinkSync(fs.readlinkSync(destination), filename);
+      else if (entry.isFile()) fs.linkSync(destination, filename);
+      else throw new EvidenceError('report output must be a file or symbolic link');
+      backups.set(index, filename);
+    };
     try {
-      const stagedJson = stage('review.json', json);
-      const stagedHtml = stage('review.html', html);
+      const staged = [stage('review.json', json), stage('review.html', html)];
       protectDestinations(destinations);
-      fs.renameSync(stagedJson, destinations[0]);
-      temporary.delete(stagedJson);
-      fs.renameSync(stagedHtml, destinations[1]);
-      temporary.delete(stagedHtml);
+      destinations.forEach(backup);
+      protectDestinations(destinations);
+      try {
+        for (const [index, filename] of staged.entries()) {
+          fs.renameSync(filename, destinations[index]);
+          published.add(index);
+          temporary.delete(filename);
+        }
+      } catch (publicationError) {
+        if (published.size > 0) {
+          let rollbackFailed = false;
+          // Restore both prior entries, including an originally absent output.
+          // Renaming between hard links to the same inode can be a no-op, so
+          // backup names remain tracked until cleanup even after a restore.
+          for (const index of [1, 0]) {
+            try {
+              if (backups.has(index)) fs.renameSync(backups.get(index), destinations[index]);
+              else if (published.has(index)) fs.unlinkSync(destinations[index]);
+            } catch { rollbackFailed = true; }
+          }
+          if (rollbackFailed) {
+            retainBackups = true;
+            // Durable warning where writable; exclusive creation protects even
+            // an input or unrelated link colliding with this reserved name.
+            let descriptor;
+            try {
+              descriptor = fs.openSync(recoveryMarker, 'wx', 0o600);
+              fs.writeFileSync(descriptor, JSON.stringify({status: 'ROLLBACK_INCOMPLETE',
+                use_reports: false, backup_names: [...backups.values()].map(filename => path.basename(filename)),
+                instruction: 'Do not use the report pair. Restore prior entries from retained rollback files, or remove incomplete reports, then remove this marker after repair.'}, null, 2) + '\n');
+              fs.fsyncSync(descriptor);
+            } catch { /* The stderr failure must survive even if the marker cannot be written. */ }
+            finally {
+              if (descriptor !== undefined) {
+                try { fs.closeSync(descriptor); } catch { /* Preserve the rollback failure diagnostic. */ }
+              }
+            }
+            throw new EvidenceError('Report publication failed; rollback incomplete. Do not use review.json/review.html. Preserve rollback files and inspect review-publication-error.json if present.');
+          }
+        }
+        throw publicationError;
+      }
+    } catch (error) {
+      primaryFailure = error;
+      throw error;
     } finally {
       let cleanupError;
-      for (const filename of temporary) {
+      const owned = [...temporary, ...(retainBackups ? [] : backups.values())];
+      for (const filename of owned) {
         try { fs.unlinkSync(filename); }
         catch (error) { if (error.code !== 'ENOENT') cleanupError ??= error; }
       }
-      if (cleanupError) throw cleanupError;
+      if (cleanupError) {
+        if (!primaryFailure) throw cleanupError;
+        console.error('Report cleanup incomplete; inspect retained output-directory files.');
+      }
     }
     console.log(`Report generated: ${report.qc_verdict}; ${report.provenance_status}; human release PENDING.`);
   }

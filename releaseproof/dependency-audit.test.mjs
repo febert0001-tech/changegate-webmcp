@@ -27,3 +27,45 @@ for (const [name, mutate] of [
   const value = result(1); mutate(value);
   assert.equal(classifyAudit(value).outcome, 'MALFORMED_EVIDENCE');
 });
+
+const severities = ['info', 'low', 'moderate', 'high', 'critical'];
+const single = (entrySeverity, metadataSeverity) => ({status: 1, signal: null,
+  stdout: Buffer.from(JSON.stringify({auditReportVersion: 2,
+    vulnerabilities: {synthetic: {name: 'synthetic', severity: entrySeverity, via: []}},
+    metadata: {vulnerabilities: {...Object.fromEntries(severities.map(key => [key, key === metadataSeverity ? 1 : 0])), total: 1}}}))});
+for (const [index, severity] of severities.entries()) {
+  test(`reconciles valid entry and metadata bucket ${severity}`, () => {
+    const value = single(severity, severity);
+    const bytes = Buffer.from(value.stdout);
+    const classified = classifyAudit(value);
+    assert.equal(classified.outcome, 'COMPLETED_WITH_FINDINGS');
+    assert.equal(classified.counts[severity], 1);
+    assert.deepEqual(value.stdout, bytes);
+  });
+  test(`rejects metadata ${severity} when the sole entry has a different severity`, () => {
+    const value = single(severities[(index + 1) % severities.length], severity);
+    const bytes = Buffer.from(value.stdout);
+    assert.deepEqual(classifyAudit(value), {outcome: 'MALFORMED_EVIDENCE'});
+    assert.deepEqual(value.stdout, bytes, 'raw inconsistent evidence remains intact');
+  });
+}
+for (const severity of [undefined, null, false, 7, [], {}, 'CRITICAL', 'unknown']) test(`rejects malformed entry severity ${JSON.stringify(severity)}`, () => {
+  const value = single(severity, 'high');
+  const bytes = Buffer.from(value.stdout);
+  assert.deepEqual(classifyAudit(value), {outcome: 'MALFORMED_EVIDENCE'});
+  assert.deepEqual(value.stdout, bytes);
+});
+test('tallies multiple entries across all buckets without changing raw bytes', () => {
+  const report = {auditReportVersion: 2, vulnerabilities: Object.fromEntries(severities.map(severity =>
+    [severity, {name: severity, severity, via: []}])),
+  metadata: {vulnerabilities: {...Object.fromEntries(severities.map(key => [key, 1])), total: severities.length}}};
+  const value = {status: 1, signal: null, stdout: Buffer.from(JSON.stringify(report))};
+  const bytes = Buffer.from(value.stdout);
+  assert.equal(classifyAudit(value).outcome, 'COMPLETED_WITH_FINDINGS');
+  assert.deepEqual(value.stdout, bytes);
+  report.vulnerabilities.high.severity = 'critical'; // Same entry count and aggregate total; different buckets.
+  value.stdout = Buffer.from(JSON.stringify(report));
+  const inconsistentBytes = Buffer.from(value.stdout);
+  assert.deepEqual(classifyAudit(value), {outcome: 'MALFORMED_EVIDENCE'});
+  assert.deepEqual(value.stdout, inconsistentBytes);
+});

@@ -72,7 +72,7 @@ jobs:
       - name: Typecheck application integration
         run: npm run typecheck 2>&1 | tee work/hosted-smoke/typecheck.log
       - name: Lint changed integration sources
-        run: npx eslint src/app/page.tsx src/app/releaseproof/page.tsx next.config.ts releaseproof/hosted-build.mjs releaseproof/hosted-build.test.mjs releaseproof/hosted-smoke.mjs releaseproof/dependency-audit.mjs releaseproof/dependency-audit.test.mjs 2>&1 | tee work/hosted-smoke/lint.log
+        run: npx eslint src/app/page.tsx src/app/releaseproof/page.tsx next.config.ts releaseproof/hosted-build.mjs releaseproof/hosted-build.test.mjs releaseproof/hosted-smoke.mjs releaseproof/dependency-audit.mjs releaseproof/dependency-audit.test.mjs releaseproof/cli.mjs releaseproof/output.test.mjs 2>&1 | tee work/hosted-smoke/lint.log
       - name: Install isolated pinned browser for GitHub-only smoke
         run: |
           npm install --prefix "$RUNNER_TEMP/releaseproof-browser" --no-save --package-lock=false --ignore-scripts playwright@1.56.1

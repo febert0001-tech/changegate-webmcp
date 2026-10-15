@@ -21,6 +21,9 @@ export function classifyAudit(result) {
     Object.keys(report.vulnerabilities).length !== counts.total ||
     Object.entries(report.vulnerabilities).some(([name, item]) => !object(item) || item.name !== name || !severities.includes(item.severity) || !Array.isArray(item.via)) ||
     result.status !== (counts.total > 0 ? 1 : 0)) return {outcome: 'MALFORMED_EVIDENCE'};
+  const tally = Object.fromEntries(severities.map(severity => [severity, 0]));
+  for (const item of Object.values(report.vulnerabilities)) tally[item.severity]++;
+  if (severities.some(severity => tally[severity] !== counts[severity])) return {outcome: 'MALFORMED_EVIDENCE'};
   return {outcome: counts.total > 0 ? 'COMPLETED_WITH_FINDINGS' : 'COMPLETED_NO_FINDINGS', counts};
 }
 
