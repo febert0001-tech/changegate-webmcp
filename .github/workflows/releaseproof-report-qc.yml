@@ -24,11 +24,13 @@ jobs:
         with:
           node-version: '24'
       - name: Verify report contracts and failure controls
-        run: node --test releaseproof/report.test.mjs releaseproof/cli.test.mjs releaseproof/corrections.test.mjs releaseproof/output.test.mjs releaseproof/input-review.test.mjs releaseproof/unicode.test.mjs releaseproof/evidence-items.test.mjs releaseproof/html-provenance.test.mjs releaseproof/producer-compat.test.mjs releaseproof/audit-risk-review.test.mjs
+        run: node --test releaseproof/report.test.mjs releaseproof/cli.test.mjs releaseproof/corrections.test.mjs releaseproof/output.test.mjs releaseproof/input-review.test.mjs releaseproof/unicode.test.mjs releaseproof/evidence-items.test.mjs releaseproof/html-provenance.test.mjs releaseproof/producer-compat.test.mjs releaseproof/audit-risk-review.test.mjs releaseproof/demo.test.mjs
       - name: Generate synthetic review example
         run: |
           node releaseproof/write-example.mjs releaseproof-example
           node releaseproof/cli.mjs --expected releaseproof-example/expected.json --packet releaseproof-example/packet.json --out releaseproof-output
+      - name: Demonstrate synthetic missing-artifact rejection and separate recovery
+        run: node releaseproof/demo.mjs releaseproof-output/demo
       - name: Preserve GitHub QC identity and synthetic outputs
         env:
           REPORT_SHA: ${{ github.sha }}
@@ -37,7 +39,8 @@ jobs:
           REPORT_REPOSITORY: ${{ github.repository }}
         run: |
           node --input-type=module -e 'import fs from "node:fs"; fs.writeFileSync("releaseproof-output/github-qc.json", JSON.stringify({repository:process.env.REPORT_REPOSITORY,sha:process.env.REPORT_SHA,run_id:process.env.REPORT_RUN_ID,attempt:process.env.REPORT_RUN_ATTEMPT,scope:"report-code and synthetic fixtures only",release_approved:false},null,2)+"\n");'
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: releaseproof-report-${{ github.sha }}
           path: releaseproof-output/
