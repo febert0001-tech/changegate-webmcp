@@ -1,0 +1,118 @@
+name: ReleaseProof report QC
+
+on:
+  push:
+    branches: [review/releaseproof-report-20261014]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: releaseproof-report-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  report-contract:
+    if: github.repository == 'febert0001-tech/changegate-webmcp' && github.ref == 'refs/heads/review/releaseproof-report-20261014'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Verify report contracts and failure controls
+        run: node --test releaseproof/report.test.mjs releaseproof/cli.test.mjs releaseproof/corrections.test.mjs releaseproof/output.test.mjs releaseproof/input-review.test.mjs releaseproof/unicode.test.mjs releaseproof/evidence-items.test.mjs releaseproof/html-provenance.test.mjs releaseproof/producer-compat.test.mjs releaseproof/audit-risk-review.test.mjs releaseproof/demo.test.mjs releaseproof/demo-page.test.mjs releaseproof/hosted-build.test.mjs
+      - name: Generate synthetic review example
+        run: |
+          node releaseproof/write-example.mjs releaseproof-example
+          node releaseproof/cli.mjs --expected releaseproof-example/expected.json --packet releaseproof-example/packet.json --out releaseproof-output
+      - name: Demonstrate synthetic missing-artifact rejection and separate recovery
+        run: node releaseproof/demo.mjs releaseproof-output/demo
+      - name: Preserve GitHub QC identity and synthetic outputs
+        env:
+          REPORT_SHA: ${{ github.sha }}
+          REPORT_RUN_ID: ${{ github.run_id }}
+          REPORT_RUN_ATTEMPT: ${{ github.run_attempt }}
+          REPORT_REPOSITORY: ${{ github.repository }}
+        run: |
+          node --input-type=module -e 'import fs from "node:fs"; fs.writeFileSync("releaseproof-output/github-qc.json", JSON.stringify({repository:process.env.REPORT_REPOSITORY,sha:process.env.REPORT_SHA,run_id:process.env.REPORT_RUN_ID,attempt:process.env.REPORT_RUN_ATTEMPT,scope:"report-code and synthetic fixtures only",release_approved:false},null,2)+"\n");'
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: releaseproof-report-${{ github.sha }}
+          path: releaseproof-output/
+          retention-days: 35
+          if-no-files-found: error
+
+  hosted-app:
+    if: github.repository == 'febert0001-tech/changegate-webmcp' && github.ref == 'refs/heads/review/releaseproof-report-20261014'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install existing locked application dependencies
+        run: |
+          mkdir -p work/hosted-smoke
+          npm ci 2>&1 | tee work/hosted-smoke/install.log
+      - name: Preserve existing application and authority coverage
+        run: npm test -- src/domain tests 2>&1 | tee work/hosted-smoke/application-tests.log
+      - name: Generate synthetic bundle and validate production build
+        run: npm run build 2>&1 | tee work/hosted-smoke/build.log
+      - name: Typecheck application integration
+        run: npm run typecheck 2>&1 | tee work/hosted-smoke/typecheck.log
+      - name: Lint changed integration sources
+        run: npx eslint src/app/page.tsx src/app/releaseproof/page.tsx next.config.ts releaseproof/hosted-build.mjs releaseproof/hosted-build.test.mjs releaseproof/hosted-smoke.mjs releaseproof/dependency-audit.mjs releaseproof/dependency-audit.test.mjs releaseproof/cli.mjs releaseproof/output.test.mjs 2>&1 | tee work/hosted-smoke/lint.log
+      - name: Install isolated pinned browser for GitHub-only smoke
+        run: |
+          npm install --prefix "$RUNNER_TEMP/releaseproof-browser" --no-save --package-lock=false --ignore-scripts playwright@1.56.1
+          node "$RUNNER_TEMP/releaseproof-browser/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Check production routes and retained links in ordinary Chromium
+        run: |
+          cp releaseproof/hosted-smoke.mjs "$RUNNER_TEMP/releaseproof-browser/smoke.mjs"
+          node "$RUNNER_TEMP/releaseproof-browser/smoke.mjs"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: releaseproof-hosted-${{ github.sha }}
+          path: |
+            work/hosted-smoke/
+            work/releaseproof-hosted-demo/
+            public/releaseproof-demo/
+          retention-days: 35
+          if-no-files-found: error
+
+  dependency-evidence:
+    if: github.repository == 'febert0001-tech/changegate-webmcp' && github.ref == 'refs/heads/review/releaseproof-report-20261014'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Capture native full and production audits and fail on findings
+        run: node releaseproof/dependency-audit.mjs
+      - name: Verify audit failure classification
+        if: always()
+        run: node --test releaseproof/dependency-audit.test.mjs
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: releaseproof-dependency-audit-${{ github.sha }}-${{ github.run_attempt }}
+          path: work/dependency-audit/
+          retention-days: 35
+          if-no-files-found: error
+
