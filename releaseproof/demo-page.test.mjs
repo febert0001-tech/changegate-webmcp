@@ -159,3 +159,58 @@ for (const failDemo of [true, false]) test(`entry write failure retains evidence
   assert.match(read(root, 'WALKTHROUGH.md'), /index.html/);
   if (failDemo) assert.match(receipt.failure, /expected exit 2, observed 1/);
 });
+
+test('completed receipt in memory cannot complete a bundle without retained receipt.json', () => {
+  const html = renderDemoPage(completed(), new Set(DEMO_FILES.filter(name => name !== 'receipt.json')));
+  assert.match(html, /FAILED \/ INCOMPLETE/);
+  assert.match(html, /receipt.json — unavailable/);
+  assert.match(html, /Recovery boundary unavailable/);
+  assert.ok(!html.includes('SYNTHETIC DEMONSTRATION COMPLETED'));
+});
+
+test('receipt retention failure propagates while writable entry page stays incomplete', t => {
+  const root = path.join(temp(t), 'demo');
+  let call = 0;
+  const spawn = (command, args, options) => {
+    const result = spawnSync(command, args, options);
+    if (++call === 3) fs.mkdirSync(path.join(root, 'receipt.json'));
+    return result;
+  };
+  assert.throws(() => runDemo(root, {spawn, env: {}}), /EEXIST/);
+  assert.equal(call, 3);
+  const html = read(root, 'index.html');
+  assert.match(html, /FAILED \/ INCOMPLETE/);
+  assert.match(html, /receipt.json — unavailable/);
+  assert.match(html, /Recovery boundary unavailable/);
+  assert.ok(!html.includes('SYNTHETIC DEMONSTRATION COMPLETED'));
+  assert.ok(!hrefs(html).includes('receipt.json'));
+  assert.match(read(root, 'recovery.stdout'), /Report generated: FAILED_WITH_FINDINGS/);
+  assert.ok(fs.existsSync(path.join(root, 'recovery-output/review.json')));
+  assert.ok(fs.existsSync(path.join(root, 'recovery-output/review.html')));
+  assert.match(read(root, 'WALKTHROUGH.md'), /index.html/);
+  assert.match(html, /deployment.authorized=false/);
+});
+
+for (const stopAt of [1, 2]) test(`introduction describes intent when attempt ${stopAt} fails before recovery`, t => {
+  const root = path.join(temp(t), 'demo');
+  let call = 0;
+  const spawn = (command, args, options) => {
+    if (++call === stopAt) return {status: 1, signal: null};
+    return spawnSync(command, args, options);
+  };
+  assert.throws(() => runDemo(root, {spawn, env: {}}), /Demo process failure/);
+  assert.equal(call, stopAt);
+  const receipt = JSON.parse(read(root, 'receipt.json'));
+  assert.equal(receipt.outcome, 'FAILED');
+  assert.ok(!receipt.attempts.some(item => item.id === 'recovery'));
+  const html = read(root, 'index.html');
+  const header = html.split('<header>')[1].split('</header>')[0];
+  assert.match(header, /Intended sequence: omit/);
+  assert.match(header, /Observed process results below show which attempts actually ran/);
+  assert.ok(!header.includes('is omitted'));
+  assert.ok(!header.includes('then restored'));
+  assert.match(html, /NOT RUN/);
+  assert.match(html, /Recovery boundary unavailable/);
+  assert.ok(!html.includes('SYNTHETIC DEMONSTRATION COMPLETED'));
+  assert.ok(!hrefs(html).includes('recovery-output/review.html'));
+});
