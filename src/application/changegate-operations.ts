@@ -68,6 +68,22 @@ export interface AuditTrailProjection {
   readonly truncated: boolean;
 }
 
+export interface RefundVerificationProjection {
+  readonly result: "VERIFIED" | "MISMATCH";
+  readonly reason: "LEDGER_MISMATCH" | "READ_FAILED" | null;
+  readonly expected: {
+    readonly orderId: string;
+    readonly currency: string;
+    readonly amountCents: number;
+  };
+  readonly observed: {
+    readonly orderId: string;
+    readonly currency: string;
+    readonly refundedAmountCents: number;
+    readonly transactionCount: number;
+  } | null;
+}
+
 export type ChangeCommandResult =
   | {
       readonly status: "SUCCESS";
@@ -98,6 +114,7 @@ export interface HumanExecuteIdentity {
 }
 
 export interface ChangeGateOperations extends ChangeGateWebMcpOperations {
+  readonly getRefundVerification: () => RefundVerificationProjection | null;
   readonly getRevision: () => number;
   readonly subscribe: (listener: () => void) => () => void;
   readonly approvePendingChange: () => ChangeCommandResult;
@@ -258,6 +275,29 @@ export function createChangeGateOperations(): ChangeGateOperations {
     });
   };
 
+  const getRefundVerification = (): RefundVerificationProjection | null => {
+    const change = currentState.change;
+    if (change === null || !("verificationEvidence" in change)) return null;
+
+    const evidence = change.verificationEvidence;
+    const { result, expected, observed } = evidence;
+    return Object.freeze({
+      result,
+      reason: result === "MISMATCH" ? evidence.reason : null,
+      expected: Object.freeze({
+        orderId: expected.orderId,
+        currency: expected.currency,
+        amountCents: expected.amountCents,
+      }),
+      observed: observed === null ? null : Object.freeze({
+        orderId: observed.orderId,
+        currency: observed.currency,
+        refundedAmountCents: observed.refundedAmountCents,
+        transactionCount: observed.transactionCount,
+      }),
+    });
+  };
+
   const getRevision = (): number => revision;
 
   const subscribe = (listener: () => void): (() => void) => {
@@ -376,6 +416,7 @@ export function createChangeGateOperations(): ChangeGateOperations {
     getChangePolicy,
     getChangeProposal,
     getAuditTrail,
+    getRefundVerification,
     getRevision,
     subscribe,
     proposeChange,

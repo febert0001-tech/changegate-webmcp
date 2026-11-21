@@ -5,6 +5,7 @@ import {
   createChangeGateOperations,
   createWebMcpOperationsFacade,
 } from "../application/changegate-operations";
+import { createDecisionReceipt, SYNTHETIC_ENVIRONMENT_LABEL } from "../application/decision-receipt";
 import { hasRefundProposalShape } from "../domain/refund";
 import { getWebMcpModelContext } from "../webmcp/native-contract";
 import { startWebMcpRegistration } from "../webmcp/registration";
@@ -35,6 +36,24 @@ export function ChangeGateWebMcp() {
   const pendingExecution = operations.getPendingRefundExecution();
   const isRefund = proposal !== null && hasRefundProposalShape(proposal);
   const audit = operations.getAuditTrail();
+  const verification = operations.getRefundVerification();
+
+  function downloadDecisionReceipt() {
+    if (proposal === null) return;
+    const receipt = createDecisionReceipt(proposal, audit, verification, new Date());
+    if (receipt === null) return;
+
+    const blob = new Blob([JSON.stringify(receipt, null, 2) + "\n"], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "changegate-decision-receipt.json";
+    try {
+      link.click();
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    }
+  }
 
   // Display only: never supply these values to an authorization or execution call.
   const lifecycle = proposal?.lifecycle ?? "NONE";
@@ -73,7 +92,7 @@ export function ChangeGateWebMcp() {
           <div><h1>ChangeGate</h1><p>Verified Human Control Plane</p></div>
         </div>
         <div className={styles.headerBadges}>
-          <span className={styles.environmentBadge}>Synthetic environment</span>
+          <span className={styles.environmentBadge}>{SYNTHETIC_ENVIRONMENT_LABEL}</span>
           <p className={styles.integrationStatus} data-availability={availability} role="status" aria-live="polite">
             <span className={styles.statusDot} aria-hidden="true" />
             <span><strong>WebMCP</strong> · {LABELS[availability]}</span>
@@ -205,7 +224,13 @@ export function ChangeGateWebMcp() {
           </aside>
         </div>
         <section className={styles.auditPanel} aria-labelledby="audit-heading">
-          <div className={styles.cardHeading}><div><p className={styles.eyebrow}>Decision & execution record</p><h2 id="audit-heading">Audit trail</h2></div><span className={styles.eventCount}>{audit.totalEvents} events</span></div>
+          <div className={styles.cardHeading}>
+            <div><p className={styles.eyebrow}>Decision & execution record</p><h2 id="audit-heading">Audit trail</h2></div>
+            <div className={styles.auditActions}>
+              <span className={styles.eventCount}>{audit.totalEvents} events</span>
+              {isRefund && <button className={styles.receiptButton} type="button" onClick={downloadDecisionReceipt}>Download decision receipt</button>}
+            </div>
+          </div>
           {audit.events.length === 0 ? <p className={styles.auditEmpty}>No audit events yet. The chain begins when the agent proposes a change.</p> : (
             <ol className={styles.auditChain}>
               {audit.events.map((event) => (

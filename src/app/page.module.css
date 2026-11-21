@@ -106,6 +106,10 @@
 .emptyNote { font-size: 10px; color: #53677a; }
 .auditPanel { margin-top: 22px; padding: 22px 24px 12px; }
 .auditPanel h2 { font-size: 17px; }
+.auditActions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.receiptButton { min-height: 44px; padding: 8px 12px; border: 1px solid #aabfc9; border-radius: 6px; background: #fff; color: #245d85; font-size: 12px; font-weight: 650; cursor: pointer; }
+.receiptButton:hover { background: #edf5f7; }
+.receiptButton:focus-visible { outline: 3px solid #197e9c; outline-offset: 4px; }
 .auditChain { margin-top: 18px; list-style: none; }
 .auditChain li { display: grid; grid-template-columns: 30px 90px minmax(0, 1fr) minmax(100px, auto); align-items: center; gap: 16px; min-height: 42px; border-top: 1px solid #e8edf2; padding: 8px 0; }
 .sequence { color: #687e90; font: 11px var(--font-geist-mono), monospace; }
