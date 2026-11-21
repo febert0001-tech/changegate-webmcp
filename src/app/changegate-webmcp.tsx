@@ -9,6 +9,7 @@ import { createDecisionReceipt, SYNTHETIC_ENVIRONMENT_LABEL } from "../applicati
 import { hasRefundProposalShape } from "../domain/refund";
 import { getWebMcpModelContext } from "../webmcp/native-contract";
 import { startWebMcpRegistration } from "../webmcp/registration";
+import { DecisionReceiptViewer } from "./decision-receipt-viewer";
 import styles from "./page.module.css";
 
 type Availability = "CHECKING" | "AVAILABLE" | "UNSUPPORTED" | "FAILED";
@@ -226,11 +227,11 @@ export function ChangeGateWebMcp() {
         <section className={styles.auditPanel} aria-labelledby="audit-heading">
           <div className={styles.cardHeading}>
             <div><p className={styles.eyebrow}>Decision & execution record</p><h2 id="audit-heading">Audit trail</h2></div>
-            <div className={styles.auditActions}>
-              <span className={styles.eventCount}>{audit.totalEvents} events</span>
-              {isRefund && <button className={styles.receiptButton} type="button" onClick={downloadDecisionReceipt}>Download decision receipt</button>}
-            </div>
+            <span className={styles.eventCount}>{audit.totalEvents} events</span>
           </div>
+          <DecisionReceiptViewer>
+            {isRefund && <button className={styles.receiptButton} type="button" onClick={downloadDecisionReceipt}>Download decision receipt</button>}
+          </DecisionReceiptViewer>
           {audit.events.length === 0 ? <p className={styles.auditEmpty}>No audit events yet. The chain begins when the agent proposes a change.</p> : (
             <ol className={styles.auditChain}>
               {audit.events.map((event) => (
