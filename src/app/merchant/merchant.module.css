@@ -1,0 +1,24 @@
+.shell { max-width: 1140px; margin: auto; padding: 34px 22px 60px; color: #203045; }
+.header { display: flex; flex-wrap: wrap; gap: 20px; justify-content: space-between; align-items: flex-start; }
+.header a { color: #126b70; font-weight: 650; }
+.header h1 { margin: 6px 0; font-size: clamp(25px, 4vw, 38px); }
+.header p { margin: 0 0 6px; }
+.notice { color: #8e2631; min-height: 24px; margin: 12px 0; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; align-items: start; }
+.card { padding: 22px; border: 1px solid #d3dee6; border-radius: 10px; background: #fff; }
+.card h2 { font-size: 19px; margin: 0 0 12px; }
+.card h3 { font-size: 15px; margin: 16px 0 4px; }
+.card p, .card li, .card dd { line-height: 1.55; overflow-wrap: anywhere; }
+.card form { margin: 10px 0; }
+.card label { display: block; font-weight: 600; margin: 12px 0; }
+.card input, .card select { display: block; width: 100%; margin-top: 4px; padding: 9px; border: 1px solid #a1b6c4; border-radius: 5px; color: #203045; background: #fff; }
+.shell button { min-height: 40px; padding: 7px 12px; border: 1px solid #a1b6c4; border-radius: 5px; color: #164857; background: #edf5f7; font-weight: 600; cursor: pointer; }
+.shell button:disabled { opacity: .6; cursor: default; }
+.shell :is(button, input, select):focus-visible { outline: 3px solid #197e9c; outline-offset: 2px; }
+.facts { display: grid; gap: 7px; margin: 10px 0; }
+.facts dt { color: #53677a; font-size: 12px; }
+.facts dd { margin: 0; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.status { color: #126b70; font-weight: 700; }
+.queue { display: grid; gap: 8px; list-style: none; padding: 0; }
+@media (max-width: 780px) { .grid { grid-template-columns: 1fr; } }

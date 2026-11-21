@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { SYNTHETIC_ENVIRONMENT_LABEL } from "./decision-receipt";
+import { merchantEnvironments } from "../merchant/contracts";
 
 const receiptSummarySchema = z.object({
   schemaVersion: z.literal(1),
-  environment: z.literal(SYNTHETIC_ENVIRONMENT_LABEL),
+  environment: z.enum([SYNTHETIC_ENVIRONMENT_LABEL, ...merchantEnvironments]),
   decision: z.object({
     status: z.enum(["NOT_REQUESTED", "PENDING", "APPROVED", "REJECTED", "EXPIRED"]).nullable(),
   }),
