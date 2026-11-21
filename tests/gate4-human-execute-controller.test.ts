@@ -4,6 +4,7 @@ import {
   createChangeGateOperations, createWebMcpOperationsFacade,
   type ChangeGateOperations, type ChangeGateWebMcpOperations, type HumanExecuteIdentity,
 } from "../src/application/changegate-operations";
+import { createDecisionReceipt } from "../src/application/decision-receipt";
 import * as ledgerModule from "../src/application/synthetic-refund-ledger";
 import * as verifierModule from "../src/application/refund-verifier";
 import * as engine from "../src/domain/engine";
@@ -411,7 +412,7 @@ describe("Gate 4 Unit 3 human Execute orchestration", () => {
       expect(key in operations).toBe(false);
       expect(key in facade).toBe(false);
     }
-    for (const key of ["getPendingRefundExecution", "executeApprovedRefund"]) expect(key in facade).toBe(false);
+    for (const key of ["getPendingRefundExecution", "executeApprovedRefund", "getRefundVerification"]) expect(key in facade).toBe(false);
     expect(GATE_2_TOOL_NAMES).toEqual([
       "get_environment_status", "get_service_details", "get_change_policy", "get_change_proposal", "get_audit_trail",
       "propose_change", "request_change_approval",
@@ -421,5 +422,109 @@ describe("Gate 4 Unit 3 human Execute orchestration", () => {
     expectTypeOf<Extract<keyof ChangeGateWebMcpOperations, "executeApprovedRefund" | "getPendingRefundExecution" | "reader" | "writer" | "ledger" | "verifier">>().toEqualTypeOf<never>();
     expect(operations.executeApprovedRefund).toHaveLength(1);
     expect(createChangeGateOperations).toHaveLength(0);
+  });
+});
+
+describe("refund decision receipts", () => {
+  const exportedAt = new Date("2026-11-21T18:00:00.000Z");
+
+  function receipt(operations: ChangeGateOperations, at = exportedAt) {
+    const proposal = operations.getChangeProposal();
+    if (proposal === null) throw new Error("Expected a refund proposal");
+    const result = createDecisionReceipt(proposal, operations.getAuditTrail(), operations.getRefundVerification(), at);
+    if (result === null) throw new Error("Expected a refund receipt");
+    return result;
+  }
+
+  it("records approval and pending Execute without implying a refund or readback", () => {
+    const context = setup();
+    approve(context);
+    expect(receipt(context.operations)).toMatchObject({
+      schemaVersion: 1,
+      environment: "Synthetic environment",
+      exportedAt: exportedAt.toISOString(),
+      proposal: { id: refund.proposalId, orderId: "4821", requestedAmountCents: 2500, currency: "USD" },
+      decision: { status: "APPROVED" },
+      execution: { status: "PENDING_EXECUTE", refundOutcome: "NOT_EXECUTED", confirmedRefundedAmountCents: null },
+      verification: { status: "NOT_RUN", reason: null, expected: null, observed: null },
+    });
+    expect(context.write).not.toHaveBeenCalled();
+    expect(context.read).not.toHaveBeenCalled();
+  });
+
+  it("records rejection and preserves the audit sequence and unavailable event times", () => {
+    const context = setup();
+    expect(context.operations.rejectPendingChange().status).toBe("SUCCESS");
+    expect(receipt(context.operations)).toMatchObject({
+      decision: { status: "REJECTED" },
+      execution: { status: "NOT_EXECUTED", refundOutcome: "NOT_EXECUTED", confirmedRefundedAmountCents: null },
+      verification: { status: "NOT_RUN", observed: null },
+    });
+    const audit = receipt(context.operations).audit;
+    expect(audit.totalEvents).toBe(3);
+    expect(audit.truncated).toBe(false);
+    expect(audit.events.map(({ sequence, type, occurredAt }) => [sequence, type, occurredAt])).toEqual([
+      [1, "PROPOSE_CHANGE", null], [2, "REQUEST_HUMAN_APPROVAL", null], [3, "HUMAN_REJECT", null],
+    ]);
+    expect(context.write).not.toHaveBeenCalled();
+  });
+
+  it("exports a verified match twice without changing evidence or exposing authority", () => {
+    const context = setup();
+    const binding = approve(context);
+    expect(context.operations.executeApprovedRefund(binding).status).toBe("SUCCESS");
+    const before = {
+      proposal: context.operations.getChangeProposal(),
+      audit: context.operations.getAuditTrail(),
+      ledger: context.ledger.reader.readRefundState("4821"),
+      revision: context.operations.getRevision(),
+    };
+    const first = receipt(context.operations);
+    const second = receipt(context.operations, new Date(exportedAt.getTime() + 1000));
+    expect(second).toEqual({ ...first, exportedAt: "2026-11-21T18:00:01.000Z" });
+    expect(first).toMatchObject({
+      lifecycle: "SUCCEEDED",
+      decision: { status: "APPROVED" },
+      execution: { status: "EXECUTED", refundOutcome: "CONFIRMED", confirmedRefundedAmountCents: 2500 },
+      verification: {
+        status: "VERIFIED",
+        reason: null,
+        expected: { orderId: "4821", currency: "USD", amountCents: 2500 },
+        observed: { orderId: "4821", currency: "USD", refundedAmountCents: 2500, transactionCount: 1 },
+      },
+    });
+    expect(JSON.stringify(first)).not.toMatch(/approvalId|reviewInstanceId|executionId|authorization|proposalDigest|transactions/);
+    expect(context.operations.getChangeProposal()).toEqual(before.proposal);
+    expect(context.operations.getAuditTrail()).toEqual(before.audit);
+    expect(context.ledger.reader.readRefundState("4821")).toEqual(before.ledger);
+    expect(context.operations.getRevision()).toBe(before.revision);
+    expect(context.write).toHaveBeenCalledTimes(1);
+    expect(context.read).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["mismatch", "LEDGER_MISMATCH", { refundedAmountCents: 2000 }],
+    ["throw", "READ_FAILED", null],
+  ] as const)("keeps the financial outcome unknown after verification failure (%s)", (mode, reason, observed) => {
+    const context = setup(review(), "normal", mode);
+    expect(context.operations.executeApprovedRefund(approve(context)).status).toBe("SUCCESS");
+    expect(receipt(context.operations)).toMatchObject({
+      lifecycle: "FAILED",
+      decision: { status: "APPROVED" },
+      execution: { status: "EXECUTED", refundOutcome: "UNKNOWN", confirmedRefundedAmountCents: null },
+      verification: { status: "FAILED", reason, observed },
+    });
+    expect(context.ledger.reader.readRefundState("4821").refundedAmountCents).toBe(2500);
+  });
+
+  it("preserves the audit projection's truncation and full event count", () => {
+    const context = setup();
+    const proposal = context.operations.getChangeProposal();
+    if (proposal === null) throw new Error("Expected a refund proposal");
+    const audit = { ...context.operations.getAuditTrail(), totalEvents: 52, truncated: true };
+    const result = createDecisionReceipt(proposal, audit, null, exportedAt);
+    expect(result?.audit).toMatchObject({
+      totalEvents: 52, truncated: true, events: audit.events,
+    });
   });
 });

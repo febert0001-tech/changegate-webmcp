@@ -156,7 +156,8 @@ describe("Gate 4 Unit 4B presentation boundary", () => {
     visit(tree);
     expect([...calls].sort()).toEqual([
       "operations.approvePendingChange", "operations.executeApprovedRefund", "operations.getAuditTrail",
-      "operations.getChangeProposal", "operations.getPendingRefundExecution", "operations.rejectPendingChange",
+      "operations.getChangeProposal", "operations.getPendingRefundExecution", "operations.getRefundVerification",
+      "operations.rejectPendingChange",
     ]);
   });
 

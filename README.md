@@ -145,6 +145,14 @@ A normal native WebMCP success path is:
 7. Separately click **Execute approved $25.00 refund**.
 8. Observe execution, independent readback, and **VERIFIED**.
 
+## Decision receipt
+
+Choose **Download decision receipt** beside the audit trail once a synthetic refund proposal is visible. The browser saves a versioned JSON snapshot that can be opened after closing ChangeGate.
+
+Read `decision.status`, `execution.status`, and `verification.status` independently. An approved refund awaiting Execute has `PENDING_EXECUTE` and `NOT_RUN`. After Execute, `EXECUTED` means the synthetic writer reported completion. Only `VERIFIED` confirms the refund amount. Failed verification leaves `execution.refundOutcome` at `UNKNOWN` and includes any available readback.
+
+`exportedAt` is the file creation time. Audit events have sequence numbers and leave `occurredAt` null because the simulator records no event timestamps.
+
 ## Verification commands
 
 ```bash
