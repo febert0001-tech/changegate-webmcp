@@ -3,6 +3,7 @@
   "git": {
     "deploymentEnabled": {
       "feat/decision-receipt": false,
+      "feat/receipt-viewer": false,
       "main": false
     }
   }
