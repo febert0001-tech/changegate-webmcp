@@ -116,6 +116,10 @@
 .savedReceipt dl { display: flex; flex-wrap: wrap; gap: 14px 28px; }
 .savedReceipt dt { color: #53677a; font-size: 11px; }
 .savedReceipt dd { margin-top: 3px; font-size: 13px; font-weight: 650; }
+.receiptConsistency { margin-top: 14px; padding-top: 10px; border-top: 1px solid #dce5ec; font-size: 12px; }
+.receiptConsistency[data-consistency="consistent"] { color: #17613f; }
+.receiptConsistency[data-consistency="inconsistent"], .receiptConsistency[data-consistency="inconsistent"] p { color: #a32c30; }
+.receiptConsistency p { margin: 4px 0 0; }
 .auditChain { margin-top: 18px; list-style: none; }
 .auditChain li { display: grid; grid-template-columns: 30px 90px minmax(0, 1fr) minmax(100px, auto); align-items: center; gap: 16px; min-height: 42px; border-top: 1px solid #e8edf2; padding: 8px 0; }
 .sequence { color: #687e90; font: 11px var(--font-geist-mono), monospace; }

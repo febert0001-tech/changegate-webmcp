@@ -5,7 +5,7 @@ import {
   type ChangeGateOperations, type ChangeGateWebMcpOperations, type HumanExecuteIdentity,
 } from "../src/application/changegate-operations";
 import { createDecisionReceipt } from "../src/application/decision-receipt";
-import { readDecisionReceipt } from "../src/application/read-decision-receipt";
+import { checkDecisionReceiptConsistency, readDecisionReceipt } from "../src/application/read-decision-receipt";
 import * as ledgerModule from "../src/application/synthetic-refund-ledger";
 import * as verifierModule from "../src/application/refund-verifier";
 import * as engine from "../src/domain/engine";
@@ -475,6 +475,57 @@ describe("refund decision receipts", () => {
     expect(readDecisionReceipt("{")).toBeNull();
     expect(readDecisionReceipt(JSON.stringify({ ...exported, schemaVersion: 2 }))).toBeNull();
     expect(readDecisionReceipt(JSON.stringify({ ...exported, execution: { status: "SENT" } }))).toBeNull();
+  });
+
+  it("flags a verification claim added to an approval-only receipt", () => {
+    const context = setup();
+    approve(context);
+    const exported = receipt(context.operations);
+    const original = readDecisionReceipt(JSON.stringify(exported));
+    const edited = readDecisionReceipt(JSON.stringify({
+      ...exported,
+      verification: { ...exported.verification, status: "VERIFIED" },
+    }));
+    if (original === null || edited === null) throw new Error("Expected both files to open");
+    expect(checkDecisionReceiptConsistency(original)).toEqual({ status: "consistent" });
+    expect(checkDecisionReceiptConsistency(edited)).toEqual({
+      status: "inconsistent",
+      explanation: "Execution is still pending. Independent verification requires a completed execution.",
+    });
+  });
+
+  it.each([
+    ["REJECTED", "NOT_EXECUTED", "NOT_RUN", "consistent"],
+    ["APPROVED", "EXECUTED", "VERIFIED", "consistent"],
+    ["APPROVED", "EXECUTED", "FAILED", "consistent"],
+    ["APPROVED", "FAILED", "NOT_RUN", "consistent"],
+    ["REJECTED", "EXECUTED", "VERIFIED", "inconsistent"],
+    ["APPROVED", "EXECUTED", null, "unavailable"],
+    ["APPROVED", null, null, "unavailable"],
+  ] as const)("checks a %s / %s / %s receipt", (decision, execution, verification, status) => {
+    expect(checkDecisionReceiptConsistency({
+      schemaVersion: 1,
+      environment: "Synthetic environment",
+      decision: { status: decision },
+      execution: { status: execution },
+      verification: { status: verification },
+    }).status).toBe(status);
+  });
+
+  it("flags rejection paired with verification when execution evidence is missing", () => {
+    const summary = readDecisionReceipt(JSON.stringify({
+      schemaVersion: 1,
+      environment: "Synthetic environment",
+      decision: { status: "REJECTED" },
+      execution: { status: null },
+      verification: { status: "VERIFIED" },
+    }));
+    if (summary === null) throw new Error("Expected the receipt to open");
+    expect(summary.execution.status).toBeNull();
+    expect(checkDecisionReceiptConsistency(summary)).toEqual({
+      status: "inconsistent",
+      explanation: "The reported rejection conflicts with independent verification.",
+    });
   });
 
   it("records rejection and preserves the audit sequence and unavailable event times", () => {

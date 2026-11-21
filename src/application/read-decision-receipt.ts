@@ -17,6 +17,59 @@ const receiptSummarySchema = z.object({
 
 export type DecisionReceiptSummary = z.infer<typeof receiptSummarySchema>;
 
+type DecisionStatus = NonNullable<DecisionReceiptSummary["decision"]["status"]>;
+type ExecutionStatus = NonNullable<DecisionReceiptSummary["execution"]["status"]>;
+type VerificationStatus = NonNullable<DecisionReceiptSummary["verification"]["status"]>;
+
+const compatibleStatuses: Readonly<Record<ExecutionStatus, {
+  decision: readonly DecisionStatus[];
+  verification: readonly VerificationStatus[];
+}>> = {
+  NOT_EXECUTED: { decision: ["NOT_REQUESTED", "PENDING", "REJECTED", "EXPIRED"], verification: ["NOT_RUN"] },
+  PENDING_EXECUTE: { decision: ["APPROVED"], verification: ["NOT_RUN"] },
+  IN_PROGRESS: { decision: ["APPROVED"], verification: ["NOT_RUN"] },
+  EXECUTED: { decision: ["APPROVED"], verification: ["IN_PROGRESS", "VERIFIED", "FAILED"] },
+  FAILED: { decision: ["APPROVED"], verification: ["NOT_RUN"] },
+};
+
+type ReceiptConsistency =
+  | { status: "consistent" }
+  | { status: "inconsistent"; explanation: string }
+  | { status: "unavailable" };
+
+export function checkDecisionReceiptConsistency(receipt: DecisionReceiptSummary): ReceiptConsistency {
+  const { status: execution } = receipt.execution;
+  const { status: decision } = receipt.decision;
+  const { status: verification } = receipt.verification;
+  if (execution === null) {
+    if (decision !== null && verification !== null && !Object.values(compatibleStatuses).some((statuses) =>
+      statuses.decision.includes(decision) && statuses.verification.includes(verification)
+    )) {
+      return {
+        status: "inconsistent",
+        explanation: decision === "REJECTED"
+          ? "The reported rejection conflicts with independent verification."
+          : "The human decision and independent verification statuses conflict.",
+      };
+    }
+    return { status: "unavailable" };
+  }
+
+  const compatible = compatibleStatuses[execution];
+  if (verification !== null && !compatible.verification.includes(verification)) {
+    return {
+      status: "inconsistent",
+      explanation: execution === "PENDING_EXECUTE"
+        ? "Execution is still pending. Independent verification requires a completed execution."
+        : "The execution and independent verification statuses conflict.",
+    };
+  }
+  if (decision !== null && !compatible.decision.includes(decision)) {
+    return { status: "inconsistent", explanation: "The human decision and execution statuses conflict." };
+  }
+  return { status: decision === null || verification === null ? "unavailable" : "consistent" };
+}
+
 export function readDecisionReceipt(text: string): DecisionReceiptSummary | null {
   let value: unknown;
   try {

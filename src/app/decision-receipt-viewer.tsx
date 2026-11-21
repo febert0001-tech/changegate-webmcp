@@ -1,7 +1,11 @@
 "use client";
 
 import { useRef, useState, type ChangeEvent, type ReactNode } from "react";
-import { readDecisionReceipt, type DecisionReceiptSummary } from "../application/read-decision-receipt";
+import {
+  checkDecisionReceiptConsistency,
+  readDecisionReceipt,
+  type DecisionReceiptSummary,
+} from "../application/read-decision-receipt";
 import styles from "./page.module.css";
 
 function statusLabel(status: string | null): string {
@@ -9,6 +13,28 @@ function statusLabel(status: string | null): string {
   if (status === "PENDING_EXECUTE") return "Pending Execute";
   if (status === "NOT_RUN") return "Verification not run";
   return status[0] + status.slice(1).toLowerCase().replaceAll("_", " ");
+}
+
+function ReceiptSummary({ receipt }: { readonly receipt: DecisionReceiptSummary }) {
+  const consistency = checkDecisionReceiptConsistency(receipt);
+  return (
+    <section className={styles.savedReceipt} aria-label="Saved decision receipt">
+      <h3>Saved decision receipt</h3>
+      <p>Statuses reported by the file.</p>
+      <dl>
+        <div><dt>Human decision</dt><dd>{statusLabel(receipt.decision.status)}</dd></div>
+        <div><dt>Execution</dt><dd>{statusLabel(receipt.execution.status)}</dd></div>
+        <div><dt>Independent verification</dt><dd>{statusLabel(receipt.verification.status)}</dd></div>
+      </dl>
+      <div className={styles.receiptConsistency} data-consistency={consistency.status}>
+        {consistency.status === "consistent" && <strong>Internally consistent</strong>}
+        {consistency.status === "inconsistent" && (
+          <><strong>Inconsistent receipt</strong><p>{consistency.explanation}</p></>
+        )}
+        {consistency.status === "unavailable" && <strong>Consistency unavailable</strong>}
+      </div>
+    </section>
+  );
 }
 
 export function DecisionReceiptViewer({ children }: { readonly children: ReactNode }) {
@@ -46,15 +72,7 @@ export function DecisionReceiptViewer({ children }: { readonly children: ReactNo
         {receipt === "reading" && <p className={styles.auditEmpty}>Reading decision receipt…</p>}
         {receipt === "invalid" && <p className={styles.auditEmpty}>Could not open this file. Choose a ChangeGate v1 decision receipt.</p>}
         {receipt !== null && typeof receipt === "object" && (
-          <section className={styles.savedReceipt} aria-label="Saved decision receipt">
-            <h3>Saved decision receipt</h3>
-            <p>Statuses reported by the file.</p>
-            <dl>
-              <div><dt>Human decision</dt><dd>{statusLabel(receipt.decision.status)}</dd></div>
-              <div><dt>Execution</dt><dd>{statusLabel(receipt.execution.status)}</dd></div>
-              <div><dt>Independent verification</dt><dd>{statusLabel(receipt.verification.status)}</dd></div>
-            </dl>
-          </section>
+          <ReceiptSummary receipt={receipt} />
         )}
       </div>
     </>
