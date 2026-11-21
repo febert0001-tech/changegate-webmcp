@@ -5,6 +5,7 @@ import {
   type ChangeGateOperations, type ChangeGateWebMcpOperations, type HumanExecuteIdentity,
 } from "../src/application/changegate-operations";
 import { createDecisionReceipt } from "../src/application/decision-receipt";
+import { readDecisionReceipt } from "../src/application/read-decision-receipt";
 import * as ledgerModule from "../src/application/synthetic-refund-ledger";
 import * as verifierModule from "../src/application/refund-verifier";
 import * as engine from "../src/domain/engine";
@@ -450,6 +451,30 @@ describe("refund decision receipts", () => {
     });
     expect(context.write).not.toHaveBeenCalled();
     expect(context.read).not.toHaveBeenCalled();
+  });
+
+  it("opens an exported receipt as display data without retaining executable fields", () => {
+    const context = setup();
+    approve(context);
+    const exported = receipt(context.operations);
+    const summary = readDecisionReceipt(JSON.stringify({
+      ...exported,
+      execution: { ...exported.execution, approvalId: "untrusted-value" },
+    }));
+    expect(summary).toEqual({
+      schemaVersion: 1,
+      environment: "Synthetic environment",
+      decision: { status: "APPROVED" },
+      execution: { status: "PENDING_EXECUTE" },
+      verification: { status: "NOT_RUN" },
+    });
+  });
+
+  it("rejects malformed receipts, unsupported versions, and unknown status values", () => {
+    const exported = receipt(setup().operations);
+    expect(readDecisionReceipt("{")).toBeNull();
+    expect(readDecisionReceipt(JSON.stringify({ ...exported, schemaVersion: 2 }))).toBeNull();
+    expect(readDecisionReceipt(JSON.stringify({ ...exported, execution: { status: "SENT" } }))).toBeNull();
   });
 
   it("records rejection and preserves the audit sequence and unavailable event times", () => {
