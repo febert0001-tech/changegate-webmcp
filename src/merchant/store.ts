@@ -104,12 +104,23 @@ export class MerchantStore {
   }
 
   detail(id: string): MerchantCaseDetail {
-    const refundCase = projectCase(this.get(id));
-    const totalEvents = Number(this.db.prepare("SELECT COUNT(*) AS n FROM merchant_events WHERE case_id=?").get(id)?.n);
-    const events = this.db.prepare(`
-      SELECT sequence, actor, type, lifecycle, occurred_at AS occurredAt FROM merchant_events WHERE case_id=?
-      ORDER BY sequence DESC LIMIT 50
-    `).all(id) as unknown as MerchantEvent[];
-    return { case: refundCase, audit: { totalEvents, truncated: totalEvents > events.length, events: events.reverse() } };
+    // One SQLite statement reads one snapshot, including when a worker commits a status and its event concurrently.
+    const row = this.db.prepare(`
+      SELECT c.*,
+        (SELECT COUNT(*) FROM merchant_events WHERE case_id=c.id) AS event_count,
+        (SELECT json_group_array(json_object(
+          'sequence', sequence, 'actor', actor, 'type', type, 'lifecycle', lifecycle, 'occurredAt', occurred_at
+        )) FROM (
+          SELECT sequence, actor, type, lifecycle, occurred_at FROM merchant_events
+          WHERE case_id=c.id ORDER BY sequence DESC LIMIT 50
+        )) AS event_json
+      FROM merchant_cases AS c WHERE c.id=? AND c.merchant_id=?
+    `).get(id, this.merchantId) as (CaseRow & { event_count: number; event_json: string }) | undefined;
+    if (!row) throw new MerchantError("CASE_NOT_FOUND", 404);
+    const events = (JSON.parse(row.event_json) as MerchantEvent[]).reverse();
+    return {
+      case: projectCase(row),
+      audit: { totalEvents: row.event_count, truncated: row.event_count > events.length, events },
+    };
   }
 }

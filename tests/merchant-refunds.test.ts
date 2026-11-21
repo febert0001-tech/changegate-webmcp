@@ -188,6 +188,22 @@ describe("merchant refunds through the authenticated application handler", () =>
     expect(instance.store.db.prepare("SELECT count(*) n FROM simulated_provider_refunds").get()?.n).toBe(1);
   });
 
+  it("returns a case with its ordered audit slice and full event count", async () => {
+    const instance = app();
+    const intent = await approved(instance, "DEMOCAPTURE300", 1237);
+    await instance.ok({ action: "execute", ...intent });
+    instance.store.atomic(() => {
+      for (let i = 0; i < 51; i++) {
+        instance.store.event(intent.id, "SYSTEM", "ORIGINAL_REFUND_NOT_LOCATED", "UNCERTAIN", "2026-11-21T00:00:00Z");
+      }
+    });
+    const detail = await instance.ok<MerchantCaseDetail>({ action: "case", id: intent.id });
+    expect(detail.case.status).toBe("UNCERTAIN");
+    expect(detail.audit).toMatchObject({ totalEvents: 56, truncated: true });
+    expect(detail.audit.events.map(({ sequence }) => sequence)).toEqual(Array.from({ length: 50 }, (_, i) => i + 7));
+    expect(detail.audit.events.at(-1)?.lifecycle).toBe(detail.case.status);
+  });
+
   it("preserves a submission reservation if a worker has not returned from the provider POST", async () => {
     let accepted!: () => void;
     const observed = new Promise<void>((done) => { accepted = done; });
