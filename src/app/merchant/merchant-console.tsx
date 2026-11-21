@@ -71,9 +71,24 @@ export function MerchantConsole() {
   useEffect(() => {
     if (!auth) return;
     const session = registerWebMcpTools(getWebMcpModelContext(document), () => merchantWebMcp(
-      (command, signal) => send(auth.authorization, command, signal
-        ? AbortSignal.any([signal, session.registrationSignal])
-        : session.registrationSignal),
+      async (command, signal) => {
+        const requestSignal = signal ? AbortSignal.any([signal, session.registrationSignal]) : session.registrationSignal;
+        const result = await send<unknown>(auth.authorization, command, requestSignal);
+        if (!requestSignal.aborted && (command.action === "propose" || command.action === "review")) {
+          const updated = result as MerchantCaseDetail;
+          setDetail((current) => !current || (current.case.id === updated.case.id &&
+            current.audit.totalEvents <= updated.audit.totalEvents) ? updated : current);
+          setQueue((current) => {
+            const existing = current.find(({ id }) => id === updated.case.id);
+            if (!existing) return [updated.case, ...current];
+            // Tool mutations occur only before the operator decision. Keep any later human state.
+            if (!["PROPOSED", "REVIEW"].includes(existing.status) ||
+                (existing.status === "REVIEW" && updated.case.status === "PROPOSED")) return current;
+            return current.map((item) => item.id === updated.case.id ? updated.case : item);
+          });
+        }
+        return result;
+      },
       auth.session,
     ));
     void session.ready.then((result) => {

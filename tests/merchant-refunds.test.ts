@@ -27,6 +27,7 @@ function database() {
 
 function app(path = database(), config: {
   merchantId?: string; limit?: number; execute?: boolean;
+  lookupTimeoutMs?: number;
   inject?: (transport: SandboxTransport) => SandboxTransport;
 } = {}) {
   const merchantId = config.merchantId ?? demoMerchant;
@@ -34,7 +35,10 @@ function app(path = database(), config: {
   const store = new MerchantStore(path, merchantId, "simulated");
   stores.add(store);
   const fake = simulatedSandbox(store);
-  const provider = new PayPalMerchantSandbox({ merchantId, clientId: "client", clientSecret: "secret", maxRefundCents: cap },
+  const provider = new PayPalMerchantSandbox({
+    merchantId, clientId: "client", clientSecret: "secret", maxRefundCents: cap,
+    ...(config.lookupTimeoutMs === undefined ? {} : { lookupTimeoutMs: config.lookupTimeoutMs }),
+  },
     config.inject?.(fake) ?? fake);
   const service = new MerchantRefunds(store, provider, "Simulated PayPal Sandbox", cap);
   const handle = createMerchantHandler(service, { origin, operator: "reviewer", password, executionEnabled: config.execute ?? true });
@@ -211,6 +215,86 @@ describe("merchant refunds through the authenticated application handler", () =>
     expect(await blocked.json()).toEqual({ error: "REFUND_HISTORY_UNCERTAIN" });
     expect(instance.store.db.prepare("SELECT count(*) n FROM simulated_provider_refunds WHERE capture_id=?").get("DEMOCAPTURE700")?.n)
       .toBe(1);
+  });
+
+  it("exports a lost-response readback mismatch as failed verification even without a bound refund ID", async () => {
+    const instance = app(database(), {
+      inject: (fake) => async (url, init) => {
+        const response = await fake(url, init);
+        if (!url.includes("/refunds/") || !response.ok) return response;
+        const observed = await response.json();
+        return Response.json({ ...observed, amount: { currency_code: "USD", value: "12.38" } });
+      },
+    });
+    const intent = await approved(instance, "DEMOCAPTURE300", 1237);
+    await instance.ok({ action: "execute", ...intent });
+    const detail = await instance.ok<MerchantCaseDetail>({ action: "reconcile", id: intent.id });
+    expect(detail.case).toMatchObject({ status: "UNCERTAIN", refundId: null, observation: { amountCents: 1238 } });
+    expect(merchantReceipt(detail, "Simulated PayPal Sandbox")).toMatchObject({
+      execution: { status: "EXECUTED", refundOutcome: "UNKNOWN" },
+      verification: { status: "FAILED", issue: "REFUND_READBACK_MISMATCH" },
+    });
+  });
+
+  it("releases the reservation on an OAuth failure proven to occur before the refund POST", async () => {
+    let refundPosts = 0;
+    const instance: ReturnType<typeof app> = app(database(), {
+      inject: (fake) => async (url, init) => {
+        if (url.endsWith("/refund")) refundPosts++;
+        if (!url.endsWith("/oauth2/token")) return fake(url, init);
+        if (instance.store.db.prepare("SELECT id FROM merchant_cases WHERE status='SUBMITTED'").get()) {
+          return Response.json({}, { status: 503 });
+        }
+        return Response.json({ access_token: "short-lived", token_type: "Bearer", expires_in: 1 });
+      },
+    });
+    const intent = await approved(instance, "DEMOCAPTURE100", 759);
+    const failed = await instance.ok<MerchantCaseDetail>({ action: "execute", ...intent });
+    expect(failed.case).toMatchObject({ status: "FAILED", issue: "REFUND_NOT_SUBMITTED", refundId: null });
+    expect(merchantReceipt(failed, "Simulated PayPal Sandbox")).toMatchObject({
+      execution: { status: "FAILED", refundOutcome: "NOT_EXECUTED" }, verification: { status: "NOT_RUN" },
+    });
+    expect((await instance.ok<MerchantCapture[]>({ action: "find", kind: "capture", reference: "DEMOCAPTURE100" }))[0])
+      .toMatchObject({ remainingCents: 1899, outstanding: [] });
+    expect(refundPosts).toBe(0);
+  });
+
+  it("reconciles a known refund with exactly one refund GET", async () => {
+    let refundReads = 0;
+    const instance = app(database(), {
+      inject: (fake) => async (url, init) => {
+        if (url.includes("/refunds/")) refundReads++;
+        return fake(url, init);
+      },
+    });
+    const first = await approved(instance, "DEMOCAPTURE400", 631);
+    await instance.ok({ action: "execute", ...first });
+    const second = await approved(instance, "DEMOCAPTURE400", 733);
+    await instance.ok({ action: "execute", ...second });
+    refundReads = 0;
+    expect((await instance.ok<MerchantCaseDetail>({ action: "reconcile", id: second.id })).case.status).toBe("PENDING");
+    expect(refundReads).toBe(1);
+  });
+
+  it("ends a stalled refund-history scan at its overall deadline", async () => {
+    let attempted = 0;
+    const instance = app(database(), {
+      lookupTimeoutMs: 80,
+      inject: (fake) => async (url, init) => {
+        if (url.includes("/refunds/")) {
+          attempted++;
+          return new Promise(() => {});
+        }
+        const response = await fake(url, init);
+        if (!url.includes("/orders/") || !response.ok) return response;
+        const result = await response.json();
+        result.purchase_units[0].payments.refunds = Array.from({ length: 25 }, (_, index) => ({ id: "DEMOREF" + index }));
+        return Response.json(result);
+      },
+    });
+    const [snapshot] = await instance.ok<MerchantCapture[]>({ action: "find", kind: "capture", reference: "DEMOCAPTURE100" });
+    expect(snapshot).toMatchObject({ historyComplete: false, remainingCents: null });
+    expect(attempted).toBe(4);
   });
 
   it("blocks provider submission when disabled and exposes only seven inspect/propose WebMCP tools", async () => {

@@ -3,11 +3,12 @@ import type { MerchantCaseDetail, MerchantEnvironment } from "./contracts";
 export function merchantReceipt(detail: MerchantCaseDetail, environment: MerchantEnvironment, exportedAt = new Date()) {
   const { case: refundCase, audit } = detail;
   const { status, decision, observation } = refundCase;
-  const executionStatus = status === "APPROVED" ? "PENDING_EXECUTE"
+  const notSubmitted = refundCase.issue === "REFUND_NOT_SUBMITTED";
+  const executionStatus = notSubmitted ? "FAILED" : status === "APPROVED" ? "PENDING_EXECUTE"
     : !refundCase.submittedAt ? "NOT_EXECUTED"
-    : refundCase.refundId ? "EXECUTED" : "IN_PROGRESS";
-  const verificationStatus = status === "COMPLETED" ? "VERIFIED"
-    : status === "FAILED" || (status === "UNCERTAIN" && observation && refundCase.refundId) ? "FAILED"
+    : refundCase.refundId || observation ? "EXECUTED" : "IN_PROGRESS";
+  const verificationStatus = notSubmitted ? "NOT_RUN" : status === "COMPLETED" ? "VERIFIED"
+    : status === "FAILED" || (status === "UNCERTAIN" && observation) ? "FAILED"
     : refundCase.refundId ? "IN_PROGRESS" : "NOT_RUN";
   return {
     schemaVersion: 1,
@@ -26,7 +27,7 @@ export function merchantReceipt(detail: MerchantCaseDetail, environment: Merchan
       status: executionStatus,
       submittedAt: refundCase.submittedAt,
       providerRefundId: refundCase.refundId,
-      refundOutcome: status === "COMPLETED" ? "CONFIRMED" : status === "FAILED" ? "FAILED"
+      refundOutcome: notSubmitted ? "NOT_EXECUTED" : status === "COMPLETED" ? "CONFIRMED" : status === "FAILED" ? "FAILED"
         : refundCase.submittedAt ? "UNKNOWN" : "NOT_EXECUTED",
     },
     verification: {

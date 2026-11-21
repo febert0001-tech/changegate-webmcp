@@ -45,6 +45,7 @@ export interface CaptureSnapshot {
 
 export interface MerchantProvider {
   find(kind: "order" | "capture", reference: string): Promise<CaptureSnapshot[]>;
+  assertCaptureOwnership(captureId: string, orderId: string): Promise<void>;
   submit(captureId: string, amountCents: number, requestId: string): Promise<string>;
   readRefund(id: string): Promise<RefundObservation>;
 }
@@ -93,6 +94,9 @@ export class MerchantError extends Error {
     super(code);
   }
 }
+
+/** The adapter never invoked the refund POST for this attempt. */
+export class RefundNotSubmitted extends Error {}
 
 export function parseUsd(value: string): number | null {
   if (!/^\d{1,6}(\.\d{1,2})?$/.test(value)) return null;

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
-  cents, MerchantError, type CaptureSnapshot, type CaseStatus, type MerchantCapture,
+  cents, MerchantError, RefundNotSubmitted, type CaptureSnapshot, type CaseStatus, type MerchantCapture,
   type MerchantEnvironment, type MerchantProvider, type RefundObservation,
 } from "./contracts";
 import { MerchantStore, type CaseRow } from "./store";
@@ -132,8 +132,19 @@ export class MerchantRefunds {
     let refundId: string;
     try {
       refundId = await this.provider.submit(attempt.captureId, attempt.amountCents, attempt.requestId);
-    } catch {
-      this.markUncertain(id, "SUBMISSION_RESPONSE_UNAVAILABLE");
+    } catch (error) {
+      if (error instanceof RefundNotSubmitted) {
+        this.store.atomic(() => {
+          const current = this.store.get(id);
+          if (activeAttempt(current.status) && !current.refund_id && !current.observation) {
+            this.store.db.prepare("UPDATE merchant_cases SET status='FAILED', issue='REFUND_NOT_SUBMITTED' WHERE id=?")
+              .run(id);
+            this.store.event(id, "SYSTEM", "REFUND_NOT_SUBMITTED", "FAILED", this.now());
+          }
+        });
+      } else {
+        this.markUncertain(id, "SUBMISSION_RESPONSE_UNAVAILABLE");
+      }
       return this.store.detail(id);
     }
     this.store.atomic(() => {
@@ -177,21 +188,23 @@ export class MerchantRefunds {
     const expectedInvoice = "changegate-" + row.request_id;
     let evidence: RefundObservation;
     try {
-      // Establish ownership before reading any manually supplied reference.
-      const capture = await this.capture(row.capture_id);
-      if (capture.orderId !== row.order_id) throw new MerchantError("CAPTURE_ORDER_MISMATCH");
-      const discovered = capture.refunds.filter(({ invoiceId }) => invoiceId === expectedInvoice);
-      if (!row.refund_id && discovered.length > 1) {
-        this.markUncertain(id, "MULTIPLE_PROVIDER_REFUNDS_MATCH_ATTEMPT");
-        return this.store.detail(id);
+      const refundId = row.refund_id ?? candidateRefundId;
+      if (refundId) {
+        // An explicit reference needs ownership and one independent refund GET, not a history scan.
+        await this.provider.assertCaptureOwnership(row.capture_id, row.order_id);
+        evidence = await this.provider.readRefund(refundId);
+        if (refundId !== evidence.refundId) throw new MerchantError("REFUND_IDENTITY_MISMATCH");
+      } else {
+        const capture = await this.capture(row.capture_id);
+        if (capture.orderId !== row.order_id) throw new MerchantError("CAPTURE_ORDER_MISMATCH");
+        const discovered = capture.refunds.filter(({ invoiceId }) => invoiceId === expectedInvoice);
+        if (discovered.length !== 1 || !discovered[0]) {
+          this.markUncertain(id, discovered.length > 1 ? "MULTIPLE_PROVIDER_REFUNDS_MATCH_ATTEMPT" : "ORIGINAL_REFUND_NOT_LOCATED");
+          return this.store.detail(id);
+        }
+        // The history lookup has already independently fetched this refund by its provider ID.
+        evidence = discovered[0];
       }
-      const refundId = row.refund_id ?? candidateRefundId ?? discovered[0]?.refundId;
-      if (!refundId) {
-        this.markUncertain(id, "ORIGINAL_REFUND_NOT_LOCATED");
-        return this.store.detail(id);
-      }
-      evidence = await this.provider.readRefund(refundId);
-      if (refundId !== evidence.refundId) throw new MerchantError("REFUND_IDENTITY_MISMATCH");
     } catch {
       this.markUncertain(id, "INDEPENDENT_READBACK_UNAVAILABLE");
       return this.store.detail(id);
