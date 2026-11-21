@@ -501,6 +501,7 @@ describe("refund decision receipts", () => {
     ["APPROVED", "FAILED", "NOT_RUN", "consistent"],
     ["REJECTED", "EXECUTED", "VERIFIED", "inconsistent"],
     ["APPROVED", "EXECUTED", null, "unavailable"],
+    ["APPROVED", null, null, "unavailable"],
   ] as const)("checks a %s / %s / %s receipt", (decision, execution, verification, status) => {
     expect(checkDecisionReceiptConsistency({
       schemaVersion: 1,
@@ -509,6 +510,22 @@ describe("refund decision receipts", () => {
       execution: { status: execution },
       verification: { status: verification },
     }).status).toBe(status);
+  });
+
+  it("flags rejection paired with verification when execution evidence is missing", () => {
+    const summary = readDecisionReceipt(JSON.stringify({
+      schemaVersion: 1,
+      environment: "Synthetic environment",
+      decision: { status: "REJECTED" },
+      execution: { status: null },
+      verification: { status: "VERIFIED" },
+    }));
+    if (summary === null) throw new Error("Expected the receipt to open");
+    expect(summary.execution.status).toBeNull();
+    expect(checkDecisionReceiptConsistency(summary)).toEqual({
+      status: "inconsistent",
+      explanation: "The reported rejection conflicts with independent verification.",
+    });
   });
 
   it("records rejection and preserves the audit sequence and unavailable event times", () => {

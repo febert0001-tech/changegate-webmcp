@@ -41,7 +41,19 @@ export function checkDecisionReceiptConsistency(receipt: DecisionReceiptSummary)
   const { status: execution } = receipt.execution;
   const { status: decision } = receipt.decision;
   const { status: verification } = receipt.verification;
-  if (execution === null) return { status: "unavailable" };
+  if (execution === null) {
+    if (decision !== null && verification !== null && !Object.values(compatibleStatuses).some((statuses) =>
+      statuses.decision.includes(decision) && statuses.verification.includes(verification)
+    )) {
+      return {
+        status: "inconsistent",
+        explanation: decision === "REJECTED"
+          ? "The reported rejection conflicts with independent verification."
+          : "The human decision and independent verification statuses conflict.",
+      };
+    }
+    return { status: "unavailable" };
+  }
 
   const compatible = compatibleStatuses[execution];
   if (verification !== null && !compatible.verification.includes(verification)) {
