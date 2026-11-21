@@ -172,6 +172,22 @@ describe("merchant refunds through the authenticated application handler", () =>
     expect(restarted.store.db.prepare("SELECT count(*) n FROM simulated_provider_refunds").get()?.n).toBe(1);
   });
 
+  it("counts a uniquely correlated lost-response refund once without resolving the case", async () => {
+    const instance = app();
+    const intent = await approved(instance, "DEMOCAPTURE300", 1237);
+    await instance.ok({ action: "execute", ...intent });
+    const [snapshot] = await instance.ok<MerchantCapture[]>({ action: "find", kind: "capture", reference: "DEMOCAPTURE300" });
+    expect(snapshot).toMatchObject({
+      remainingCents: 2254,
+      refunds: [{ amountCents: 1237, status: "COMPLETED" }],
+      outstanding: [{ id: intent.id, status: "UNCERTAIN", refundId: null }],
+    });
+    expect((await proposal(instance, "DEMOCAPTURE300", null)).amountCents).toBe(2254);
+    const unchanged = await instance.ok<MerchantCaseDetail>({ action: "case", id: intent.id });
+    expect(unchanged.case).toMatchObject({ status: "UNCERTAIN", refundId: null, observation: null });
+    expect(instance.store.db.prepare("SELECT count(*) n FROM simulated_provider_refunds").get()?.n).toBe(1);
+  });
+
   it("preserves a submission reservation if a worker has not returned from the provider POST", async () => {
     let accepted!: () => void;
     const observed = new Promise<void>((done) => { accepted = done; });

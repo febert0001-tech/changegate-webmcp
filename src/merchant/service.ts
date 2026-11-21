@@ -37,10 +37,21 @@ export class MerchantRefunds {
     for (const refund of capture.refunds) {
       if (refund.status === "COMPLETED" || refund.status === "PENDING") accounted.set(refund.refundId, refund);
     }
+    const boundIds = new Set(attempts.map(({ refund_id }) => refund_id));
     let used = [...accounted.values()].reduce((sum, { amountCents }) => sum + amountCents, 0);
     for (const attempt of attempts) {
       if (!activeAttempt(attempt.status) && attempt.status !== "COMPLETED") continue;
-      const observed = attempt.refund_id ? accounted.get(attempt.refund_id) : undefined;
+      let observed = attempt.refund_id ? accounted.get(attempt.refund_id) : undefined;
+      if (!attempt.refund_id && attempt.request_id) {
+        const invoice = "changegate-" + attempt.request_id;
+        const matches = capture.refunds.filter(({ invoiceId }) => invoiceId === invoice);
+        const match = matches.length === 1 ? matches[0] : undefined;
+        // Deduplicate a visible effect without binding an ID or changing the case's status.
+        if (match && match.captureId === attempt.capture_id && match.amountCents === attempt.amount_cents &&
+            match.currency === attempt.currency && !boundIds.has(match.refundId)) {
+          observed = accounted.get(match.refundId);
+        }
+      }
       used += observed ? Math.max(0, attempt.amount_cents - observed.amountCents) : attempt.amount_cents;
     }
     const historyComplete = capture.historyComplete && capture.currency === "USD";
