@@ -74,7 +74,7 @@ export class RefundRequestStore {
       DO UPDATE SET threshold_cents=excluded.threshold_cents`).run(employee.merchantId,thresholdCents);
     return this.policy(employee);
   }
-  private saleUsage(employee: Employee, sale: TestSale, countedRefundIds: string[] = [], excludeId?: string) {
+  private saleUsage(employee: Employee, sale: TestSale, countedRefunds: ProviderRefundEvidence[] = [], excludeId?: string) {
     let paidCents=0, reservedCents=0;
     const provider = saleProvider(sale);
     const rows=(this.db.prepare(this.select()+" WHERE r.merchant_id=? AND json_extract(r.terms,'$.reference')=?")
@@ -86,11 +86,11 @@ export class RefundRequestStore {
           checks(request).route === "over-balance" || executionStopped(request) || requestDecision(request)?.decision === "Rejected") continue;
       if (provider) {
         const verification = providerVerification(request);
-        const response = verification?.result === "Verified" || verification?.result === "Pending"
-          ? verification.refund : providerResponse(request)?.refund;
-        if (verification?.result === "Failed" || (response && countedRefundIds.includes(response.id) &&
-          response.paymentId === sale.reference && response.locationId === sale.square?.locationId &&
-          response.currency === "USD" && response.amountCents === cents(request.terms.amount))) continue;
+        const responseId = providerResponse(request)?.refund.id;
+        const counted = countedRefunds.find(refund => refund.id === responseId);
+        if (verification?.result === "Failed" || (counted &&
+          counted.paymentId === sale.reference && counted.locationId === sale.square?.locationId &&
+          counted.currency === request.terms.currency && counted.amountCents === cents(request.terms.amount))) continue;
       }
       if (payout(request)) paidCents+=cents(request.terms.amount); else reservedCents+=cents(request.terms.amount);
     }
@@ -98,7 +98,7 @@ export class RefundRequestStore {
   }
   lookup(employee: Employee, reference: string, evidence?: ElectronicSaleEvidence) {
     const sale=evidence?.sale ?? testSale(reference);
-    return sale ? {sale,...this.saleUsage(employee,sale,evidence?.countedRefundIds)} : null;
+    return sale ? {sale,...this.saleUsage(employee,sale,evidence?.countedRefunds)} : null;
   }
   replay(employee: Employee, submissionId: string, terms: RefundTerms) {
     const existing = this.db.prepare("SELECT id,terms FROM team_refund_requests WHERE merchant_id=? AND submission_id=?")
@@ -137,7 +137,7 @@ export class RefundRequestStore {
       check={route:"exception",balanceCents:null,cumulativeCents:null,thresholdCents,monitoring,
         explanation:"The sale could not be verified. Route it to a manager for exception review. Payment remains blocked."};
     } else {
-      const { balanceCents }=this.saleUsage(employee,sale,evidence?.countedRefundIds);
+      const { balanceCents }=this.saleUsage(employee,sale,evidence?.countedRefunds);
       const cumulativeCents=sale.originalCents-balanceCents+amount;
       if(cumulativeCents>=thresholdCents) reasons.push("Cumulative refunds would reach "+money(cumulativeCents)+
         ", meeting or exceeding the "+money(thresholdCents)+" store threshold.");
@@ -206,7 +206,7 @@ export class RefundRequestStore {
         evidence.sale.paypal?.merchantId !== sale.paypal?.merchantId || evidence.sale.paypal?.orderId !== sale.paypal?.orderId) {
       throw new TeamError(provider === "square" ? "SQUARE_SALE_UNAVAILABLE" : "PAYPAL_CAPTURE_UNAVAILABLE", 422);
     }
-    const { balanceCents } = this.saleUsage(employee, evidence.sale, evidence.countedRefundIds, id);
+    const { balanceCents } = this.saleUsage(employee, evidence.sale, evidence.countedRefunds, id);
     if (amountCents > balanceCents) {
       this.stopElectronic(employee, id, "The refundable balance dropped below the approved amount.");
       return { ...state, started: false };

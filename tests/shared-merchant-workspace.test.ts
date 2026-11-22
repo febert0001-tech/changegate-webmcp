@@ -660,6 +660,25 @@ describe("PayPal Sandbox refunds with simulated transport", () => {
     expect(mock.posts).toHaveLength(0);
   });
 
+  it("counts a known PayPal refund once after readback recovers and retains the hold if the amount disagrees", async () => {
+    const mock = simulator();
+    mock.settings.lost = false;
+    mock.settings.visible = false;
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit());
+    await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    const attempted = await cashier.send<RefundRequest>({ action: "executeElectronicRefund", id: request.id });
+    expect(requestReceipt(attempted).verification.status).toBe("Unconfirmed");
+    mock.settings.visible = true;
+    mock.settings.amount = "49.99";
+    expect(await cashier.send(source)).toMatchObject({ balanceCents: 2001, reservedCents: 5000 });
+    mock.settings.amount = "50.00";
+    expect(await cashier.send(source)).toMatchObject({ balanceCents: 7000, reservedCents: 0 });
+    expect(mock.refundSubmissions()).toHaveLength(1);
+  });
+
   it("prevents a revoked session from committing a PayPal readback", async () => {
     const mock = simulator();
     const server = app(undefined, users, undefined, undefined, mock.provider);

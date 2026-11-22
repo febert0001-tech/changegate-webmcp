@@ -99,7 +99,7 @@ export class SquareSandbox {
     return { sale: { reference, location: original.location_id, register: "Unavailable", shift: "Unavailable",
       originalCents: original.total_money.amount, priorCents, tender: "Electronic",
       square: { merchantId: this.settings.merchantId, locationId: this.settings.locationId } },
-      countedRefundIds: active.map(item => item.id) };
+      countedRefunds: active };
   }
 
   async submit(terms: ElectronicAttemptTerms) {

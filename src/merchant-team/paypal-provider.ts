@@ -38,7 +38,7 @@ export class PayPalProvider {
     return { sale: { reference, originalCents: capture.amountCents, priorCents, tender: "Electronic",
       location: "Unavailable", register: "Unavailable", shift: "Unavailable",
       paypal: { merchantId: capture.merchantId, orderId: capture.orderId } },
-      countedRefundIds: counted.map(item => item.refundId) };
+      countedRefunds: counted.map(item => this.project(item)) };
   }
 
   private async capture(reference: string) {

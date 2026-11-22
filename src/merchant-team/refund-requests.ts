@@ -26,7 +26,7 @@ export type ElectronicProvider = "square" | "paypal";
 export const providerName = (provider: ElectronicProvider) => provider === "square" ? "Square" : "PayPal";
 export const saleProvider = (sale: TestSale | null): ElectronicProvider | undefined =>
   sale?.square ? "square" : sale?.paypal ? "paypal" : undefined;
-export type ElectronicSaleEvidence = { sale: TestSale; countedRefundIds: string[] };
+export type ElectronicSaleEvidence = { sale: TestSale; countedRefunds: ProviderRefundEvidence[] };
 export type ElectronicAttemptTerms = {
   key: string; paymentId: string; merchantId: string; locationId?: string; orderId?: string; amountCents: number; currency: "USD";
 };
