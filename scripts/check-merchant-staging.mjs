@@ -127,8 +127,10 @@ try {
   const entry = await request("/");
   assert.equal(entry.status, 307);
   assert.equal(entry.headers.location, "/merchant");
-  assert.match(entry.headers["x-robots-tag"], /noindex/);
-  assert.match(entry.headers["strict-transport-security"], /max-age=/);
+  const signInPage = await request("/merchant");
+  assert.equal(signInPage.status, 200);
+  assert.match(signInPage.headers["x-robots-tag"], /noindex/);
+  assert.match(signInPage.headers["strict-transport-security"], /max-age=/);
   assert.equal((await request("/api/merchant", { command: { action: "session" }, forwarded: false })).status, 403);
   assert.equal((await request("/api/merchant", { command: { action: "session" }, originOverride: "https://other.example" })).status, 403);
   assert.equal((await request("/api/merchant", { command: { action: "list" } })).status, 401);
