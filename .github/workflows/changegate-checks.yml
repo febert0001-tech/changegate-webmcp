@@ -24,3 +24,22 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run build
+      - name: Verify offline case handoff in Chrome
+        run: |
+          npm install --prefix "$RUNNER_TEMP/changegate-browser" --no-save --ignore-scripts playwright-core@1.56.1
+          NODE_PATH="$RUNNER_TEMP/changegate-browser/node_modules" CHROME_BIN="$(command -v google-chrome)" node scripts/verify-refund-desk.mjs
+      - name: Package the browser-tested app
+        env:
+          REVIEWED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/changegate-trial"
+          cp public/refund-review.html "$RUNNER_TEMP/changegate-trial/ChangeGate-Refund-Review.html"
+          cmp "$RUNNER_TEMP/changegate-trial/ChangeGate-Refund-Review.html" public/refund-review.html
+          cd "$RUNNER_TEMP/changegate-trial"
+          sha256sum ChangeGate-Refund-Review.html > SHA256SUMS.txt
+          printf 'PR head: %s\nTested checkout: %s\n' "$REVIEWED_HEAD" "$GITHUB_SHA" > BUILD.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ChangeGate-Refund-Review-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/changegate-trial/
+          if-no-files-found: error

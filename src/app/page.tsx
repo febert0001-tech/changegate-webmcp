@@ -1,3 +1,4 @@
+import Link from "next/link";
 import styles from "./page.module.css";
 import { ChangeGateWebMcp } from "./changegate-webmcp";
 
@@ -7,6 +8,7 @@ export default function Home() {
       <a className={styles.skipLink} href="#console">Skip to control console</a>
       <main id="console" className={styles.main}><ChangeGateWebMcp /></main>
       <footer className={styles.footer}>
+        <Link href="/refund-review.html">Open refund reconciliation</Link>
         <span>ChangeGate / 2026 WebMCP Challenge</span>
         <span>Synthetic ledger only · No real payments</span>
       </footer>

@@ -1,0 +1,714 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; form-action 'none'; base-uri 'none'"
+    />
+    <title>Refund reconciliation · ChangeGate</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #f4f6f4;
+        color: #173439;
+        font:
+          16px/1.5 system-ui,
+          sans-serif;
+      }
+      main {
+        max-width: 1080px;
+        margin: auto;
+        padding: 35px 20px;
+      }
+      header {
+        border-bottom: 2px solid #18574e;
+        padding-bottom: 18px;
+      }
+      header p {
+        margin: 0;
+        color: #415d61;
+      }
+      h1 {
+        font-size: clamp(28px, 5vw, 43px);
+        margin: 4px 0;
+      }
+      h2 {
+        font-size: 19px;
+        margin: 0 0 12px;
+      }
+      .brand {
+        font-weight: bold;
+        color: #126454;
+      }
+      .panels {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr));
+        gap: 16px;
+        margin: 24px 0;
+      }
+      section {
+        background: white;
+        border: 1px solid #becdc8;
+        border-radius: 8px;
+        padding: 20px;
+      }
+      label {
+        display: block;
+        font-weight: 600;
+        margin: 10px 0;
+      }
+      select,
+      input {
+        width: 100%;
+        padding: 7px;
+        font: inherit;
+      }
+      button {
+        font: inherit;
+        font-weight: bold;
+        color: white;
+        background: #145c50;
+        border: 0;
+        border-radius: 5px;
+        padding: 10px 16px;
+        margin-right: 8px;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .scroll {
+        overflow: auto;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+      }
+      td,
+      th {
+        text-align: left;
+        padding: 9px;
+        border-bottom: 1px solid #dce4e1;
+      }
+      th {
+        background: #e5eeea;
+      }
+      .error {
+        color: #942b29;
+      }
+      small {
+        color: #486264;
+      }
+      textarea {
+        font: inherit;
+        width: 100%;
+        padding: 8px;
+        min-height: 64px;
+      }
+      details {
+        padding: 14px;
+        background: #fff;
+        border: 1px solid #becdc8;
+        border-radius: 8px;
+        margin: 16px 0;
+      }
+      summary {
+        font-weight: 700;
+        cursor: pointer;
+      }
+      #history li {
+        margin: 8px 20px;
+        overflow-wrap: anywhere;
+      }
+      #caseMessage {
+        color: #234e48;
+      }
+      #results {
+        margin-top: 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="brand">Midtown Intelligence Labs · ChangeGate</p>
+        <h1>Refund review workspace</h1>
+        <p>
+          Track a refund investigation or compare merchant and processor exports. Case notes and imported files stay on this device.
+        </p>
+      </header>
+      <details id="desk" open>
+        <summary>Refund case desk</summary>
+        <p>
+          Start with a refund or ticket reference. Record the owner, finding and
+          next action, then download the case for handoff. Use redacted notes.
+        </p>
+        <label
+          >Case reference<input id="caseRef" maxlength="160" required
+        /></label>
+        <label>Review owner<input id="owner" maxlength="120" required /></label>
+        <label
+          >Case status<select id="disposition">
+            <option>Investigating</option>
+            <option>Awaiting evidence</option>
+            <option>Resolved</option>
+          </select></label
+        >
+        <label
+          >Finding and next action<textarea
+            id="note"
+            maxlength="2000"
+            required
+          ></textarea>
+        </label>
+        <button type="button" id="record">Record update</button
+        ><button id="caseSave" disabled>Download case</button
+        ><button id="newCase">New case</button>
+        <label
+          >Reopen saved case<input
+            type="file"
+            id="caseLoad"
+            accept=".json,application/json"
+        /></label>
+        <p id="caseMessage" role="status">No case open.</p>
+        <ol id="history"></ol>
+      </details>
+      <h2>Reconcile CSV exports</h2>
+      <p>
+        Use CSV exports with a header row and one record per refund. Select a
+        positive USD amount column and a currency column in each file. Review
+        one merchant at a time. Filter the register to approved or issued
+        refunds and the processor export to refund records. Use a unique
+        reference per partial refund. Only a processor status of COMPLETED
+        qualifies for a match. Results describe agreement between the supplied
+        records.
+      </p>
+      <div class="panels">
+        <section id="merchant"><h2>Merchant refund register</h2></section>
+        <section id="processor"><h2>Processor refund export</h2></section>
+      </div>
+      <button id="run" disabled>Compare refunds</button
+      ><button id="save" disabled>Download worksheet</button>
+      <p id="notice" role="status"></p>
+      <section id="results" hidden>
+        <h2>Review queue</h2>
+        <p id="summary"></p>
+        <div class="scroll">
+          <table>
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <small id="limit"></small>
+      </section>
+    </main>
+    <script>
+      "use strict";
+      const $ = (id) => document.getElementById(id);
+      const sources = { merchant: null, processor: null };
+      const versions = { merchant: 0, processor: 0 };
+      let report = [];
+      let singleSource = null;
+      const columns = [
+        "Refund reference",
+        "Review result",
+        "Merchant row",
+        "Merchant amount",
+        "Merchant currency",
+        "Processor row",
+        "Processor amount",
+        "Processor currency",
+        "Processor status",
+      ];
+      function element(tag, value) {
+        const node = document.createElement(tag);
+        node.textContent = value;
+        return node;
+      }
+      function parseCsv(input) {
+        const text = input.replace(/^\uFEFF/, "");
+        const rows = [];
+        let row = [],
+          cell = "",
+          quoted = false,
+          closed = false;
+        function finish() {
+          row.push(cell);
+          if (row.some((v) => v.trim())) rows.push(row);
+          row = [];
+          cell = "";
+          closed = false;
+        }
+        for (let i = 0; i < text.length; i++) {
+          const c = text[i];
+          if (quoted) {
+            if (c !== '"') {
+              cell += c;
+              continue;
+            }
+            if (text[i + 1] === '"') {
+              cell += '"';
+              i++;
+              continue;
+            }
+            quoted = false;
+            closed = true;
+            continue;
+          }
+          if (c === ",") {
+            row.push(cell);
+            cell = "";
+            closed = false;
+            continue;
+          }
+          if (c === "\r" || c === "\n") {
+            if (c === "\r" && text[i + 1] === "\n") i++;
+            finish();
+            continue;
+          }
+          if (c === '"' && !cell && !closed) {
+            quoted = true;
+            continue;
+          }
+          if (closed || c === '"') throw Error("Invalid CSV quoting.");
+          cell += c;
+        }
+        if (quoted) throw Error("Unclosed quote in CSV.");
+        finish();
+        if (rows.length < 2)
+          throw Error("A header and at least one data record are required.");
+        const width = rows[0].length;
+        if (rows.some((r) => r.length !== width))
+          throw Error(
+            "Records have differing column counts. Check the export delimiter and quoting.",
+          );
+        return rows;
+      }
+      const layouts = {
+        merchant: ["Refund reference", "Amount", "Currency"],
+        processor: ["Refund reference", "Amount", "Currency", "Refund status"],
+      };
+      function refresh() {
+        report = [];
+        $("results").hidden = true;
+        $("save").disabled = true;
+        $("notice").textContent = "";
+        const loaded = Object.keys(sources).filter((side) => sources[side]);
+        singleSource = loaded.length === 1 ? loaded[0] : null;
+        $("run").textContent = singleSource
+          ? "Review this file"
+          : "Compare refunds";
+        $("run").disabled =
+          !loaded.length ||
+          !loaded.every((side) => {
+            const src = sources[side];
+            if (!src) return false;
+            const values = src.picks.map((p) => p.value);
+            return (
+              values.every(Boolean) && new Set(values).size === values.length
+            );
+          });
+      }
+      for (const side of Object.keys(sources)) {
+        const root = $(side);
+        const file = document.createElement("input");
+        file.type = "file";
+        file.accept = ".csv,text/csv";
+        file.setAttribute("aria-label", side + " CSV file");
+        root.append(file);
+        const info = element("p", "");
+        info.setAttribute("role", "status");
+        const fields = document.createElement("div");
+        root.append(info, fields);
+        file.onchange = async () => {
+          const version = ++versions[side];
+          sources[side] = null;
+          fields.replaceChildren();
+          info.textContent = "";
+          refresh();
+          const selected = file.files[0];
+          if (!selected) return;
+          try {
+            if (selected.size > 10 * 1024 * 1024)
+              throw Error("Use files under 10 MiB per export.");
+            const rows = parseCsv(await selected.text());
+            if (version !== versions[side]) return;
+            const headers = rows.shift();
+            const picks = layouts[side].map((label) => {
+              const wrapper = element("label", label);
+              const select = document.createElement("select");
+              select.add(new Option("Select column", ""));
+              headers.forEach((header, i) =>
+                select.add(new Option(i + 1 + ". " + header, String(i))),
+              );
+              select.onchange = refresh;
+              wrapper.append(select);
+              fields.append(wrapper);
+              return select;
+            });
+            sources[side] = { rows, picks };
+            info.className = "";
+            info.textContent =
+              rows.length +
+              " records loaded. Map a distinct column for each field.";
+            refresh();
+          } catch (error) {
+            if (version === versions[side]) {
+              info.className = "error";
+              info.textContent = error.message;
+            }
+          }
+        };
+      }
+      function indexed(side) {
+        const src = sources[side],
+          map = new Map(),
+          missing = [];
+        src.rows.forEach((row, i) => {
+          const [id, amount, currency, status = ""] = src.picks.map((p) =>
+            row[Number(p.value)].trim(),
+          );
+          const record = { id, amount, currency, status, row: i + 1 };
+          if (!id) {
+            missing.push(record);
+            return;
+          }
+          if (!map.has(id)) map.set(id, []);
+          map.get(id).push(record);
+        });
+        return { map, missing };
+      }
+      function cents(raw) {
+        if (!/^\d{1,12}(\.\d{1,2})?$/.test(raw)) return null;
+        const [d, f = ""] = raw.split(".");
+        const n = Number(d) * 100 + Number(f.padEnd(2, "0"));
+        return n > 0 ? n : null;
+      }
+      function classify(a, b) {
+        if (!a) return "Processor only";
+        if (!b) return "Merchant only";
+        if (
+          a.currency.toUpperCase() !== "USD" ||
+          b.currency.toUpperCase() !== "USD"
+        )
+          return "Review currency";
+        const x = cents(a.amount),
+          y = cents(b.amount);
+        if (x === null || y === null) return "Review amount format";
+        if (x !== y) return "Amount mismatch";
+        if (b.status.toUpperCase() !== "COMPLETED")
+          return "Review processor status";
+        return "Matched";
+      }
+      function result(reason, a, b) {
+        return [
+          a?.id || b?.id || "",
+          reason,
+          a?.row || "",
+          a?.amount || "",
+          a?.currency || "",
+          b?.row || "",
+          b?.amount || "",
+          b?.currency || "",
+          b?.status || "",
+        ];
+      }
+      $("run").onclick = () => {
+        report = [];
+        if (singleSource) {
+          const { map, missing } = indexed(singleSource);
+          function append(record, issue) {
+            const issues = issue ? [issue] : [];
+            if (record.currency.toUpperCase() !== "USD")
+              issues.push("Review currency");
+            if (cents(record.amount) === null)
+              issues.push("Review amount format");
+            if (
+              singleSource === "processor" &&
+              record.status.toUpperCase() !== "COMPLETED"
+            )
+              issues.push("Review processor status");
+            const label = issues.length
+              ? issues.join(" / ")
+              : "Ready for comparison";
+            report.push(
+              result(
+                label,
+                singleSource === "merchant" ? record : null,
+                singleSource === "processor" ? record : null,
+              ),
+            );
+          }
+          for (const record of missing) append(record, "Missing reference");
+          for (const group of map.values())
+            for (const record of group)
+              append(record, group.length > 1 ? "Duplicate reference" : "");
+          report.sort(
+            (a, b) =>
+              Number(a[1] === "Ready for comparison") -
+              Number(b[1] === "Ready for comparison"),
+          );
+          const issues = report.filter(
+            (row) => row[1] !== "Ready for comparison",
+          ).length;
+          $("summary").textContent =
+            report.length +
+            " source records · " +
+            issues +
+            " rows flagged · Awaiting counterpart export";
+        } else {
+          const a = indexed("merchant"),
+            b = indexed("processor");
+          for (const r of a.missing)
+            report.push(result("Missing reference", r, null));
+          for (const r of b.missing)
+            report.push(result("Missing reference", null, r));
+          for (const id of new Set([...a.map.keys(), ...b.map.keys()])) {
+            const left = a.map.get(id) || [],
+              right = b.map.get(id) || [];
+            if (left.length > 1 || right.length > 1) {
+              for (const r of left)
+                report.push(result("Duplicate reference", r, null));
+              for (const r of right)
+                report.push(result("Duplicate reference", null, r));
+              continue;
+            }
+            report.push(result(classify(left[0], right[0]), left[0], right[0]));
+          }
+          report.sort(
+            (a, b) => Number(a[1] === "Matched") - Number(b[1] === "Matched"),
+          );
+          const matched = report.filter((r) => r[1] === "Matched").length;
+          $("summary").textContent =
+            matched +
+            " matched refunds · " +
+            (report.length - matched) +
+            " worksheet rows need review";
+        }
+        const head = document.querySelector("thead"),
+          body = document.querySelector("tbody");
+        const header = document.createElement("tr");
+        columns.forEach((c) => header.append(element("th", c)));
+        header.append(element("th", "Case"));
+        head.replaceChildren(header);
+        body.replaceChildren();
+        for (const row of report.slice(0, 200)) {
+          const tr = document.createElement("tr");
+          row.forEach((v) => tr.append(element("td", String(v))));
+          const action = document.createElement("td");
+          const open = element("button", "Start case");
+          open.onclick = () =>
+            startCase(
+              String(row[0]).slice(0, 160),
+              (
+                "Worksheet: " +
+                row[1] +
+                ". Merchant row: " +
+                (row[2] || "—") +
+                ". Processor row: " +
+                (row[5] || "—") +
+                "."
+              ).slice(0, 2000),
+            );
+          action.append(open);
+          tr.append(action);
+          body.append(tr);
+        }
+        $("limit").textContent =
+          report.length > 200
+            ? "Showing the first 200 rows. Download the worksheet for every row."
+            : "Row numbers count data records after the header.";
+        $("results").hidden = false;
+        $("save").disabled = false;
+      };
+      function csvCell(v) {
+        let s = String(v);
+        if (/^\s*[=+@-]|^[\t\r\n]/.test(s)) s = "'" + s;
+        return '"' + s.replaceAll('"', '""') + '"';
+      }
+      $("save").onclick = () => {
+        const csv = [columns, ...report]
+          .map((row) => row.map(csvCell).join(","))
+          .join("\r\n");
+        const url = URL.createObjectURL(
+          new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }),
+        );
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = singleSource
+          ? "changegate-" + singleSource + "-file-review.csv"
+          : "changegate-refund-review.csv";
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      };
+      const statuses = Array.from(
+        $("disposition").options,
+        (option) => option.value,
+      );
+      let entries = [];
+      let unsaved = false;
+      let editing = false;
+      function warnBeforeReplace() {
+        return (
+          !(unsaved || editing) ||
+          window.confirm("Discard the current unsaved case changes?")
+        );
+      }
+      window.addEventListener("beforeunload", (event) => {
+        if (unsaved || editing) {
+          event.preventDefault();
+          event.returnValue = "";
+        }
+      });
+      for (const id of ["caseRef", "owner", "disposition", "note"]) {
+        $(id).addEventListener("input", () => {
+          editing = true;
+        });
+      }
+      function drawHistory() {
+        $("caseRef").readOnly = entries.length > 0;
+        $("caseSave").disabled = !entries.length;
+        $("history").replaceChildren(
+          ...entries.map((e) =>
+            element(
+              "li",
+              e.at + " · " + e.owner + " · " + e.status + " — " + e.note,
+            ),
+          ),
+        );
+      }
+      function startCase(ref = "", note = "") {
+        if (!warnBeforeReplace()) return;
+        entries = [];
+        unsaved = false;
+        editing = Boolean(ref || note);
+        $("caseRef").value = ref;
+        $("note").value = note;
+        $("owner").value = "";
+        $("caseLoad").value = "";
+        $("disposition").value = statuses[0];
+        drawHistory();
+        $("desk").open = true;
+        $("caseMessage").textContent =
+          "Enter a reference, owner and note to record an update.";
+        $("caseRef").focus();
+      }
+      $("newCase").onclick = () => startCase();
+      function nonempty(value, max) {
+        return (
+          typeof value === "string" &&
+          Boolean(value.trim()) &&
+          value.length <= max
+        );
+      }
+      $("record").onclick = () => {
+        const ref = $("caseRef").value.trim(),
+          owner = $("owner").value.trim(),
+          note = $("note").value.trim();
+        if (!ref || !owner || !note) {
+          $("caseMessage").textContent =
+            "Enter a case reference, review owner and finding.";
+          return;
+        }
+        if (entries.length >= 500) {
+          $("caseMessage").textContent =
+            "Case history is full. Download this case and open a follow-up.";
+          return;
+        }
+        $("caseRef").value = ref;
+        entries.push({
+          at: new Date().toISOString(),
+          owner,
+          status: $("disposition").value,
+          note,
+        });
+        unsaved = true;
+        editing = false;
+        $("note").value = "";
+        drawHistory();
+        $("caseMessage").textContent =
+          "Update recorded in this tab. Download the case to keep it.";
+      };
+      $("caseSave").onclick = () => {
+        if (editing) {
+          $("caseMessage").textContent =
+            "Record your pending update before downloading.";
+          return;
+        }
+        const file = {
+          format: "changegate-review-case",
+          version: 1,
+          reference: $("caseRef").value,
+          entries,
+        };
+        const url = URL.createObjectURL(
+          new Blob([JSON.stringify(file, null, 2)], {
+            type: "application/json",
+          }),
+        );
+        const link = document.createElement("a");
+        link.href = url;
+        link.download =
+          "changegate-case-" +
+          file.reference.replace(/[^a-z0-9_-]/gi, "_") +
+          ".json";
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        unsaved = false;
+        $("caseMessage").textContent =
+          "Download requested. Keep the latest case file for the next shift.";
+      };
+      $("caseLoad").onchange = async () => {
+        const input = $("caseLoad"),
+          file = input.files[0];
+        if (!file) return;
+        input.value = "";
+        try {
+          if (file.size > 8 * 1024 * 1024) throw Error();
+          const c = JSON.parse(await file.text());
+          if (
+            c?.format !== "changegate-review-case" ||
+            c.version !== 1 ||
+            !nonempty(c.reference, 160) ||
+            !Array.isArray(c.entries) ||
+            !c.entries.length ||
+            c.entries.length > 500
+          )
+            throw Error();
+          const clean = c.entries.map((e) => {
+            if (
+              !nonempty(e?.owner, 120) ||
+              !nonempty(e.note, 2000) ||
+              !statuses.includes(e.status) ||
+              !nonempty(e.at, 24) ||
+              new Date(e.at).toISOString() !== e.at
+            )
+              throw Error();
+            return { at: e.at, owner: e.owner, status: e.status, note: e.note };
+          });
+          if (!warnBeforeReplace()) return;
+          entries = clean;
+          unsaved = false;
+          editing = false;
+          $("caseRef").value = c.reference;
+          $("owner").value = "";
+          $("note").value = "";
+          $("disposition").value = entries.at(-1).status;
+          drawHistory();
+          $("caseMessage").textContent =
+            "Case reopened. Enter your name to add an update.";
+        } catch {
+          $("caseMessage").textContent =
+            "Could not open this case file. Check its format and version.";
+        }
+      };
+    </script>
+  </body>
+</html>
