@@ -1,0 +1,102 @@
+name: Merchant pilot image evidence
+
+on:
+  push:
+    branches: [qc/merchant-pilot-image-43cd55c]
+    paths: ['.github/workflows/merchant-pilot-image-evidence.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      PILOT_SHA: 43cd55c345da0860bceb06bc2ac9c7fd060c0369
+      BASE_REF: docker.io/library/node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54
+      IMAGE_TAG: changegate-pilot:43cd55c
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: 43cd55c345da0860bceb06bc2ac9c7fd060c0369
+          persist-credentials: false
+
+      - name: Build and retain the pinned image
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PILOT_SHA"
+          out="$RUNNER_TEMP/pilot-evidence"
+          mkdir -p "$out"
+          docker buildx build --platform linux/amd64 --load --provenance=false \
+            --build-context "node:24-bookworm-slim=docker-image://$BASE_REF" \
+            --metadata-file "$out/build-metadata.json" --tag "$IMAGE_TAG" .
+          manifest="$(jq -er '."containerimage.digest"' "$out/build-metadata.json")"
+          config="$(docker image inspect --format '{{.Id}}' "$IMAGE_TAG")"
+          test "$config" = "$(jq -er '."containerimage.config.digest"' "$out/build-metadata.json")"
+          archive="changegate-${manifest#sha256:}.tar"
+          docker image save --output "$out/$archive" "$IMAGE_TAG"
+          layer_config="$(tar -xOf "$out/$archive" manifest.json | jq -er '.[0].Config')"
+          archived_config="$(tar -xOf "$out/$archive" "$layer_config" | sha256sum | cut -d' ' -f1)"
+          test "sha256:$archived_config" = "$config"
+          {
+            printf 'source=%s\nbase=%s\nmanifest=%s\nconfig=%s\narchive=%s\n' "$PILOT_SHA" "$BASE_REF" "$manifest" "$config" "$archive"
+            (cd "$out" && sha256sum "$archive" > archive.sha256 && cat archive.sha256)
+          } | tee "$out/identity.txt"
+          printf 'PILOT_ARCHIVE=%s\n' "$archive" >> "$GITHUB_ENV"
+          printf 'PILOT_MANIFEST=%s\n' "${manifest#sha256:}" >> "$GITHUB_ENV"
+
+      - name: Inspect zlib usage without network access
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/pilot-evidence"
+          {
+            date -u --iso-8601=seconds
+            docker run --rm --network none --entrypoint /bin/sh "$IMAGE_TAG" -eu -c '
+              cat /etc/os-release
+              dpkg-query -W zlib1g
+              dpkg-query -W libminizip1 2>/dev/null || true
+              node -p "JSON.stringify({node:process.version,zlib:process.versions.zlib,sharedZlib:process.config.variables.node_shared_zlib})"
+              echo "Node dynamic dependencies:"
+              ldd "$(command -v node)"
+              echo "Native addons and dynamic dependencies:"
+              find /app -type f \( -name "*.node" -o -name "*.so" -o -name "*.so.*" \) -print -exec ldd {} \;
+            '
+            echo 'Tracked application and startup references to compression or process creation:'
+            git grep -nEi 'gz(write|puts|printf|clearerr)|minizip|node:zlib|createGzip|gzip|node:child_process' -- src scripts/start-merchant-staging.mjs || test "$?" = 1
+          } | tee "$out/zlib-evidence.txt"
+
+      - name: Scan the retained image archive with Trivy
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/pilot-evidence"
+          curl --fail --silent --show-error --location --retry 3 \
+            -o "$RUNNER_TEMP/trivy.tar.gz" https://github.com/aquasecurity/trivy/releases/download/v0.76.2/trivy_0.76.2_Linux-64bit.tar.gz
+          echo "bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf  $RUNNER_TEMP/trivy.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP" trivy
+          "$RUNNER_TEMP/trivy" --version
+          "$RUNNER_TEMP/trivy" image --input "$out/$PILOT_ARCHIVE" \
+            --scanners vuln --pkg-types os,library --format json --output "$out/trivy.json"
+          jq -e --arg id "$(docker image inspect --format '{{.Id}}' "$IMAGE_TAG")" \
+            '.Metadata.ImageID == $id' "$out/trivy.json"
+          jq '{
+            image_id: .Metadata.ImageID,
+            os: .Metadata.OS,
+            results: [.Results[] | {target: .Target, class: .Class, count: ((.Vulnerabilities // [])|length)}],
+            os_severities: ([.Results[] | select(.Class=="os-pkgs") | .Vulnerabilities[]? | .Severity] | group_by(.) | map({severity: .[0], count:length})),
+            fixable_os: [.Results[]|select(.Class=="os-pkgs")|.Vulnerabilities[]?|select((.FixedVersion // "") != "")|{VulnerabilityID,PkgName,InstalledVersion,FixedVersion,Severity}],
+            zlib: [.Results[].Vulnerabilities[]?|select(.VulnerabilityID=="CVE-2026-85091" or .VulnerabilityID=="CVE-2023-45853")|{VulnerabilityID,PkgName,InstalledVersion,FixedVersion,Severity,Status}]
+          }' "$out/trivy.json" | tee "$out/scan-summary.json"
+
+      - name: Retain image and verification evidence
+        if: ${{ !cancelled() && env.PILOT_MANIFEST != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: changegate-image-sha256-${{ env.PILOT_MANIFEST }}
+          path: ${{ runner.temp }}/pilot-evidence/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
