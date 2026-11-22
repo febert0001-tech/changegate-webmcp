@@ -117,12 +117,13 @@ export class SquareSandbox {
       countedRefundIds: active.map(item => item.id) };
   }
 
-  async submit(terms: SquareAttemptTerms) {
+  async submit(terms: SquareAttemptTerms, authorize: () => void) {
     try {
       await this.verifyMerchant();
     } catch {
       throw new SquareSubmissionBlocked("ChangeGate could not confirm the Square merchant before submission. No refund was sent.");
     }
+    authorize();
     const { refund: result } = await this.call("/refunds", z.object({ refund }), {
       idempotency_key: terms.key, payment_id: terms.paymentId,
       amount_money: { amount: terms.amountCents, currency: terms.currency },
