@@ -188,6 +188,40 @@ describe("merchant refunds through the authenticated application handler", () =>
     expect(instance.store.db.prepare("SELECT count(*) n FROM simulated_provider_refunds").get()?.n).toBe(1);
   });
 
+  it("keeps the full reservation when an acknowledged ID points to a different refund", async () => {
+    const captureId = "DEMOCAPTURE200";
+    const priorId = "DEMOPRIORREFUND";
+    const instance: ReturnType<typeof app> = app(database(), {
+      inject: (fake) => async (url, init) => {
+        const response = await fake(url, init);
+        if (url.endsWith(captureId + "/refund") && response.ok) {
+          const created = await response.json();
+          instance.store.db.prepare("UPDATE simulated_provider_refunds SET status='PENDING' WHERE id=?").run(created.id);
+          return Response.json({ id: priorId }, { status: 201 });
+        }
+        if (url.endsWith("/orders/DEMOORDER200") && response.ok) {
+          const parent = await response.json();
+          parent.purchase_units[0].payments.refunds = [{ id: priorId }];
+          return Response.json(parent);
+        }
+        return response;
+      },
+    });
+    instance.store.db.prepare("INSERT INTO simulated_provider_refunds VALUES (?, ?, ?, ?, 'COMPLETED')")
+      .run(priorId, captureId, 2000, "earlier-provider-refund");
+    const competing = await approved(instance, captureId, 5000);
+    const intent = await approved(instance, captureId, 1000);
+    const result = await instance.ok<MerchantCaseDetail>({ action: "execute", ...intent });
+    expect(result.case).toMatchObject({
+      status: "UNCERTAIN", issue: "REFUND_READBACK_MISMATCH", refundId: priorId, observation: null,
+    });
+    const [balance] = await instance.ok<MerchantCapture[]>({ action: "find", kind: "capture", reference: captureId });
+    expect(balance).toMatchObject({ remainingCents: 4235, outstanding: [{ amountCents: 1000, status: "UNCERTAIN" }] });
+    const denied = await instance.command({ action: "execute", ...competing });
+    expect(await denied.json()).toEqual({ error: "REFUND_EXCEEDS_REMAINING_BALANCE" });
+    expect(instance.store.db.prepare("SELECT count(*) n FROM simulated_provider_refunds").get()?.n).toBe(2);
+  });
+
   it("returns a case with its ordered audit slice and full event count", async () => {
     const instance = app();
     const intent = await approved(instance, "DEMOCAPTURE300", 1237);

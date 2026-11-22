@@ -41,18 +41,20 @@ export class MerchantRefunds {
     let used = [...accounted.values()].reduce((sum, { amountCents }) => sum + amountCents, 0);
     for (const attempt of attempts) {
       if (!activeAttempt(attempt.status) && attempt.status !== "COMPLETED") continue;
-      let observed = attempt.refund_id ? accounted.get(attempt.refund_id) : undefined;
-      if (!attempt.refund_id && attempt.request_id) {
-        const invoice = "changegate-" + attempt.request_id;
+      const invoice = "changegate-" + attempt.request_id;
+      let observed: RefundObservation | undefined;
+      if (attempt.refund_id) {
+        const bound = accounted.get(attempt.refund_id);
+        const independentlyMatched = attempt.status === "PENDING" || attempt.status === "COMPLETED";
+        if (bound && (bound.invoiceId === invoice || (bound.invoiceId === null && independentlyMatched))) observed = bound;
+      } else if (attempt.request_id) {
         const matches = capture.refunds.filter(({ invoiceId }) => invoiceId === invoice);
         const match = matches.length === 1 ? matches[0] : undefined;
-        // Deduplicate a visible effect without binding an ID or changing the case's status.
-        if (match && match.captureId === attempt.capture_id && match.amountCents === attempt.amount_cents &&
-            match.currency === attempt.currency && !boundIds.has(match.refundId)) {
-          observed = accounted.get(match.refundId);
-        }
+        if (match && !boundIds.has(match.refundId)) observed = accounted.get(match.refundId);
       }
-      used += observed ? Math.max(0, attempt.amount_cents - observed.amountCents) : attempt.amount_cents;
+      // Overlap requires the same attempt and effect. Keep the full hold if either is in doubt.
+      if (!observed || observed.captureId !== attempt.capture_id || observed.amountCents !== attempt.amount_cents ||
+          observed.currency !== attempt.currency) used += attempt.amount_cents;
     }
     const historyComplete = capture.historyComplete && capture.currency === "USD";
     return {
