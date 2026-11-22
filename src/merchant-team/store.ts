@@ -39,6 +39,10 @@ export class TeamStore {
           password_version TEXT NOT NULL, expires_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS team_session_expiry ON team_sessions(expires_at);
+        CREATE TABLE IF NOT EXISTS team_revoked_sessions (
+          token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS team_revoked_expiry ON team_revoked_sessions(expires_at);
       `);
     } catch (error) {
       this.db.close();
@@ -62,9 +66,16 @@ export class TeamStore {
     }
   }
 
-  saveSession(digest: string, employee: Employee, passwordVersion: string, expiresAt: number) {
+  replaceSession(digest: string, employee: Employee, passwordVersion: string, expiresAt: number, previous?: string) {
     this.atomic(() => {
-      this.db.prepare("DELETE FROM team_sessions WHERE expires_at <= ?").run(Date.now());
+      const now = Date.now();
+      this.db.prepare("DELETE FROM team_sessions WHERE expires_at <= ?").run(now);
+      this.db.prepare("DELETE FROM team_revoked_sessions WHERE expires_at <= ?").run(now);
+      if (previous) {
+        const alreadyRevoked = this.db.prepare("SELECT 1 FROM team_revoked_sessions WHERE token_hash=?").get(previous);
+        if (alreadyRevoked) throw new TeamError("SESSION_CHANGED", 409);
+        this.revokeActiveSession(previous);
+      }
       this.db.prepare("INSERT INTO team_sessions VALUES (?, ?, ?, ?, ?)")
         .run(digest, employee.username, employee.merchantId, passwordVersion, expiresAt);
     });
@@ -75,8 +86,16 @@ export class TeamStore {
       FROM team_sessions WHERE token_hash=? AND expires_at>?`).get(digest, Date.now()) as SessionRow | undefined;
   }
 
-  deleteSession(digest: string) {
-    this.db.prepare("DELETE FROM team_sessions WHERE token_hash=?").run(digest);
+  private revokeActiveSession(digest: string) {
+    // Keep the original token's expiry so a competing sign-in cannot reuse it.
+    const previous = this.db.prepare("DELETE FROM team_sessions WHERE token_hash=? RETURNING expires_at").get(digest);
+    if (typeof previous?.expires_at === "number") {
+      this.db.prepare("INSERT INTO team_revoked_sessions VALUES (?, ?)").run(digest, previous.expires_at);
+    }
+  }
+
+  revokeSession(digest: string) {
+    this.atomic(() => this.revokeActiveSession(digest));
   }
 
   list(employee: Employee): TeamCase[] {

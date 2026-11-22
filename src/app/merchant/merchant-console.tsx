@@ -104,7 +104,8 @@ export function MerchantConsole({ caseId }: { caseId?: string }) {
     }
   }
 
-  function change(command: Extract<TeamCommand, { action: "record" | "assign" | "note" | "resolve" }>, message: string) {
+  function change(command: Extract<TeamCommand, { action: "record" | "assign" | "note" | "resolve" }>,
+    message: string, onSaved?: () => void) {
     if (!session) return;
     const { sessionVersion } = session;
     void run(async () => {
@@ -114,6 +115,7 @@ export function MerchantConsole({ caseId }: { caseId?: string }) {
         detail: saved,
         cases: [saved.case, ...current.cases.filter(({ id }) => id !== saved.case.id)],
       } : current);
+      onSaved?.();
       setNotice(message);
     });
   }
@@ -204,9 +206,9 @@ export function MerchantConsole({ caseId }: { caseId?: string }) {
               <dt>Finding</dt><dd>{item.finding}</dd>
               <dt>Next action</dt><dd>{item.nextAction}</dd>
             </dl> : (
-              <fieldset key={item.id + ":" + item.revision} className={styles.editors} disabled={busy}>
+              <fieldset key={item.id} className={styles.editors} disabled={busy}>
                 <legend className={styles.visuallyHidden}>Case updates</legend>
-                <form onSubmit={(event) => {
+                <form key={JSON.stringify([item.finding, item.nextAction, item.status])} onSubmit={(event) => {
                   const data = formValues(event);
                   change({ action: "record", id: item.id, revision: item.revision, finding: field(data, "finding"),
                     nextAction: field(data, "nextAction"), status: field(data, "status") === "Awaiting evidence" ?
@@ -221,7 +223,7 @@ export function MerchantConsole({ caseId }: { caseId?: string }) {
                     <button className={styles.primary}>Save finding</button>
                   </div>
                 </form>
-                <form className={styles.formRow} onSubmit={(event) => {
+                <form key={item.assignee} className={styles.formRow} onSubmit={(event) => {
                   const data = formValues(event);
                   change({ action: "assign", id: item.id, revision: item.revision, assignee: field(data, "assignee") }, "Assignment saved.");
                 }}>
@@ -232,14 +234,28 @@ export function MerchantConsole({ caseId }: { caseId?: string }) {
                   <button>Assign case</button>
                 </form>
                 <form onSubmit={(event) => {
+                  const form = event.currentTarget;
                   const data = formValues(event);
-                  change({ action: "note", id: item.id, revision: item.revision, note: field(data, "note") }, "Note saved.");
+                  change({ action: "note", id: item.id, revision: item.revision, note: field(data, "note") },
+                    "Note saved.", () => form.reset());
                 }}>
                   <label>Case note<textarea name="note" maxLength={1600} required /></label>
                   <button>Add note</button>
                 </form>
                 <button type="button" className={styles.resolve} disabled={!item.finding || !item.nextAction}
-                  onClick={() => change({ action: "resolve", id: item.id, revision: item.revision }, "Case resolved.")}>Resolve case</button>
+                  onClick={(event) => {
+                    const controls = event.currentTarget.closest("fieldset")?.elements;
+                    const value = (name: string) => {
+                      const control = controls?.namedItem(name);
+                      return control instanceof HTMLTextAreaElement || control instanceof HTMLSelectElement ? control.value : "";
+                    };
+                    if (value("finding") !== item.finding || value("nextAction") !== item.nextAction ||
+                        value("status") !== item.status || (value("assignee") && value("assignee") !== item.assignee) || value("note").trim()) {
+                      setNotice("Save your edits or restore the saved values before resolving.");
+                      return;
+                    }
+                    change({ action: "resolve", id: item.id, revision: item.revision }, "Case resolved.");
+                  }}>Resolve case</button>
               </fieldset>
             )}
             <section className={styles.history} aria-labelledby="history-heading">

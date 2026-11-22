@@ -165,6 +165,32 @@ describe("shared merchant workspace", () => {
     expect(await expired.json()).toEqual({ error: "SIGN_IN_REQUIRED" });
   });
 
+  it("consumes one old session across concurrent sign-ins and revokes the winning replacement on sign-out", async () => {
+    const server = app();
+    const original = await signIn(server, "maya");
+    const independent = await signIn(server, "jordan");
+    const attempts = await Promise.all([
+      server.request({ action: "signIn", username: "alex", password }, original.key),
+      server.request({ action: "signIn", username: "jordan", password }, original.key),
+    ]);
+    expect(attempts.map(({ status }) => status).sort()).toEqual([200, 409]);
+    const winner = attempts.find(({ ok }) => ok);
+    const loser = attempts.find(({ status }) => status === 409);
+    if (!winner || !loser) throw Error("Expected one replacement");
+    expect(loser.headers.get("set-cookie")).toBeNull();
+    expect(await loser.json()).toEqual({ error: "SESSION_CHANGED" });
+    const replacement = winner.headers.get("set-cookie")?.split(";")[0];
+    if (!replacement) throw Error("Replacement cookie missing");
+    const session = await winner.json() as TeamSession;
+    expect((await server.request({ action: "session" }, original.key)).status).toBe(401);
+    expect((await server.request({ action: "session" }, replacement)).status).toBe(200);
+    const signOut = await server.request({ action: "signOut" }, replacement, { sessionVersion: session.sessionVersion });
+    expect(signOut.status).toBe(200);
+    expect((await server.request({ action: "session" }, replacement)).status).toBe(401);
+    expect((await server.request({ action: "signIn", username: "alex", password }, original.key)).status).toBe(409);
+    expect((await independent.request({ action: "session" })).status).toBe(200);
+  });
+
   it("rejects a stale edit without adding an extra audit entry", async () => {
     const server = app();
     const maya = await signIn(server, "maya");

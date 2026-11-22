@@ -84,10 +84,9 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
         const expected = candidate ? Buffer.from(candidate.passwordHash, "hex") : expectedHash;
         if (!timingSafeEqual(actual, expected) || !candidate) return json({ error: "SIGN_IN_FAILED" }, 401);
         const token = randomBytes(32).toString("hex");
-        const oldToken = tokenDigest(request.headers);
-        if (oldToken) store.deleteSession(oldToken);
         const tokenHash = digest(token);
-        store.saveSession(tokenHash, candidate, digest(candidate.passwordHash), Date.now() + sessionSeconds * 1000);
+        store.replaceSession(tokenHash, candidate, digest(candidate.passwordHash),
+          Date.now() + sessionSeconds * 1000, tokenDigest(request.headers));
         return json(projectSession(candidate, digest(tokenHash)), 200, cookie(token, sessionSeconds));
       }
       const identity = authenticate(request.headers);
@@ -109,7 +108,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
           }
           switch (command.action) {
             case "signOut":
-              store.deleteSession(token);
+              store.revokeSession(token);
               return json(null, 200, cookie("", 0));
             case "create": return json(store.create(employee, command.reference), 201);
             default: return json(store.change(employee, command, roster));
