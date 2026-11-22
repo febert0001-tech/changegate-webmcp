@@ -8,7 +8,8 @@ export function merchantReceipt(detail: MerchantCaseDetail, environment: Merchan
     : !refundCase.submittedAt ? "NOT_EXECUTED"
     : refundCase.refundId || observation ? "EXECUTED" : "IN_PROGRESS";
   const verificationStatus = noProviderRefund ? "NOT_RUN" : status === "COMPLETED" ? "VERIFIED"
-    : status === "FAILED" || (status === "UNCERTAIN" && observation) ? "FAILED"
+    : status === "FAILED" || (status === "UNCERTAIN" && (observation || refundCase.issue === "REFUND_READBACK_MISMATCH"))
+      ? "FAILED"
     : refundCase.refundId ? "IN_PROGRESS" : "NOT_RUN";
   return {
     schemaVersion: 1,

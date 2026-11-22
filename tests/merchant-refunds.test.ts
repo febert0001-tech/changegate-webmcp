@@ -215,6 +215,10 @@ describe("merchant refunds through the authenticated application handler", () =>
     expect(result.case).toMatchObject({
       status: "UNCERTAIN", issue: "REFUND_READBACK_MISMATCH", refundId: priorId, observation: null,
     });
+    expect(merchantReceipt(result, "Simulated PayPal Sandbox")).toMatchObject({
+      execution: { refundOutcome: "UNKNOWN" },
+      verification: { status: "FAILED", issue: "REFUND_READBACK_MISMATCH", observed: null },
+    });
     const [balance] = await instance.ok<MerchantCapture[]>({ action: "find", kind: "capture", reference: captureId });
     expect(balance).toMatchObject({ remainingCents: 4235, outstanding: [{ amountCents: 1000, status: "UNCERTAIN" }] });
     const denied = await instance.command({ action: "execute", ...competing });
