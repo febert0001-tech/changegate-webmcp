@@ -395,23 +395,31 @@ describe("PayPal Sandbox refunds with simulated transport", () => {
   const merchantId = "MOCKMERCHANT123";
   const terms = { source: "paypal", reference: capture, amount: "50.00", currency: "USD", reason: "Simulated PayPal" };
   const source = { action: "lookupOriginalSale", source: "paypal", reference: capture };
-  const submit = () => ({ action: "createRefundRequest", submissionId: randomUUID(), terms });
+  const submit = (amount = terms.amount) => ({ action: "createRefundRequest", submissionId: randomUUID(), terms: { ...terms, amount } });
+  const completedPrior = { id: "MOCKPRIORCOMPLETE", status: "COMPLETED", amount: "17.23" };
+  const pendingPrior = { id: "MOCKPRIORPENDING", status: "PENDING", amount: "8.64" };
 
   function simulator(allowRefunds = true) {
     const posts: { key: string; invoice: string }[] = [];
+    const priorRefunds: { id: string; status: string; amount: string }[] = [];
     const settings = { payee: merchantId, lost: true, visible: true, denied: false, amount: "50.00", invoice: "",
-      providerStatus: "COMPLETED", beforeRead: async () => {} };
+      expectedAmount: "50.00", providerStatus: "COMPLETED", beforeRead: async () => {}, unreadableRefund: "" };
     const transport = vi.fn(async (input: string, init: RequestInit) => {
       const url = new URL(input);
       expect(url.origin).toBe("https://api-m.sandbox.paypal.com");
       const money = (value: string) => ({ value, currency_code: "USD" });
       if (url.pathname === "/v1/oauth2/token") return Response.json({ access_token: "fixture-bearer", token_type: "Bearer", expires_in: 120 });
-      if (url.pathname === "/v2/payments/captures/" + capture) return Response.json({ id: capture, amount: money("120.00"),
-        status: posts.length && settings.providerStatus === "COMPLETED" ? "PARTIALLY_REFUNDED" : "COMPLETED",
-        supplementary_data: { related_ids: { order_id: order } } });
+      if (url.pathname === "/v2/payments/captures/" + capture) {
+        const totalRefunded = priorRefunds.filter(row => row.status === "COMPLETED")
+          .reduce((sum, row) => sum + Math.round(Number(row.amount) * 100),
+            posts.length && settings.providerStatus === "COMPLETED" ? Math.round(Number(settings.amount) * 100) : 0);
+        return Response.json({ id: capture, amount: money("120.00"),
+          status: totalRefunded === 12000 ? "REFUNDED" : totalRefunded ? "PARTIALLY_REFUNDED" : "COMPLETED",
+          supplementary_data: { related_ids: { order_id: order } } });
+      }
       if (url.pathname === "/v2/checkout/orders/" + order) return Response.json({ id: order, purchase_units: [
         { payee: { merchant_id: settings.payee }, payments: { captures: [{ id: capture }],
-          refunds: posts.length && settings.visible ? [{ id: refund }] : [] } },
+          refunds: [...priorRefunds.map(({ id }) => ({ id })), ...(posts.length && settings.visible ? [{ id: refund }] : [])] } },
       ] });
       if (url.pathname === "/v2/payments/captures/" + capture + "/refund" && init.method === "POST") {
         if (settings.denied) return Response.json({ name: "UNPROCESSABLE_ENTITY",
@@ -419,7 +427,7 @@ describe("PayPal Sandbox refunds with simulated transport", () => {
         const key = new Headers(init.headers).get("PayPal-Request-Id") ?? "";
         const body = JSON.parse(String(init.body)) as { amount: unknown; invoice_id: string };
         expect(key).toMatch(/^[a-f0-9-]{36}$/);
-        expect(body.amount).toEqual(money("50.00"));
+        expect(body.amount).toEqual(money(settings.expectedAmount));
         expect(body.invoice_id).toBe("changegate-" + key);
         posts.push({ key, invoice: body.invoice_id });
         if (settings.lost) throw new Error("simulated lost reply");
@@ -432,12 +440,75 @@ describe("PayPal Sandbox refunds with simulated transport", () => {
             { rel: "up", href: "https://api-m.sandbox.paypal.com/v2/payments/captures/" + capture, method: "GET" },
           ] });
       }
+      const prior = priorRefunds.find(row => url.pathname === "/v2/payments/refunds/" + row.id);
+      if (prior) {
+        if (settings.unreadableRefund === prior.id) return new Response(null, { status: 503 });
+        return Response.json({ id: prior.id, amount: money(prior.amount), status: prior.status, links: [
+          { rel: "up", href: "https://api-m.sandbox.paypal.com/v2/payments/captures/" + capture, method: "GET" },
+        ] });
+      }
       return new Response(null, { status: 404 });
     });
     const connect = () => new PayPalProvider({ teamMerchantId: "harbor", merchantId, clientId: "mock-client",
       clientSecret: "mock-secret", allowRefunds }, transport);
-    return { settings, transport, connect, provider: connect(), posts };
+    const refundSubmissions = () => transport.mock.calls.filter(([url, init]) =>
+      init.method === "POST" && new URL(url).pathname === "/v2/payments/captures/" + capture + "/refund");
+    return { settings, transport, connect, provider: connect(), posts, priorRefunds, refundSubmissions };
   }
+
+  it.each([
+    { label: "completed", history: [completedPrior], cents: 10277, amount: "102.77" },
+    { label: "pending", history: [pendingPrior], cents: 11136, amount: "111.36" },
+    { label: "completed and pending", history: [completedPrior, pendingPrior], cents: 9413, amount: "94.13" },
+  ])("allows exactly the available PayPal balance with earlier $label refunds", async ({ history, cents, amount }) => {
+    const mock = simulator();
+    mock.priorRefunds.push(...history);
+    Object.assign(mock.settings, { lost: false, expectedAmount: amount, amount });
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    expect(await cashier.send(source)).toMatchObject({ balanceCents: cents, reservedCents: 0 });
+    const request = await cashier.send<RefundRequest>(submit(amount));
+    const execute = { action: "executeElectronicRefund", id: request.id };
+    expect((await cashier.request(execute)).status).toBe(409);
+    expect(mock.refundSubmissions()).toHaveLength(0);
+    await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    const receipt = requestReceipt(await cashier.send<RefundRequest>(execute));
+    expect(mock.refundSubmissions()).toHaveLength(1);
+    expect(receipt.verification).toMatchObject({ status: "Verified", independentReadback: { amountCents: cents, currency: "USD" } });
+  });
+
+  it("does not submit an approved PayPal request one cent above the fresh available balance", async () => {
+    const mock = simulator();
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit("94.14"));
+    await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    mock.priorRefunds.push(completedPrior, pendingPrior);
+    const attempt = await cashier.send<RefundRequest>({ action: "executeElectronicRefund", id: request.id });
+    expect(requestReceipt(attempt).execution.status).toBe("Not submitted");
+    expect(attempt.events.at(-1)).toMatchObject({ kind: "Execution stopped" });
+    expect(await cashier.send(source)).toMatchObject({ balanceCents: 9413, reservedCents: 0 });
+    expect(mock.refundSubmissions()).toHaveLength(0);
+  });
+
+  it("does not submit when approved PayPal refund history becomes unreadable", async () => {
+    const mock = simulator();
+    mock.priorRefunds.push(completedPrior);
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit());
+    await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    mock.settings.unreadableRefund = completedPrior.id;
+    const denied = await cashier.request({ action: "executeElectronicRefund", id: request.id });
+    expect(denied.status).toBe(409);
+    expect(await denied.json()).toEqual({ error: "PAYPAL_HISTORY_UNAVAILABLE" });
+    const stored = await cashier.send<RefundRequest>({ action: "openRefundRequest", id: request.id });
+    expect(requestReceipt(stored).execution.attempt).toBeNull();
+    expect(mock.refundSubmissions()).toHaveLength(0);
+  });
 
   it("makes no provider calls when settings are missing or PayPal is disabled", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
