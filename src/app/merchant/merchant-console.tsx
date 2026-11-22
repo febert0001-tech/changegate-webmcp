@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { activeStatuses, type TeamCaseDetail, type TeamCommand, type TeamSession, type TeamWorkspaceView } from "../../merchant-team/contracts";
 import styles from "./merchant.module.css";
+import { StoreEntry } from "./store-entry";
 import { TransactionWorkspace } from "../transactions/transaction-workspace";
 import type { TransactionStep } from "../../merchant-team/refund-requests";
 import { ReviewSummaryPanel } from "./review-summary-panel";
@@ -164,6 +165,26 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
 
   const visible = cases.filter(row => filter === "Resolved" ? row.status === "Resolved" :
     row.status !== "Resolved" && (filter !== "Assigned to me" || row.assignee === session?.username));
+  if(!ready)return <main className={styles.shell}><p role="status">Loading workspace…</p></main>;
+  if(!session)return <StoreEntry>
+    <form className={styles.entrySide} method="post" onSubmit={(event) => {
+        const data = formValues(event);
+        event.currentTarget.reset();
+        void run(async () => {
+          await send<TeamSession>({ action: "signIn", username: field(data, "username").trim().toLowerCase(),
+            password: field(data, "password"), ...(recoverSession && { recoverSession: true as const }) });
+          notifySessionChange();
+          window.location.reload();
+        });
+      }}>
+        <h2>Sign in to your store</h2>
+        {!!notice && <p className={styles.formError} role="alert">{notice}</p>}
+        <label>Username<input name="username" autoComplete="username" maxLength={64} required /></label>
+        <label>Password<input name="password" type="password" autoComplete="current-password" maxLength={160} required /></label>
+        <button className={styles.primary} disabled={busy}>{recoverSession ? "Recover sign-in" : "Sign in"}</button>
+        <p className={styles.fieldHint}>Need access or a password reset? Contact your store administrator.</p>
+      </form>
+  </StoreEntry>;
   return <main className={styles.shell}>
     <header className={styles.header}>
       <div>
@@ -185,23 +206,7 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
       </div>}
     </header>
     {(notice || busy) && <p className={styles.inlineNotice} role="status">{notice || "Working…"}</p>}
-    {!ready || (busy && !session) ? <p>Loading workspace…</p> : !session ? (
-      <form className={styles.signIn} method="post" onSubmit={(event) => {
-        const data = formValues(event);
-        event.currentTarget.reset();
-        void run(async () => {
-          await send<TeamSession>({ action: "signIn", username: field(data, "username").trim().toLowerCase(),
-            password: field(data, "password"), ...(recoverSession && { recoverSession: true as const }) });
-          notifySessionChange();
-          window.location.reload();
-        });
-      }}>
-        <h2>Employee sign-in</h2>
-        <label>Username<input name="username" autoComplete="username" maxLength={64} required /></label>
-        <label>Password<input name="password" type="password" autoComplete="current-password" maxLength={160} required /></label>
-        <button className={styles.primary} disabled={busy}>{recoverSession ? "Recover sign-in" : "Sign in"}</button>
-      </form>
-    ) : transaction ? (
+    {transaction ? (
       <TransactionWorkspace key={versionKey(session.sessionVersion, transaction === "list" ? undefined : transaction.id)}
         destination={transaction} session={session} send={send} onSessionError={clearOnSessionError} />
     ) : reviewSummary && importId ? (

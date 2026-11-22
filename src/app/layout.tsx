@@ -14,8 +14,10 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ChangeGate | Verified Human Control Plane",
-  description: "AI proposes. Humans authorize. ChangeGate independently verifies synthetic refunds.",
+  title: process.env.CHANGEGATE_STAGING_BUILD === "1" ? "ChangeGate | Store refund review" : "ChangeGate | Verified Human Control Plane",
+  description: process.env.CHANGEGATE_STAGING_BUILD === "1"
+    ? "Review store refund requests, supervisor decisions, and weekly reconciliation."
+    : "AI proposes. Humans authorize. ChangeGate independently verifies synthetic refunds.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {

@@ -133,9 +133,37 @@
   .reviewTotals { gap: 5px; }
   .reviewTotals > div { padding: 8px; }
 }
-.frontDoor { max-width: 660px; margin: 11vh auto 0; background: white; border: 1px solid var(--line); border-radius: 14px; padding: clamp(20px, 6vw, 58px); display: grid; gap: 18px; }
-.frontDoor h1 { font-size: clamp(2.2rem, 7vw, 4rem); letter-spacing: -.055em; line-height: 1.05; }
-.frontDoor p { max-width: 44ch; }
 .transactionTabs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
 .transactionTabs a { padding: 9px 12px; border: 1px solid var(--line); border-radius: 7px; text-decoration: none; }
 .transactionTabs a[aria-current="page"] { color: white; background: var(--teal); border-color: var(--teal); font-weight: 650; }
+.entryShell {
+  max-width: 1040px; margin: clamp(0px, 4vh, 44px) auto; background: #fff;
+  border: 1px solid var(--line); border-radius: 16px; overflow: hidden;
+}
+.entryHeader { display: flex; align-items: baseline; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; padding: 18px clamp(18px, 4vw, 42px); border-bottom: 1px solid var(--line); }
+.entryHeader span { color: var(--muted); font-size: .9rem; }
+.entryBrand { color: var(--teal); font-size: 1.3rem; font-weight: 780; text-decoration: none; }
+.entryGrid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: clamp(22px, 4vw, 42px); padding: clamp(19px, 4vw, 42px); align-items: start; }
+.entryIntro, .entrySide { display: grid; gap: 14px; }
+.entryIntro h1 { font-size: clamp(2.2rem, 5.15vw, 4rem); font-weight: 700; letter-spacing: -.055em; line-height: 1.04; }
+.entryIntro p { max-width: 42ch; }
+.entryMode { color: var(--muted); font-size: .9rem; }
+.entrySide { min-width: 0; padding: clamp(14px, 2.7vw, 25px); border: 1px solid var(--line); border-radius: 12px; background: #f2f7f8; }
+.entryExample { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; }
+.entryExample dt, .moneySummary dt { color: var(--muted); font-size: .86rem; }
+.entryExample dd { font-size: 1.45rem; font-weight: 750; margin-top: 3px; }
+.entryOutcome { font-weight: 700; }
+.transactionSummary { margin: 14px 0 0; padding: 14px 16px; border: 1px solid var(--line); background: #f0f8f7; border-radius: 10px; display: grid; gap: 10px; }
+.statusHeading { display: flex; justify-content: space-between; gap: 4px 12px; flex-wrap: wrap; }
+.statusHeading span { color: var(--muted); font-size: .88rem; }
+.moneySummary { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px; }
+.moneySummary dd { margin-top: 3px; font-weight: 720; overflow-wrap: anywhere; }
+.transactionTabs a { min-height: 44px; display: inline-flex; align-items: center; }
+@media(max-width:700px) {
+  .entryGrid { grid-template-columns: minmax(0,1fr); }
+  .entryGrid[data-sign-in="true"] .entrySide { order: -1; }
+}
+@media(max-width:500px) {
+  .moneySummary { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .moneySummary>div:last-child { grid-column: 1/-1; }
+}
