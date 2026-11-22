@@ -231,7 +231,7 @@ export class PayPalMerchantSandbox {
     return result;
   }
 
-  async submit(captureId: string, amountCents: number, requestId: string): Promise<string> {
+  async submit(captureId: string, amountCents: number, requestId: string, authorize?: () => void): Promise<string> {
     if (!cents.safeParse(amountCents).success || amountCents > this.options.maxRefundCents) {
       throw new MerchantError("REFUND_POLICY_LIMIT");
     }
@@ -242,6 +242,7 @@ export class PayPalMerchantSandbox {
     } catch {
       throw new RefundNotSubmitted();
     }
+    authorize?.();
     const raw = await this.json("POST", "/v2/payments/captures/" + providerReference.parse(captureId) + "/refund", {
       headers: {
         Authorization: authorization, "Content-Type": "application/json",

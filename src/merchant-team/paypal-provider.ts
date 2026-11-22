@@ -59,9 +59,9 @@ export class PayPalProvider {
     if (!this.config.allowRefunds) throw new TeamError("PAYPAL_REFUNDS_DISABLED", 409);
   }
 
-  submit(terms: ElectronicAttemptTerms) {
+  submit(terms: ElectronicAttemptTerms, authorize: () => void) {
     this.assertExecutionEnabled();
-    return this.adapter.submit(terms.paymentId, terms.amountCents, terms.key);
+    return this.adapter.submit(terms.paymentId, terms.amountCents, terms.key, authorize);
   }
 
   async readback(terms: ElectronicAttemptTerms, refundId?: string): Promise<RefundObservation | undefined> {

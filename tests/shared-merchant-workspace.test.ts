@@ -587,7 +587,14 @@ describe("Square Sandbox refunds", () => {
     clock = started + cutoff;
     const atCutoff = await cashier.send<RefundRequest>(execute);
     expect(mock.posts).toEqual([originalPost, originalPost, originalPost]);
-    clock = started + cutoff + 1;
+    // Begin another retry just before the cutoff, then run the final authorization after it.
+    clock = started + cutoff - 1;
+    mock.settings.beforeMerchantRead = async () => { clock = started + cutoff + 1; };
+    const crossedCutoff = await cashier.request(execute);
+    expect(crossedCutoff.status).toBe(409);
+    expect(await crossedCutoff.json()).toEqual({ error: "SQUARE_RECONCILIATION_REQUIRED" });
+    expect(mock.posts).toHaveLength(3);
+
     const denied = await cashier.request(execute);
     expect(denied.status).toBe(409);
     expect(await denied.json()).toEqual({ error: "SQUARE_RECONCILIATION_REQUIRED" });
@@ -671,12 +678,15 @@ describe("PayPal Sandbox refunds with simulated transport", () => {
     const priorRefunds: { id: string; status: string; amount: string }[] = [];
     const settings = { payee: merchantId, lost: true, visible: true, denied: false, amount: "50.00", invoice: "",
       expectedAmount: "50.00", captureAmount: "120.00", providerStatus: "COMPLETED", beforeRead: async () => {},
-      beforeSubmit: async () => {}, beforeCaptureRead: async () => {}, unreadableRefund: "" };
+      beforeSubmit: async () => {}, beforeCaptureRead: async () => {}, beforeOAuth: async () => {}, tokenLifetime: 120, unreadableRefund: "" };
     const transport = vi.fn(async (input: string, init: RequestInit) => {
       const url = new URL(input);
       expect(url.origin).toBe("https://api-m.sandbox.paypal.com");
       const money = (value: string) => ({ value, currency_code: "USD" });
-      if (url.pathname === "/v1/oauth2/token") return Response.json({ access_token: "fixture-bearer", token_type: "Bearer", expires_in: 120 });
+      if (url.pathname === "/v1/oauth2/token") {
+        await settings.beforeOAuth();
+        return Response.json({ access_token: "fixture-bearer", token_type: "Bearer", expires_in: settings.tokenLifetime });
+      }
       if (url.pathname === "/v2/payments/captures/" + capture) {
         await settings.beforeCaptureRead();
         const totalRefunded = priorRefunds.filter(row => row.status === "COMPLETED")
@@ -1040,6 +1050,36 @@ describe("PayPal Sandbox refunds with simulated transport", () => {
       expect(requestReceipt(await supervisor.send<RefundRequest>(execute)).verification.status).toBe("Verified");
     }
     expect(mock.refundSubmissions()).toHaveLength(1);
+  });
+
+  it("stops PayPal execution when the operator signs out during submission OAuth refresh", async () => {
+    const mock = simulator();
+    mock.settings.tokenLifetime = 1;
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const supervisor = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit());
+    await supervisor.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+
+    const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
+    const submitToPayPal = mock.provider.submit.bind(mock.provider);
+    vi.spyOn(mock.provider, "submit").mockImplementationOnce((attempt, authorize) => {
+      mock.settings.beforeOAuth = async () => { entered.resolve(); await resume.promise; };
+      return submitToPayPal(attempt, authorize);
+    });
+    const execute = { action: "executeElectronicRefund", id: request.id };
+    const submitting = cashier.request(execute);
+    try {
+      await entered.promise;
+      expect((await cashier.request({ action: "signOut" })).ok).toBe(true);
+    } finally {
+      resume.resolve();
+    }
+    expect((await submitting).status).toBe(401);
+    expect(mock.refundSubmissions()).toHaveLength(0);
+    const saved = await supervisor.send<RefundRequest>({ action: "openRefundRequest", id: request.id });
+    expect(requestReceipt(saved).execution.status).toBe("Not submitted");
+    expect(await supervisor.send(source)).toMatchObject({ balanceCents: 12000, reservedCents: 0 });
   });
 
   it("denies PayPal balance lookup after the cashier signs out during the provider read", async () => {

@@ -181,7 +181,7 @@ export class TeamStore {
         try {
           let authorized = false;
           const result = await square.submit(attempt.terms, () => {
-            this.authorizeSquareDispatch(employee, token, id, claim);
+            this.authorizeSquareDispatch(employee, token, id, claim, attempt.startedAt);
             authorized = true;
           }).catch((error: unknown) => {
             if (error instanceof SquareSubmissionBlocked) return error;
@@ -214,8 +214,7 @@ export class TeamStore {
 
   private claimSquareDispatch(employee: Employee, id: string, startedAt: string) {
     const now = Date.parse(this.now());
-    // The retry window includes exactly 15 minutes after the first recorded attempt.
-    if (now - Date.parse(startedAt) > 15 * 60_000) throw new TeamError("SQUARE_RECONCILIATION_REQUIRED", 409);
+    this.requireSquareRetryWindow(now, startedAt);
     const claim = randomUUID();
     // Each Square request times out after 8 seconds. Leave time for the merchant check and POST.
     const expiresAt = now + squareDispatchLeaseMs;
@@ -225,15 +224,21 @@ export class TeamStore {
       .get(employee.merchantId, id, claim, expiresAt, now) ? claim : undefined;
   }
 
-  private authorizeSquareDispatch(employee: Employee, token: string, id: string, claim: string) {
+  private authorizeSquareDispatch(employee: Employee, token: string, id: string, claim: string, startedAt: string) {
     this.atomic(() => {
       this.requireActiveSession(employee, token);
       const now = Date.parse(this.now());
+      this.requireSquareRetryWindow(now, startedAt);
       const active = this.db.prepare(`UPDATE team_square_dispatches SET expires_at=?
         WHERE merchant_id=? AND request_id=? AND claim=? AND expires_at>?`)
         .run(now + squareDispatchLeaseMs, employee.merchantId, id, claim, now);
       if (!active.changes) throw new TeamError("SQUARE_RECONCILIATION_REQUIRED", 409);
     });
+  }
+
+  private requireSquareRetryWindow(now: number, startedAt: string) {
+    // The retry window includes exactly 15 minutes after the first recorded attempt.
+    if (now - Date.parse(startedAt) > 15 * 60_000) throw new TeamError("SQUARE_RECONCILIATION_REQUIRED", 409);
   }
 
   private releaseSquareDispatch(employee: Employee, id: string, claim: string) {
@@ -256,8 +261,13 @@ export class TeamStore {
       if (attempt && recorded.started) {
         let refundId: string | null;
         try {
-          refundId = await paypal.submit(attempt.terms);
+          refundId = await paypal.submit(attempt.terms, () => this.requireActiveSession(employee, token));
         } catch (error) {
+          if (error instanceof TeamError && error.code === "SIGN_IN_REQUIRED") {
+            this.atomic(() => this.refundRequests.stopElectronic(employee, id,
+              "The operator signed out or lost authorization before submission. No refund was sent.", true));
+            throw error;
+          }
           if (error instanceof RefundNotSubmitted || error instanceof RefundSubmissionRejected) {
             const reason = error instanceof RefundNotSubmitted
               ? "ChangeGate could not authenticate before submission. No refund was sent."
