@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import type { TeamCommand, TeamSession } from "../../merchant-team/contracts";
 import { canReview, cents, checks, currentStep, money, payout, requestDecision, requestReceipt,
+  squareAttempt, squareResponse, squareVerification,
   requestStatus, submitted, transactionTabs, type RefundRequest, type TestSale, type TransactionStep } from "../../merchant-team/refund-requests";
 import { PhoneAlerts } from "./phone-alerts";
 import { useTransactionTools } from "./use-transaction-tools";
@@ -22,7 +23,8 @@ function SaleFacts({ sale }: { sale: TestSale }) {
     <div><dt>Register</dt><dd>{sale.register}</dd></div>
     <div><dt>Shift</dt><dd>{sale.shift}</dd></div>
     <div><dt>Original sale</dt><dd>{money(sale.originalCents)}</dd></div>
-    <div><dt>Prior refunds on test sale</dt><dd>{money(sale.priorCents)}</dd></div>
+    <div><dt>{sale.square?"Square refunds completed or pending":"Prior refunds on test sale"}</dt><dd>{money(sale.priorCents)}</dd></div>
+    <div><dt>Sale source</dt><dd>{sale.square?"Square Sandbox":"ChangeGate test fixture"}</dd></div>
     <div><dt>Original tender</dt><dd>{sale.tender}</dd></div>
   </dl>;
 }
@@ -41,6 +43,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   const [employee,setEmployee]=useState("");
   const [newForm,setNewForm]=useState(false);
   const [reference,setReference]=useState("");
+  const [source,setSource]=useState<"test"|"square">("test");
   const [lookup,setLookup]=useState<Lookup>();
   const [formId,setFormId]=useState("");
   const [busy,setBusy]=useState(false);
@@ -109,22 +112,26 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
     return <section className={styles.card}>
       <div className={styles.screenHeading}><h2>Transactions</h2>
         <button className={styles.primary} type="button" onClick={()=>{
-          setNewForm(true);setReference("");setLookup(undefined);setFormId(crypto.randomUUID());setError("");
+          setNewForm(true);setReference("");setSource("test");setLookup(undefined);setFormId(crypto.randomUUID());setError("");
         }}>New refund</button></div>
       {session.reviewerConfigured===false&&<p className={styles.formError}>No supervisor is configured for this store. Ask your store administrator to assign a manager or owner.</p>}
-      <p className={styles.fieldHint}>Test sales only · No POS or payment processor connected</p>
+      <p className={styles.fieldHint}>Test environment · ChangeGate fixtures and Square Sandbox</p>
       {noticeBlock}
       {newForm&&<section className={styles.importSection} aria-label="New refund">
         <h3>Find original sale</h3>
         <form className={styles.formRow} onSubmit={event=>{
           event.preventDefault();
-          void run(async()=>setLookup(await api<Lookup>({action:"lookupOriginalSale",reference})));
+          void run(async()=>setLookup(await api<Lookup>({action:"lookupOriginalSale",reference,source})));
         }}>
-          <label>Original payment reference<input name="reference" value={reference} maxLength={160} required
-            onChange={e=>{setReference(e.target.value);setLookup(undefined);}} /></label>
+          <label>Sale source<select name="saleSource" value={source} disabled={busy} onChange={e=>{
+            setSource(e.target.value==="square"?"square":"test");setReference("");setLookup(undefined);setError("");
+            setFormId(crypto.randomUUID());
+          }}><option value="test">ChangeGate test records</option><option value="square">Square Sandbox</option></select></label>
+          <label>Original payment reference<input name="reference" value={reference} maxLength={160} required disabled={busy}
+            onChange={e=>{setReference(e.target.value);setLookup(undefined);setFormId(crypto.randomUUID());}} /></label>
           <button type="submit" disabled={busy}>Find sale</button>
         </form>
-        <p className={styles.fieldHint}>Test references: TEST-SALE-CASH, TEST-SALE-BALANCE, TEST-SALE-PARTIAL, TEST-SALE-ELECTRONIC, TEST-MONITOR-1 through 6</p>
+        {source==="test"&&<p className={styles.fieldHint}>Test references: TEST-SALE-CASH, TEST-SALE-BALANCE, TEST-SALE-PARTIAL, TEST-SALE-ELECTRONIC, TEST-MONITOR-1 through 6</p>}
         {lookup!==undefined&&<>
           {lookup ? <><SaleFacts sale={lookup.sale} /><p><strong>{money(lookup.balanceCents)} remaining refundable</strong>
             {" · "+money(lookup.paidCents)+" reported here · "+money(lookup.reservedCents)+" reserved"}</p></>:
@@ -134,7 +141,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
             const form=new FormData(event.currentTarget);
             void run(async()=>{
               const result=await api<RefundRequest>({action:"createRefundRequest",submissionId:formId,terms:{
-                reference,amount:value(form,"amount"),currency:"USD",reason:value(form,"reason"),
+                ...(source==="square"&&{source}),reference,amount:value(form,"amount"),currency:"USD",reason:value(form,"reason"),
               }});
               router.push(url(result.id,currentStep(result)));
             });
@@ -188,17 +195,26 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   if(!record)return <section className={styles.card}>{noticeBlock}{loading&&<p>Loading refund…</p>}</section>;
   const {step}=destination;
   const review=requestDecision(record), check=checks(record), reported=payout(record);
+  const square=record.sale?.square, attempt=squareAttempt(record), response=squareResponse(record), verification=squareVerification(record);
+  const verified=verification?.result==="Verified", failed=verification?.result==="Failed";
   const status=requestStatus(record), current=currentStep(record);
-  const outcome=reported ? "Test cash payout reported" : "No payout recorded";
+  const outcome=verified ? "Square Sandbox refund verified · No real money moved"
+    : failed ? "Square Sandbox reports the refund failed"
+    : attempt ? "Square Sandbox outcome unconfirmed"
+    : reported ? "Test cash payout reported" : "No payout recorded";
   const next=status==="Needs manager decision" ? "A different supervisor must approve or reject this request."
     : check.route==="over-balance" ? "Cashier: check the balance and start a new request for an eligible amount."
     : review?.decision==="Rejected" ? "No payout action is available. Return to the transaction list."
     : status==="Ready for cash payout" ? "Cashier: confirm and record the test cash payout in Execution."
     : reported ? "Cashier: open the receipt for the recorded employee report."
+    : verified || failed ? "Open the receipt for Square’s independent readback."
+    : response ? "Check the receipt for the latest Square status."
+    : attempt ? "Retry the original Square attempt from Execution."
+    : square ? "Execute the refund in Square Sandbox."
     : "Execution is blocked until a payment processor is connected.";
   return <section className={styles.card} aria-labelledby="refund-heading">
     <div className={styles.screenHeading}><h2 id="refund-heading">Refund · {money(cents(record.terms.amount))}</h2><Link href="/transactions">All transactions</Link></div>
-    <p className={styles.caseReference}>{record.terms.reference} · {record.sale?.location??"Sale unverified"} · Test data</p>
+    <p className={styles.caseReference}>{record.terms.reference} · {record.sale?.location??"Sale unverified"} · {square?"Square Sandbox":"Test data"}</p>
     <section className={styles.transactionSummary} aria-label="Refund status and next action">
       <p className={styles.statusHeading}><strong>{status}</strong><span>Current step · {transactionTabs.find(([tab])=>tab===current)?.[1]}</span></p>
       <dl className={styles.moneySummary}>
@@ -222,7 +238,8 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
         <h3>Refund checks</h3><p>{check.explanation}</p>
         <ul className={styles.rejections}>
           <li>Request format and USD amount passed.</li>
-          <li>{record.sale?"Original sale found in the test POS records.":"Original sale could not be verified."}</li>
+          <li>{square?"Square confirmed a completed USD card sale for the configured merchant and location.":
+            record.sale?"Original sale found in the test POS records.":"Original sale could not be verified."}</li>
           <li>Remaining refundable balance {check.balanceCents===null?"unavailable":money(check.balanceCents)}</li>
           <li>Store approval threshold {money(check.thresholdCents)}</li>
           {check.cumulativeCents!==null&&<li>Cumulative requested amount {money(check.cumulativeCents)}</li>}
@@ -277,7 +294,16 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       </>}
       {step==="execution"&&<>
         <h3>Execution</h3>
-        {reported ? <p>Test cash payout reported by {reported.actor} · {time(reported.occurredAt)}</p>:
+        {response ? <><p>Square response · {response.refund.status} · {response.refund.id}</p>
+          <Link href={url(record.id,"receipt")}>Open receipt</Link></>:
+          square&&(status==="Ready for Square Sandbox refund"||attempt)?<>
+            <p>{attempt?"Square’s response is unavailable. Retrying uses the original attempt.":"Submit this refund to Square Sandbox."}</p>
+            <button className={styles.primary} disabled={busy} onClick={()=>void run(async()=>{
+              const result=await api<RefundRequest>({action:"executeSquareRefund",id:record.id});
+              setRecord(result);
+              if(squareResponse(result))router.push(url(record.id,"receipt"));
+            })}>{attempt?"Retry original attempt":"Execute Square Sandbox refund"}</button></>:
+          reported ? <p>Test cash payout reported by {reported.actor} · {time(reported.occurredAt)}</p>:
           status==="Ready for cash payout"?<><p>Record a test cash payout after confirming the amount. This records an employee report.</p>
             <button className={styles.primary} disabled={busy} onClick={()=>void run(async()=>{
               const result=await api<RefundRequest>({action:"reportCashPayout",id:record.id});
@@ -288,8 +314,22 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       </>}
       {step==="receipt"&&<>
         <h3>Receipt and verification</h3>
-        <p>{reported ? "Cash payout recorded. This is a test employee report." : "No payout or provider submission recorded."}</p>
-        <p>Independent electronic readback unavailable. No electronic refund has been verified.</p>
+        {square?<><p>{response ? "Square returned "+response.refund.status : attempt ? "Square response unavailable." : "No Square submission recorded."}</p>
+          {review&&<p>{review.decision} by {review.actor} · {time(review.occurredAt)}</p>}
+          <p><strong>{verification?.result??"Independent lookup not run"}</strong>{verification?.occurredAt&&" · "+time(verification.occurredAt)}</p>
+          {verification?.refund&&<dl className={styles.facts}>
+            <div><dt>Square refund ID</dt><dd>{verification.refund.id}</dd></div>
+            <div><dt>Original Square payment</dt><dd>{verification.refund.paymentId}</dd></div>
+            <div><dt>Provider amount</dt><dd>{(verification.refund.amountCents/100).toFixed(2)} {verification.refund.currency}</dd></div>
+            <div><dt>Provider status</dt><dd>{verification.refund.status}</dd></div>
+          </dl>}
+          {verification?.result==="Mismatch"&&<p>Square’s readback did not match the approved refund. The outcome is unconfirmed.</p>}
+          {response&&!verified&&!failed&&<button disabled={busy} onClick={()=>void run(async()=>
+            setRecord(await api<RefundRequest>({action:"verifySquareRefund",id:record.id})))}>Check Square status</button>}
+        </>:<>
+          <p>{reported ? "Cash payout recorded. This is a test employee report." : "No payout or provider submission recorded."}</p>
+          <p>Independent electronic readback unavailable. No electronic refund has been verified.</p>
+        </>}
         <button type="button" className={styles.primary} onClick={()=>{
           const href=URL.createObjectURL(new Blob([JSON.stringify(requestReceipt(record),null,2)+"\n"],{type:"application/json"}));
           const anchor=document.createElement("a");anchor.href=href;anchor.download="changegate-refund-"+record.id+".json";anchor.click();

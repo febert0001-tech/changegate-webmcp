@@ -8,7 +8,8 @@ import { getWebMcpModelContext } from "../../webmcp/native-contract";
 type Read = (command: TeamCommand, signal: AbortSignal) => Promise<RefundRequest | RefundRequest[]>;
 const inspect = (request: RefundRequest) => ({
   id:request.id, reference:request.terms.reference, amount:request.terms.amount, currency:request.terms.currency,
-  status:requestStatus(request), checks:checks(request), dataSource:"Test sale records",
+  status:requestStatus(request), checks:checks(request),
+  dataSource:request.sale?.square?"Square Sandbox":"Test sale records",
 });
 export function useTransactionTools(read: Read) {
   useEffect(() => {

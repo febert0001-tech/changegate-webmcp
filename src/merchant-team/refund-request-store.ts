@@ -4,8 +4,9 @@ import type { Employee } from "./contracts";
 import type { RefundAlertStore } from "./refund-alert-store";
 import { assessSize, individualLimitCents, ruleVersion, syntheticRegisterDrift, watchWindowMs } from "./refund-monitor-rules";
 import { TeamError } from "./error";
-import { canReview, cents, checks, money, payout, requestDecision, requestStatus, testSale,
-  type RefundCheck, type RefundDecision, type RefundRequest, type RefundTerms, type TestSale, type TransactionEvent } from "./refund-requests";
+import { canReview, cents, checks, money, payout, requestDecision, requestStatus, squareResponse, squareVerification, testSale,
+  type RefundCheck, type RefundDecision, type RefundRequest, type RefundTerms, type SquareRefundEvidence, type TestSale, type TransactionEvent } from "./refund-requests";
+import type { SquareAttemptTerms, SquareSaleEvidence } from "./square-sandbox";
 
 type RequestRow = { id: string; terms: string; sale: string; events: string };
 const project = (row: RequestRow): RefundRequest => ({
@@ -33,6 +34,11 @@ export class RefundRequestStore {
       CREATE INDEX IF NOT EXISTS team_refund_watch_cashier ON team_refund_watch(merchant_id,cashier,seen_at);
       CREATE INDEX IF NOT EXISTS team_refund_watch_register ON team_refund_watch(merchant_id,register_scope,seen_at);
       CREATE INDEX IF NOT EXISTS team_request_events_by_id ON team_refund_request_events(merchant_id, request_id, sequence);
+      CREATE TABLE IF NOT EXISTS team_square_attempts (
+        merchant_id TEXT NOT NULL, request_id TEXT NOT NULL, terms TEXT NOT NULL, started_at TEXT NOT NULL,
+        PRIMARY KEY (merchant_id, request_id),
+        FOREIGN KEY (merchant_id, request_id) REFERENCES team_refund_requests(merchant_id, id)
+      );
     `);
   }
 
@@ -62,29 +68,43 @@ export class RefundRequestStore {
       DO UPDATE SET threshold_cents=excluded.threshold_cents`).run(employee.merchantId,thresholdCents);
     return this.policy(employee);
   }
-  private saleUsage(employee: Employee, sale: TestSale) {
+  private saleUsage(employee: Employee, sale: TestSale, countedRefundIds: string[] = [], excludeId?: string) {
     let paidCents=0, reservedCents=0;
     const rows=(this.db.prepare(this.select()+" WHERE r.merchant_id=? AND json_extract(r.terms,'$.reference')=?")
       .all(employee.merchantId,sale.reference) as unknown as RequestRow[]).map(project);
     for (const request of rows) {
-      if (checks(request).route === "over-balance" || requestDecision(request)?.decision === "Rejected") continue;
+      if (request.id === excludeId || !request.sale || Boolean(request.sale.square) !== Boolean(sale.square) ||
+          request.sale.square?.merchantId !== sale.square?.merchantId || request.sale.square?.locationId !== sale.square?.locationId ||
+          checks(request).route === "over-balance" || requestDecision(request)?.decision === "Rejected") continue;
+      if (sale.square) {
+        const verification = squareVerification(request);
+        const response = squareResponse(request)?.refund;
+        if (verification?.result === "Failed" || (response && countedRefundIds.includes(response.id) &&
+          response.paymentId === sale.reference && response.locationId === sale.square.locationId &&
+          response.currency === "USD" && response.amountCents === cents(request.terms.amount))) continue;
+      }
       if (payout(request)) paidCents+=cents(request.terms.amount); else reservedCents+=cents(request.terms.amount);
     }
     return { paidCents, reservedCents, balanceCents:sale.originalCents-sale.priorCents-paidCents-reservedCents };
   }
-  lookup(employee: Employee, reference: string) {
-    const sale=testSale(reference);
-    return sale ? {sale,...this.saleUsage(employee,sale)} : null;
+  lookup(employee: Employee, reference: string, evidence?: SquareSaleEvidence) {
+    const sale=evidence?.sale ?? testSale(reference);
+    return sale ? {sale,...this.saleUsage(employee,sale,evidence?.countedRefundIds)} : null;
   }
-  create(employee: Employee, submissionId: string, terms: RefundTerms, alerts:RefundAlertStore) {
-    const payload = JSON.stringify(terms);
+  replay(employee: Employee, submissionId: string, terms: RefundTerms) {
     const existing = this.db.prepare("SELECT id,terms FROM team_refund_requests WHERE merchant_id=? AND submission_id=?")
       .get(employee.merchantId,submissionId);
     if (typeof existing?.id === "string") {
-      if (existing.terms !== payload) throw new TeamError("TRANSACTION_SUBMISSION_CHANGED",409);
+      if (existing.terms !== JSON.stringify(terms)) throw new TeamError("TRANSACTION_SUBMISSION_CHANGED",409);
       return this.open(employee,existing.id);
     }
-    const id=randomUUID(), occurredAt=this.now(), sale=testSale(terms.reference);
+  }
+  create(employee: Employee, submissionId: string, terms: RefundTerms, alerts:RefundAlertStore, evidence?: SquareSaleEvidence) {
+    const existing = this.replay(employee, submissionId, terms);
+    if (existing) return existing;
+    if (terms.source === "square" && !evidence) throw new TeamError("SQUARE_SALE_UNAVAILABLE",422);
+    const payload = JSON.stringify(terms);
+    const id=randomUUID(), occurredAt=this.now(), sale=evidence?.sale ?? testSale(terms.reference);
     const { thresholdCents }=this.policy(employee);
     let check: RefundCheck;
     const amount=cents(terms.amount);
@@ -107,7 +127,7 @@ export class RefundRequestStore {
       check={route:"exception",balanceCents:null,cumulativeCents:null,thresholdCents,monitoring,
         explanation:"The sale could not be verified. Route it to a manager for exception review. Payment remains blocked."};
     } else {
-      const { balanceCents }=this.saleUsage(employee,sale);
+      const { balanceCents }=this.saleUsage(employee,sale,evidence?.countedRefundIds);
       const cumulativeCents=sale.originalCents-balanceCents+amount;
       if(cumulativeCents>=thresholdCents) reasons.push("Cumulative refunds would reach "+money(cumulativeCents)+
         ", meeting or exceeding the "+money(thresholdCents)+" store threshold.");
@@ -146,6 +166,64 @@ export class RefundRequestStore {
     if (payout(request)) return request;
     if (requestStatus(request)!=="Ready for cash payout") throw new TeamError("TRANSACTION_ACTION_UNAVAILABLE",409);
     this.add(employee,id,{kind:"Cash payout reported",actor:employee.name,occurredAt:this.now()});
+    return this.open(employee,id);
+  }
+
+  squareExecution(employee: Employee, id: string) {
+    const request = this.open(employee, id);
+    if (!request.sale?.square || checks(request).route === "over-balance" ||
+        (checks(request).route !== "routine" && requestDecision(request)?.decision !== "Approved")) {
+      throw new TeamError("TRANSACTION_ACTION_UNAVAILABLE", 409);
+    }
+    const row = this.db.prepare("SELECT terms, started_at FROM team_square_attempts WHERE merchant_id=? AND request_id=?")
+      .get(employee.merchantId, id);
+    const attempt = typeof row?.terms === "string" && typeof row.started_at === "string" ?
+      { terms: JSON.parse(row.terms) as SquareAttemptTerms, startedAt: row.started_at } : undefined;
+    return { request, attempt, response: squareResponse(request)?.refund };
+  }
+
+  startSquare(employee: Employee, id: string, evidence?: SquareSaleEvidence) {
+    const state = this.squareExecution(employee, id);
+    if (state.attempt) return { ...state, attempt: state.attempt };
+    const { request } = state;
+    const amountCents = cents(request.terms.amount);
+    const sale = request.sale!;
+    if (!evidence || evidence.sale.reference !== sale.reference ||
+        evidence.sale.square?.merchantId !== sale.square?.merchantId || evidence.sale.square?.locationId !== sale.square?.locationId) {
+      throw new TeamError("SQUARE_SALE_UNAVAILABLE", 422);
+    }
+    if (amountCents > this.saleUsage(employee, evidence.sale, evidence.countedRefundIds, id).balanceCents) {
+      throw new TeamError("SQUARE_BALANCE_CHANGED", 409);
+    }
+    const terms: SquareAttemptTerms = { key: randomUUID(), paymentId: sale.reference,
+      locationId: sale.square!.locationId, merchantId: sale.square!.merchantId, amountCents, currency: "USD" };
+    const startedAt = this.now();
+    this.db.prepare("INSERT INTO team_square_attempts VALUES (?,?,?,?)").run(employee.merchantId,id,JSON.stringify(terms),startedAt);
+    this.add(employee,id,{kind:"Square attempt recorded",actor:employee.name,occurredAt:startedAt});
+    return { ...state, attempt: { terms, startedAt } };
+  }
+
+  recordSquareResponse(employee: Employee, id: string, refund: SquareRefundEvidence | null) {
+    const { response } = this.squareExecution(employee, id);
+    if (response) return response;
+    this.add(employee,id,refund ? {kind:"Square refund response",actor:"Square Sandbox",occurredAt:this.now(),refund} :
+      {kind:"Square response unavailable",actor:"ChangeGate",occurredAt:this.now()});
+    return refund;
+  }
+
+  recordSquareLookup(employee: Employee, id: string, refund: SquareRefundEvidence | null) {
+    const { request, attempt, response } = this.squareExecution(employee, id);
+    const previous = squareVerification(request);
+    if (!attempt || !response || previous?.result === "Verified" || previous?.result === "Failed") return request;
+    const { terms } = attempt;
+    let result: Extract<TransactionEvent, {kind:"Square independent lookup"}>["result"];
+    if (!refund) result = "Unconfirmed";
+    else if (refund.id !== response.id || refund.paymentId !== terms.paymentId || refund.locationId !== terms.locationId ||
+        refund.amountCents !== terms.amountCents || refund.currency !== terms.currency) result = "Mismatch";
+    else if (refund.status === "COMPLETED") result = "Verified";
+    else if (refund.status === "PENDING") result = "Pending";
+    else result = "Failed";
+    this.add(employee,id,{kind:"Square independent lookup",actor:employee.name,occurredAt:this.now(),refund,result});
     return this.open(employee,id);
   }
 

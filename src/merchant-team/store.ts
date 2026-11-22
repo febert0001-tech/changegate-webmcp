@@ -10,6 +10,8 @@ import { RefundAlertStore } from "./refund-alert-store";
 import type { AlertEnrollment } from "./refund-alerts";
 import { RefundRequestStore } from "./refund-request-store";
 import type { RefundDecision, RefundTerms } from "./refund-requests";
+import { squareVerification } from "./refund-requests";
+import type { SquareSandbox, SquareSaleEvidence } from "./square-sandbox";
 
 type ImportRow = ImportSummary & { rejections: string };
 type FindingRow = { id: string; importId: string; evidence: string; caseId: string | null };
@@ -116,11 +118,41 @@ export class TeamStore {
     this.db.close();
   }
 
-  createRefundRequest(employee: Employee, token: string, submissionId: string, terms: RefundTerms) {
+  createRefundRequest(employee: Employee, token: string, submissionId: string, terms: RefundTerms, evidence?: SquareSaleEvidence) {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
-      return this.refundRequests.create(employee, submissionId, terms, this.alerts);
+      return this.refundRequests.create(employee, submissionId, terms, this.alerts, evidence);
     });
+  }
+
+  async executeSquareRefund(employee: Employee, token: string, id: string, square: SquareSandbox | undefined, verifyOnly: boolean) {
+    this.requireActiveSession(employee, token);
+    const state = this.refundRequests.squareExecution(employee, id);
+    const completed = squareVerification(state.request)?.result;
+    if (completed === "Verified" || completed === "Failed") return state.request;
+    if (!square?.supports(employee.merchantId, state.request.sale ?? undefined)) {
+      throw new TeamError("SQUARE_NOT_CONNECTED", 503);
+    }
+    let response = state.response;
+    if (!response && !verifyOnly) {
+      const evidence = state.attempt ? undefined : await square.lookup(state.request.terms.reference);
+      const { attempt, response: saved } = this.atomic(() => {
+        this.requireActiveSession(employee, token);
+        return this.refundRequests.startSquare(employee, id, evidence);
+      });
+      response = saved;
+      if (!response) {
+        // Square does not document a durable retention window for refund keys.
+        if (Date.parse(this.now()) - Date.parse(attempt.startedAt) > 15 * 60_000) {
+          throw new TeamError("SQUARE_RECONCILIATION_REQUIRED", 409);
+        }
+        const result = await square.submit(attempt.terms).catch(() => null);
+        response = this.atomic(() => this.refundRequests.recordSquareResponse(employee, id, result)) ?? undefined;
+      }
+    }
+    if (!response) return this.refundRequests.open(employee, id);
+    const readback = await square.verify(response.id).catch(() => null);
+    return this.atomic(() => this.refundRequests.recordSquareLookup(employee, id, readback));
   }
 
   decideRefundRequest(employee: Employee, token: string, id: string, decision: RefundDecision) {
