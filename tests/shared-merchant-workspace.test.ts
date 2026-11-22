@@ -285,6 +285,41 @@ describe("shared merchant workspace", () => {
     expect(detail.history.map(({ kind }) => kind)).toEqual(["Opened"]);
   });
 
+  it("uses secure hosted cookies, validates Railway ingress, and throttles sign-in attempts", async () => {
+    const server = app();
+    const hostedOrigin = "https://changegate-qa.up.railway.app";
+    const host = new URL(hostedOrigin).host;
+    const hosted = createTeamWorkspace(server.store, roster, hostedOrigin, { staging: true });
+    const signIn = { action: "signIn", username: "maya", password };
+    function request(command: unknown, options: Record<string, string> = {}) {
+      return hosted.handle(new Request(hostedOrigin + "/api/merchant", {
+        method: "POST", headers: {
+          Host: host, Origin: hostedOrigin, "Content-Type": "application/json",
+          "X-Forwarded-Proto": "https", "X-Forwarded-Host": host, "X-Real-IP": "192.0.2.4", ...options,
+        },
+        body: JSON.stringify(command),
+      }));
+    }
+
+    expect((await request(signIn, { "X-Forwarded-Proto": "http" })).status).toBe(403);
+    expect((await request(signIn, { "X-Forwarded-Host": "untrusted.example" })).status).toBe(403);
+    expect((await request(signIn, { "X-Real-IP": "" })).status).toBe(403);
+    const accepted = await request(signIn);
+    expect(accepted.status).toBe(200);
+    const cookie = accepted.headers.get("set-cookie");
+    expect(cookie).toMatch(/^__Host-changegate_team_session=.*; HttpOnly; SameSite=Strict; Path=\/; Max-Age=\d+; Secure$/);
+    const key = cookie?.split(";")[0];
+    if (!key) throw Error("Expected hosted cookie");
+    expect((await request({ action: "session" }, { Cookie: key })).status).toBe(200);
+    expect((await request({ action: "session" }, { Cookie: key.replace("__Host-", "") })).status).toBe(401);
+
+    for (let i = 0; i < 29; i++) {
+      expect((await request({ ...signIn, password: "incorrect" })).status).toBe(401);
+    }
+    expect((await request(signIn)).status).toBe(429);
+    expect((await request(signIn, { "X-Real-IP": "192.0.2.5" })).status).toBe(200);
+  });
+
   it("rejects a stale edit without adding an extra audit entry", async () => {
     const server = app();
     const maya = await signIn(server, "maya");

@@ -6,6 +6,7 @@
       "feat/receipt-viewer": false,
       "feat/receipt-consistency": false,
       "feat/shared-merchant-workspace": false,
+      "feat/private-merchant-staging": false,
       "main": false
     }
   }

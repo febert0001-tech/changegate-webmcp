@@ -1,15 +1,13 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { isIP } from "node:net";
 import { promisify } from "node:util";
 import { TeamError, teamCommand, type Employee, type TeamSession } from "./contracts";
 import type { TeamStore } from "./store";
 
 const hash = promisify(scrypt);
-const cookieName = "changegate_team_session";
 const sessionSeconds = 8 * 60 * 60;
 const responseHeaders = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
 const digest = (token: string) => createHash("sha256").update(token).digest("hex");
-const cookie = (token: string, age: number) =>
-  `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${age}`;
 const json = (value: unknown, status = 200, sessionCookie?: string) => Response.json(value, {
   status, headers: { ...responseHeaders, ...(sessionCookie && { "Set-Cookie": sessionCookie }) },
 });
@@ -38,7 +36,11 @@ async function readCommand(request: Request): Promise<unknown> {
   }
 }
 
-export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[], origin: string) {
+export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[], origin: string,
+  { staging = false }: { staging?: boolean } = {}) {
+  const cookieName = staging ? "__Host-changegate_team_session" : "changegate_team_session";
+  const cookie = (token: string, age: number) =>
+    `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${age}${staging ? "; Secure" : ""}`;
   const employees = new Map(roster.map((employee) => [employee.username, employee]));
   const passwordVersion = (employee: Employee) => digest(employee.passwordHash);
   store.pruneSessions(roster.map((employee) => ({
@@ -47,6 +49,11 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
   const expectedHost = new URL(origin).host;
   const expectedSalt = randomBytes(16);
   const expectedHash = randomBytes(32);
+  function validIngress(headers: Pick<Headers, "get">) {
+    return headers.get("host") === expectedHost &&
+      (!staging || (headers.get("x-forwarded-proto") === "https" && headers.get("x-forwarded-host") === expectedHost));
+  }
+
   function tokenDigest(headers: Pick<Headers, "get">) {
     const token = headers.get("cookie")?.split(";").map((item) => item.trim())
       .find((item) => item.startsWith(cookieName + "="))?.slice(cookieName.length + 1);
@@ -54,7 +61,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
   }
 
   function authenticate(headers: Pick<Headers, "get">) {
-    if (headers.get("host") !== expectedHost) return undefined;
+    if (!validIngress(headers)) return undefined;
     const token = tokenDigest(headers);
     if (!token) return undefined;
     const session = store.getSession(token);
@@ -74,7 +81,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
   }
 
   async function handle(request: Request): Promise<Response> {
-    if (request.headers.get("host") !== expectedHost || request.headers.get("origin") !== origin) {
+    if (!validIngress(request.headers) || request.headers.get("origin") !== origin) {
       return json({ error: "ORIGIN_DENIED" }, 403);
     }
     try {
@@ -82,6 +89,11 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
       if (!parsed.success) return json({ error: "INVALID_COMMAND" }, 400);
       const command = parsed.data;
       if (command.action === "signIn") {
+        if (staging) {
+          const ip = request.headers.get("x-real-ip");
+          if (!ip || !isIP(ip)) return json({ error: "ORIGIN_DENIED" }, 403);
+          if (!store.allowSignIn(digest(ip))) return json({ error: "SIGN_IN_LIMIT" }, 429);
+        }
         const candidate = employees.get(command.username);
         const salt = candidate ? Buffer.from(candidate.salt, "hex") : expectedSalt;
         const actual = await hash(command.password, salt, 32) as Buffer;

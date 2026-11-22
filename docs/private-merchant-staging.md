@@ -1,0 +1,9 @@
+# Private merchant staging
+
+Use a dedicated Railway project or staging environment with one Linux service in one region. Connect only the staging branch. Attach one persistent volume at **/data**. The container refuses to start when the volume is absent and drops to the image's non-root user before starting Next.js. Keep the volume when replacing or redeploying the container.
+
+Generate a Railway HTTPS domain for the service. Set `CHANGEGATE_TEAM_ORIGIN` to its exact HTTPS origin with no trailing slash. Set `CHANGEGATE_TEAM_ROSTER_JSON` as a sealed service variable using the staff roster shape in [Shared merchant workspace](shared-merchant-workspace.md). Provision one distinct strong password per named employee and store only the salted hashes in the roster. Keep passwords in the approved private channel. Use **/api/merchant/health** as the Railway health check and expose the application through Railway's HTTPS edge only. Use **/merchant** for employee sign-in.
+
+The staging container serves the authenticated merchant workspace and enforces the configured origin. Case and roster data are available only to signed-in employees at the same merchant. Session cookies are host-only, Secure, HttpOnly, and SameSite Strict. Sign-in attempts are rate limited using Railway's client IP header. The existing Vercel release uses the default build, and the branch has an automatic deployment opt-out.
+
+Run the container and persistence test with `docker build -t changegate-staging:test .` followed by `node scripts/check-merchant-staging.mjs changegate-staging:test`. That test uses an isolated disposable Docker volume and an HTTPS edge fixture. Hosted acceptance is a separate run with independently signed-in staff, a redacted case, container replacement on the same volume, and a second-merchant access check.

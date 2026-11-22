@@ -39,6 +39,9 @@ export class TeamStore {
           password_version TEXT NOT NULL, expires_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS team_session_expiry ON team_sessions(expires_at);
+        CREATE TABLE IF NOT EXISTS team_signin_attempts (
+          client_hash TEXT PRIMARY KEY, window INTEGER NOT NULL, attempts INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS team_revoked_sessions (
           token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL
         );
@@ -71,6 +74,17 @@ export class TeamStore {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  allowSignIn(client: string) {
+    const window = Math.floor(Date.now() / (5 * 60 * 1000));
+    return this.atomic(() => {
+      this.db.prepare("DELETE FROM team_signin_attempts WHERE window < ?").run(window);
+      const row = this.db.prepare(`INSERT INTO team_signin_attempts VALUES (?, ?, 1)
+        ON CONFLICT(client_hash) DO UPDATE SET attempts=attempts+1 WHERE attempts < 30
+        RETURNING attempts`).get(client, window);
+      return Boolean(row);
+    });
   }
 
   pruneSessions(roster: readonly SessionRow[]) {
