@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { rosterSchema } from "./contracts";
 import { createTeamWorkspace } from "./handler";
+import { configuredSquareSandbox } from "./square-sandbox";
 import { TeamStore } from "./store";
 
 let workspace: ReturnType<typeof createTeamWorkspace> | undefined;
@@ -38,7 +39,8 @@ export function teamWorkspace() {
     const roster = rosterSchema.parse(config);
     const store = new TeamStore(db);
     try {
-      return workspace = createTeamWorkspace(store, roster, origin, { staging });
+      const square = configuredSquareSandbox();
+      return workspace = createTeamWorkspace(store, roster, origin, { staging, ...(square && { square }) });
     } catch (error) {
       store.close();
       throw error;

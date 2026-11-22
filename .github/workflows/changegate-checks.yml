@@ -2,7 +2,7 @@ name: ChangeGate checks
 
 on:
   pull_request:
-    branches: [main, feat/private-merchant-staging, feat/merchant-refund-import, feat/merchant-refund-comparison, feat/merchant-review-summary, feat/merchant-transactions, feat/refund-monitoring]
+    branches: [main, feat/private-merchant-staging, feat/merchant-refund-import, feat/merchant-refund-comparison, feat/merchant-review-summary, feat/merchant-transactions, feat/refund-monitoring, feat/merchant-screen-audit, feat/square-sandbox-refunds]
 
 permissions:
   contents: read

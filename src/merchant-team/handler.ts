@@ -5,6 +5,7 @@ import { TeamError, teamCommand, type Employee, type TeamSession } from "./contr
 import type { TeamStore } from "./store";
 import { alertPublicKey } from "./refund-alerts";
 import { canReview } from "./refund-requests";
+import type { SquareSandbox } from "./square-sandbox";
 import { csvLimit, inspectRefundCsv, reviewRefundCsv } from "./refund-csv";
 
 import { compareRefunds } from "./refund-comparison";
@@ -42,7 +43,7 @@ async function readCommand(request: Request): Promise<unknown> {
 }
 
 export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[], origin: string,
-  { staging = false }: { staging?: boolean } = {}) {
+  { staging = false, square }: { staging?: boolean; square?: SquareSandbox } = {}) {
   const cookieName = staging ? "__Host-changegate_team_session" : "changegate_team_session";
   const cookie = (token: string, age: number) =>
     `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${age}${staging ? "; Secure" : ""}`;
@@ -165,13 +166,28 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "refundAlertStatus":
               store.refundRequests.open(employee,command.id);
               return json(store.alerts.status(employee,command.id));
-            case "lookupOriginalSale": return json(store.refundRequests.lookup(employee,command.reference));
+            case "lookupOriginalSale": {
+              if (command.source !== "square") return json(store.lookupRefundSale(employee,token,command.reference));
+              if (!square?.supports(employee.merchantId)) throw new TeamError("SQUARE_NOT_CONNECTED",503);
+              const evidence = await square.lookup(command.reference);
+              return json(store.lookupRefundSale(employee,token,command.reference,evidence));
+            }
             case "refundPolicy": return json(store.refundRequests.policy(employee));
             case "setRefundPolicy": return json(store.setRefundPolicy(employee,token,command.thresholdCents));
             case "reportCashPayout": return json(store.reportCashPayout(employee,token,command.id));
             case "listRefundRequests": return json(store.refundRequests.list(employee));
             case "openRefundRequest": return json(store.refundRequests.open(employee,command.id));
-            case "createRefundRequest": return json(store.createRefundRequest(employee,token,command.submissionId,command.terms));
+            case "createRefundRequest": {
+              if (command.terms.source !== "square") return json(store.createRefundRequest(employee,token,command.submissionId,command.terms));
+              const saved = store.refundRequests.replay(employee,command.submissionId,command.terms);
+              if (saved) return json(saved);
+              if (!square?.supports(employee.merchantId)) throw new TeamError("SQUARE_NOT_CONNECTED",503);
+              const evidence = await square.lookup(command.terms.reference);
+              return json(store.createRefundRequest(employee,token,command.submissionId,command.terms,evidence));
+            }
+            case "executeSquareRefund":
+            case "verifySquareRefund":
+              return json(await store.executeSquareRefund(employee,token,command.id,square,command.action === "verifySquareRefund"));
             case "decideRefundRequest": {
               store.refundRequests.open(employee, command.id);
               if (!canReview(employee.role)) throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);

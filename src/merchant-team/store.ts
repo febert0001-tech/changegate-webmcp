@@ -10,12 +10,16 @@ import { RefundAlertStore } from "./refund-alert-store";
 import type { AlertEnrollment } from "./refund-alerts";
 import { RefundRequestStore } from "./refund-request-store";
 import type { RefundDecision, RefundTerms } from "./refund-requests";
+import { executionStopped, squareVerification } from "./refund-requests";
+import type { SquareSandbox, SquareSaleEvidence } from "./square-sandbox";
+import { SquareSubmissionBlocked } from "./square-sandbox";
 
 type ImportRow = ImportSummary & { rejections: string };
 type FindingRow = { id: string; importId: string; evidence: string; caseId: string | null };
 const importColumns = `id, imported_at AS importedAt, accepted_count AS acceptedCount,
   rejected_count AS rejectedCount, finding_count AS findingCount`;
 const findingColumns = "id, import_id AS importId, evidence, case_id AS caseId";
+const squareDispatchLeaseMs = 30_000;
 const nextAction = "Review the source rows and verify the refund with the processor.";
 const projectFinding = (row: FindingRow): SavedFinding => ({
   ...JSON.parse(row.evidence) as RefundFinding, id: row.id, caseId: row.caseId,
@@ -45,6 +49,10 @@ export class TeamStore {
         PRAGMA busy_timeout = 5000;
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous = FULL;
+        CREATE TABLE IF NOT EXISTS team_square_dispatches (
+          merchant_id TEXT NOT NULL, request_id TEXT NOT NULL, claim TEXT NOT NULL, expires_at INTEGER NOT NULL,
+          PRIMARY KEY (merchant_id, request_id)
+        );
         CREATE TABLE IF NOT EXISTS team_cases (
           merchant_id TEXT NOT NULL, id TEXT NOT NULL, reference TEXT NOT NULL,
           revision INTEGER NOT NULL CHECK (revision >= 1),
@@ -116,11 +124,118 @@ export class TeamStore {
     this.db.close();
   }
 
-  createRefundRequest(employee: Employee, token: string, submissionId: string, terms: RefundTerms) {
+  lookupRefundSale(employee: Employee, token: string, reference: string, evidence?: SquareSaleEvidence) {
+    this.requireActiveSession(employee, token);
+    return this.refundRequests.lookup(employee, reference, evidence);
+  }
+
+  createRefundRequest(employee: Employee, token: string, submissionId: string, terms: RefundTerms, evidence?: SquareSaleEvidence) {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
-      return this.refundRequests.create(employee, submissionId, terms, this.alerts);
+      return this.refundRequests.create(employee, submissionId, terms, this.alerts, evidence);
     });
+  }
+
+  async executeSquareRefund(employee: Employee, token: string, id: string, square: SquareSandbox | undefined, verifyOnly: boolean) {
+    this.requireActiveSession(employee, token);
+    const state = this.refundRequests.squareExecution(employee, id);
+    const completed = squareVerification(state.request)?.result;
+    if (completed === "Verified" || completed === "Failed" || executionStopped(state.request)) return state.request;
+    if (!square?.supports(employee.merchantId, state.request.sale ?? undefined)) {
+      throw new TeamError("SQUARE_NOT_CONNECTED", 503);
+    }
+    let response = state.response;
+    if (!response && !verifyOnly) {
+      let evidence: SquareSaleEvidence | undefined;
+      if (!state.attempt) {
+        try {
+          evidence = await square.lookup(state.request.terms.reference);
+        } catch (error) {
+          if (!(error instanceof TeamError) ||
+              (error.code !== "SQUARE_SALE_INELIGIBLE" && error.code !== "SQUARE_PRIOR_REFUND_FAILED")) throw error;
+          const reason = error.code === "SQUARE_PRIOR_REFUND_FAILED"
+            ? "Square blocks additional refunds because an earlier refund failed on this payment."
+            : "The sale is outside Square’s refund window or has reached its refund limit.";
+          return this.atomic(() => {
+            this.requireActiveSession(employee, token);
+            return this.refundRequests.stopSquare(employee, id, reason);
+          });
+        }
+      }
+      const { attempt, response: saved, started, claim } = this.atomic(() => {
+        this.requireActiveSession(employee, token);
+        const current = this.refundRequests.startSquare(employee, id, evidence);
+        return { ...current, claim: current.attempt && !current.response && !executionStopped(current.request)
+          ? this.claimSquareDispatch(employee, id, current.attempt.startedAt) : undefined };
+      });
+      response = saved;
+      if (!response && attempt && claim) {
+        try {
+          let authorized = false;
+          const result = await square.submit(attempt.terms, () => {
+            this.authorizeSquareDispatch(employee, token, id, claim, attempt.startedAt);
+            authorized = true;
+          }).catch((error: unknown) => {
+            if (error instanceof SquareSubmissionBlocked) return error;
+            if (!authorized) throw error;
+            return null;
+          });
+          // Persist the provider outcome even if the requesting session has since signed out.
+          response = this.atomic(() => {
+            if (!this.releaseSquareDispatch(employee, id, claim)) return this.refundRequests.squareExecution(employee, id).response;
+            if (started && result instanceof SquareSubmissionBlocked) {
+              this.refundRequests.stopSquare(employee, id, result.reason, true);
+              return undefined;
+            }
+            return this.refundRequests.recordSquareResponse(employee, id,
+              result instanceof SquareSubmissionBlocked ? null : result) ?? undefined;
+          });
+        } finally {
+          this.releaseSquareDispatch(employee, id, claim);
+        }
+      }
+    }
+    this.requireActiveSession(employee, token);
+    if (!response) return this.refundRequests.open(employee, id);
+    const readback = await square.verify(response.id).catch(() => null);
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      return this.refundRequests.recordSquareLookup(employee, id, readback);
+    });
+  }
+
+  private claimSquareDispatch(employee: Employee, id: string, startedAt: string) {
+    const now = Date.parse(this.now());
+    this.requireSquareRetryWindow(now, startedAt);
+    const claim = randomUUID();
+    // Each Square request times out after 8 seconds. Leave time for the merchant check and POST.
+    const expiresAt = now + squareDispatchLeaseMs;
+    return this.db.prepare(`INSERT INTO team_square_dispatches VALUES (?,?,?,?)
+      ON CONFLICT(merchant_id,request_id) DO UPDATE SET claim=excluded.claim,expires_at=excluded.expires_at
+      WHERE team_square_dispatches.expires_at<=? RETURNING claim`)
+      .get(employee.merchantId, id, claim, expiresAt, now) ? claim : undefined;
+  }
+
+  private authorizeSquareDispatch(employee: Employee, token: string, id: string, claim: string, startedAt: string) {
+    this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      const now = Date.parse(this.now());
+      this.requireSquareRetryWindow(now, startedAt);
+      const active = this.db.prepare(`UPDATE team_square_dispatches SET expires_at=?
+        WHERE merchant_id=? AND request_id=? AND claim=? AND expires_at>?`)
+        .run(now + squareDispatchLeaseMs, employee.merchantId, id, claim, now);
+      if (!active.changes) throw new TeamError("SQUARE_RECONCILIATION_REQUIRED", 409);
+    });
+  }
+
+  private requireSquareRetryWindow(now: number, startedAt: string) {
+    // The retry window includes exactly 15 minutes after the first recorded attempt.
+    if (now - Date.parse(startedAt) > 15 * 60_000) throw new TeamError("SQUARE_RECONCILIATION_REQUIRED", 409);
+  }
+
+  private releaseSquareDispatch(employee: Employee, id: string, claim: string) {
+    return this.db.prepare("DELETE FROM team_square_dispatches WHERE merchant_id=? AND request_id=? AND claim=?")
+      .run(employee.merchantId, id, claim).changes !== 0;
   }
 
   decideRefundRequest(employee: Employee, token: string, id: string, decision: RefundDecision) {
