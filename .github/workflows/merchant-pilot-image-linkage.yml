@@ -1,0 +1,67 @@
+name: Merchant pilot retained image linkage
+
+on:
+  push:
+    branches: [qc/merchant-pilot-image-43cd55c]
+    paths: ['.github/workflows/merchant-pilot-image-linkage.yml']
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  linkage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      IMAGE_TAG: changegate-pilot:43cd55c
+      PILOT_ARCHIVE: changegate-f20bf43a71523d0e34a7434773721fefdf6e96e55f4e751e8180ec4eb53af422.oci.tar
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: 43cd55c345da0860bceb06bc2ac9c7fd060c0369
+          persist-credentials: false
+      - name: Fetch and verify the exact scanned archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/pilot-evidence"
+          gh run download 45046994498 --repo "$GITHUB_REPOSITORY" \
+            --name changegate-image-sha256-f20bf43a71523d0e34a7434773721fefdf6e96e55f4e751e8180ec4eb53af422 --dir "$out"
+          (cd "$out" && sha256sum -c archive.sha256)
+          manifest="$(tar -xOf "$out/$PILOT_ARCHIVE" index.json | jq -er '.manifests[0].digest')"
+          test "$manifest" = sha256:f20bf43a71523d0e34a7434773721fefdf6e96e55f4e751e8180ec4eb53af422
+          tar -xOf "$out/$PILOT_ARCHIVE" "blobs/sha256/${manifest#sha256:}" | sha256sum | grep -F "${manifest#sha256:}  -"
+          rm -f "$out/zlib-evidence.txt"
+      - name: Inspect zlib usage without network access
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/pilot-evidence"
+          {
+            date -u --iso-8601=seconds
+            docker image load --input "$out/$PILOT_ARCHIVE"
+            docker image inspect --format 'Loaded image ID: {{.Id}}' "$IMAGE_TAG"
+            docker run --rm --pull never --network none --entrypoint /bin/sh "$IMAGE_TAG" -eu -c '
+              cat /etc/os-release
+              dpkg-query -W zlib1g
+              dpkg-query -W libminizip1 2>/dev/null || true
+              node -p "JSON.stringify({node:process.version,zlib:process.versions.zlib,sharedZlib:process.config.variables.node_shared_zlib})"
+              echo "Node dynamic dependencies:"
+              ldd "$(command -v node)"
+              echo "Native addons and dynamic dependencies:"
+              find /app -type f \( -name "*.node" -o -name "*.so" -o -name "*.so.*" \) -print -exec ldd {} \;
+            '
+            echo 'Tracked application and startup references to compression or process creation:'
+            git grep -nEi 'gz(write|puts|printf|clearerr)|minizip|node:zlib|createGzip|gzip|node:child_process' -- src scripts/start-merchant-staging.mjs || test "$?" = 1
+          } | tee "$out/zlib-evidence.txt"
+
+
+      - name: Retain linkage evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: changegate-zlib-linkage-f20bf43
+          path: ${{ runner.temp }}/pilot-evidence/zlib-evidence.txt
+          if-no-files-found: error
+          retention-days: 30
