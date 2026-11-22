@@ -94,6 +94,8 @@ export function RefundImportPanel({ send, session, importId, onSessionError }: {
   return <section className={styles.card} aria-labelledby="refund-import">
     <div className={styles.screenHeading}>
       <h2 id="refund-import">{comparing ? "Compare processor export" : batch ? batch.comparison ? "Comparison findings" : "Import findings" : "Import refunds"}</h2>
+      {batch?.comparison && !comparing && <Link className={styles.primary}
+        href={`/merchant/imports/${batch.summary.id}?view=summary`} prefetch={false}>Review summary</Link>}
       {batch && !comparing && <Link href="/merchant/imports" prefetch={false} onClick={event => {
         if (importId) return;
         event.preventDefault();

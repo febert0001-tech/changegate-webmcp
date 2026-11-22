@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Employee, TeamCase, TeamCaseDetail, TeamSession, TeamWorkspaceView } from "../src/merchant-team/contracts";
 import { createTeamWorkspace } from "../src/merchant-team/handler";
+import { reviewSummaryCsv, type ReviewSummary } from "../src/merchant-team/review-summary";
 import { TeamStore } from "../src/merchant-team/store";
 import { reviewRefundCsv, type ImportSummary, type RefundImport, type RefundImportResult } from "../src/merchant-team/refund-csv";
 
@@ -436,5 +437,70 @@ describe("shared merchant workspace", () => {
     expect(persisted.evidence?.finding.rows.map(row => [row.side, row.line, row.amountCents]))
       .toEqual([["Merchant", 2, 4200], ["Processor", 2, 2400]]);
     expect(await jordan.send({ action: "list" })).toMatchObject([{ assignee: "jordan", differenceCents: 1800 }]);
+    const report = { action: "reviewSummary", id: batch.summary.id };
+    const initial = await jordan.send<ReviewSummary>(report);
+    expect(initial.files.map(({ accepted, rejected }) => [accepted, rejected])).toEqual([[5, 1], [5, 0]]);
+    expect(initial.matches).toEqual(["TEST-MATCH-1001"]);
+    expect(initial.counts).toEqual([
+      { kind: "Amount difference", count: 1 }, { kind: "Merchant only", count: 1 },
+      { kind: "Ambiguous reference", count: 2 }, { kind: "Processor only", count: 1 },
+    ]);
+    expect(initial.needsInvestigation).toBe(5);
+    const decision = { action: "recordDisposition", id: batch.summary.id, findingId: finding.id,
+      expectedRevision: 0, disposition: "Timing difference", note: '=TEST, "next close"' };
+    const decided = await jordan.send<ReviewSummary>(decision);
+    expect(decided.exceptions.find(row => row.id === finding.id)).toMatchObject({
+      assigneeName: "Jordan Lee", caseStatus: "Awaiting evidence", needsInvestigation: true,
+      decision: { reviewer: "Jordan Lee", revision: 1, recordedAt: expect.stringMatching(/Z$/), note: decision.note },
+    });
+    expect((await jordan.request(decision)).status).toBe(409);
+    expect((await jordan.request({ ...decision, id: original.case.id })).status).toBe(404);
+    const foreign = await signIn(restarted, "alex");
+    expect((await foreign.request(report)).status).toBe(404);
+    expect((await foreign.request(decision)).status).toBe(404);
+    const comparisonRepeat = await jordan.send<RefundImportResult>(command);
+    expect(comparisonRepeat.existing).toBe(true);
+    expect(await jordan.send<ReviewSummary>(report)).toEqual(decided);
+
+    await jordan.send({ action: "resolve", id: original.case.id, revision: original.case.revision });
+    const closed = await jordan.send<ReviewSummary>(report);
+    expect(closed.needsInvestigation).toBe(4);
+    const csv = reviewSummaryCsv(closed);
+    expect(csv).toContain('"Summary","Exceptions","5"');
+    expect(csv).toContain('"Exception count","Ambiguous reference","2"');
+    expect(csv).toContain('"Match","TEST-MATCH-1001"');
+    expect(csv).toContain('"Jordan Lee","Resolved","No","Timing difference","Jordan Lee"');
+    expect(csv).toContain("\"'=TEST, \"\"next close\"\"\"");
+    const unresolved = await jordan.send<ReviewSummary>({ ...decision, expectedRevision: 1, disposition: "Still unresolved" });
+    expect(unresolved.needsInvestigation).toBe(5);
+    restarted.stop();
+    const reopened = app(server.path);
+    expect(await (await signIn(reopened, "maya")).send<ReviewSummary>(report)).toEqual(unresolved);
+  });
+
+  it("keeps the reporting period and reviewed column interpretation in comparison identity", async () => {
+    const reviewer = await signIn(app(), "maya");
+    const mapping = { reference: 0, amount: 1, currency: 3 };
+    const file = (name: string, amounts: string) => ({
+      name, text: "reference,amount,adjusted,currency\nREF-1," + amounts + ",USD", mapping,
+    });
+    const input = {
+      merchant: file("merchant.csv", "42.00,24.00"), processor: file("processor.csv", "24.00,24.00"),
+      period: { start: "2026-11-01", end: "2026-11-07" },
+    };
+    const save = (inputData = input) => reviewer.send<RefundImportResult>({ action: "saveComparison", input: inputData });
+    const original = await save();
+    expect(original.batch.findings[0]?.differenceCents).toBe(1800);
+    const repeated = await save({ ...input, merchant: { ...input.merchant, name: "renamed.csv" } });
+    expect(repeated).toMatchObject({ existing: true, batch: { summary: { id: original.batch.summary.id } } });
+    const period = { start: "2026-11-08", end: "2026-11-14" };
+    const nextWeek = await save({ ...input, period });
+    expect(nextWeek.existing).toBe(false);
+    expect(nextWeek.batch.comparison?.period).toEqual(period);
+    const corrected = await save({ ...input, merchant: { ...input.merchant, mapping: { ...mapping, amount: 2 } } });
+    expect(corrected.existing).toBe(false);
+    expect(corrected.batch.findings).toEqual([]);
+    expect(corrected.batch.comparison?.exact).toHaveLength(1);
+    expect((await save()).batch.summary.id).toBe(original.batch.summary.id);
   });
 });

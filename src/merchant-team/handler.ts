@@ -143,6 +143,8 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
               const key = JSON.stringify(["refund-comparison-v1", merchant.text, processor.text]);
               return json(store.importRefunds(employee, token, key, () => compareRefunds(command.input)));
             }
+            case "reviewSummary": return json(store.openReviewSummary(employee, command.id));
+            case "recordDisposition": return json(store.recordDisposition(employee, token, command));
             case "listImports": return json(store.listImports(employee));
             case "openImport": return json(store.openImport(employee, command.id));
             case "assignFinding": {

@@ -118,3 +118,18 @@
   .evidenceRows { grid-template-columns: minmax(0, 1fr); }
   .shell .formRow > button { flex-shrink: 0; }
 }
+.reviewPeriod { margin: 16px 0 10px; color: var(--muted); }
+.reviewTotals {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 0 0 14px;
+}
+.reviewTotals > div { padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.reviewTotals dt { font-size: .86rem; color: var(--muted); }
+.reviewTotals dd { font-weight: 700; font-size: 1.35rem; }
+.reviewCounts { display: flex; flex-wrap: wrap; list-style: none; gap: 8px 16px; }
+.reviewDecision { padding: 11px; background: #f4f8f9; border-radius: 8px; overflow-wrap: anywhere; }
+.reviewDecision p { white-space: pre-wrap; margin-top: 4px; }
+.shell button.reviewEdit { width: fit-content; }
+@media (max-width: 430px) {
+  .reviewTotals { gap: 5px; }
+  .reviewTotals > div { padding: 8px; }
+}

@@ -4,6 +4,8 @@ import { TeamError, type CaseHistory, type Employee, type HistoryKind, type Team
 
 import type { CaseComparison, CaseEvidence, ComparisonEvidence, ImportSummary, RefundFinding, RefundImport, RefundImportResult, Rejection, SavedFinding } from "./refund-csv";
 
+import { summarizeComparison, type ReviewDisposition, type ReviewFindingState } from "./review-summary";
+
 type ImportRow = ImportSummary & { rejections: string };
 type FindingRow = { id: string; importId: string; evidence: string; caseId: string | null };
 const importColumns = `id, imported_at AS importedAt, accepted_count AS acceptedCount,
@@ -13,6 +15,12 @@ const nextAction = "Review the source rows and verify the refund with the proces
 const projectFinding = (row: FindingRow): SavedFinding => ({
   ...JSON.parse(row.evidence) as RefundFinding, id: row.id, caseId: row.caseId,
 });
+
+function comparisonSignature(comparison: ComparisonEvidence, findings: RefundFinding[], rejections: Rejection[]) {
+  const evidence = findings.map(({ kind, rows, explanation, differenceCents }) =>
+    [kind, rows, explanation, differenceCents ?? null]);
+  return JSON.stringify([comparison.period.start, comparison.period.end, comparison.exact, evidence, rejections]);
+}
 
 type Change = Extract<TeamCommand, { action: "record" | "assign" | "note" | "resolve" }>;
 interface SessionRow { username: string; merchantId: string; passwordVersion: string }
@@ -54,6 +62,12 @@ export class TeamStore {
           PRIMARY KEY (merchant_id, id), UNIQUE (merchant_id, case_id),
           FOREIGN KEY (merchant_id, import_id) REFERENCES team_refund_imports(merchant_id, id),
           FOREIGN KEY (merchant_id, case_id) REFERENCES team_cases(merchant_id, id)
+        );
+        CREATE TABLE IF NOT EXISTS team_review_dispositions (
+          merchant_id TEXT NOT NULL, finding_id TEXT NOT NULL, revision INTEGER NOT NULL CHECK (revision >= 1),
+          disposition TEXT NOT NULL, reviewer TEXT NOT NULL, username TEXT NOT NULL, recorded_at TEXT NOT NULL, note TEXT NOT NULL,
+          PRIMARY KEY (merchant_id, finding_id, revision),
+          FOREIGN KEY (merchant_id, finding_id) REFERENCES team_refund_findings(merchant_id, id)
         );
         CREATE INDEX IF NOT EXISTS team_findings_import ON team_refund_findings(merchant_id, import_id);
         CREATE TABLE IF NOT EXISTS team_history (
@@ -229,15 +243,64 @@ export class TeamStore {
       ...(typeof comparison === "string" && { comparison: JSON.parse(comparison) as ComparisonEvidence }) };
   }
 
-  importRefunds(employee: Employee, token: string, raw: string,
-    review: () => { accepted: unknown[]; findings: RefundFinding[]; rejections: Rejection[]; comparison?: ComparisonEvidence }): RefundImportResult {
-    const fingerprint = createHash("sha256").update(raw).digest("hex");
+  openReviewSummary(employee: Employee, id: string) {
+    const batch = this.openImport(employee, id);
+    if (!batch.comparison) throw new TeamError("IMPORT_NOT_FOUND", 404);
+    const rows = this.db.prepare(`SELECT f.id, f.case_id AS caseId, c.assignee_name AS assigneeName, c.status AS caseStatus,
+      (SELECT json_object('revision', d.revision, 'disposition', d.disposition, 'reviewer', d.reviewer,
+        'recordedAt', d.recorded_at, 'note', d.note)
+        FROM team_review_dispositions AS d WHERE d.merchant_id=f.merchant_id AND d.finding_id=f.id
+        ORDER BY d.revision DESC LIMIT 1) AS decision
+      FROM team_refund_findings AS f
+      LEFT JOIN team_cases AS c ON c.merchant_id=f.merchant_id AND c.id=f.case_id
+      WHERE f.merchant_id=? AND f.import_id=?`).all(employee.merchantId, id) as unknown as
+      ({ id: string; decision: string | null } & Omit<ReviewFindingState, "decision">)[];
+    const states = new Map(rows.map(({ id, decision, ...item }) => [id, {
+      ...item, decision: decision === null ? null : JSON.parse(decision) as ReviewDisposition,
+    }]));
+    return summarizeComparison(batch, states);
+  }
+
+  recordDisposition(employee: Employee, token: string, command: Extract<TeamCommand, { action: "recordDisposition" }>) {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
-      const saved = this.db.prepare("SELECT id FROM team_refund_imports WHERE merchant_id=? AND fingerprint=?")
-        .get(employee.merchantId, fingerprint)?.id;
-      if (typeof saved === "string") return { batch: this.openImport(employee, saved), existing: true };
+      const { id, findingId, expectedRevision, disposition, note } = command;
+      const finding = this.db.prepare(`SELECT 1 FROM team_refund_findings AS f
+        JOIN team_refund_comparisons AS c ON c.merchant_id=f.merchant_id AND c.import_id=f.import_id
+        WHERE f.merchant_id=? AND f.import_id=? AND f.id=?`).get(employee.merchantId, id, findingId);
+      if (!finding) throw new TeamError("FINDING_NOT_FOUND", 404);
+      const latest = this.db.prepare(`SELECT revision FROM team_review_dispositions
+        WHERE merchant_id=? AND finding_id=? ORDER BY revision DESC LIMIT 1`).get(employee.merchantId, findingId);
+      if ((latest?.revision ?? 0) !== expectedRevision) throw new TeamError("DISPOSITION_CHANGED", 409);
+      this.db.prepare("INSERT INTO team_review_dispositions VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(employee.merchantId, findingId, expectedRevision + 1, disposition, employee.name, employee.username, this.now(), note);
+      return this.openReviewSummary(employee, id);
+    });
+  }
+
+  importRefunds(employee: Employee, token: string, raw: string,
+    review: () => { accepted: unknown[]; findings: RefundFinding[]; rejections: Rejection[]; comparison?: ComparisonEvidence }): RefundImportResult {
+    const legacyFingerprint = createHash("sha256").update(raw).digest("hex");
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      const lookup = this.db.prepare("SELECT id FROM team_refund_imports WHERE merchant_id=? AND fingerprint=?");
+      const oldId = lookup.get(employee.merchantId, legacyFingerprint)?.id;
+      const legacy = typeof oldId === "string" ? this.openImport(employee, oldId) : undefined;
+      if (legacy && !legacy.comparison) return { batch: legacy, existing: true };
       const { accepted, findings, rejections, comparison } = review();
+      let fingerprint = legacyFingerprint;
+      if (comparison) {
+        // File names are provenance, not comparison identity. Bind the declared period and
+        // saved interpretation so corrected mappings or a different week cannot reuse stale evidence.
+        const signature = comparisonSignature(comparison, findings, rejections);
+        if (legacy?.comparison) {
+          const previous = comparisonSignature(legacy.comparison, legacy.findings, legacy.rejections);
+          if (signature === previous) return { batch: legacy, existing: true };
+        }
+        fingerprint = createHash("sha256").update("refund-comparison-v2\0").update(legacyFingerprint).update(signature).digest("hex");
+        const saved = lookup.get(employee.merchantId, fingerprint)?.id;
+        if (typeof saved === "string") return { batch: this.openImport(employee, saved), existing: true };
+      }
       if (!accepted.length) throw new TeamError("CSV_NO_ACCEPTED_ROWS", 422);
       const id = randomUUID();
       this.db.prepare(`INSERT INTO team_refund_imports VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
