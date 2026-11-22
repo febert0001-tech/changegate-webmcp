@@ -1,10 +1,14 @@
 import type { syntheticRegisterDrift } from "./refund-monitor-rules";
 import { z } from "zod";
 
+export const usdAmount = z.string().trim().regex(/^\d{1,10}(\.\d{1,2})?$/).refine(amount => Number(amount) > 0);
+export const demoSaleReference = z.string().regex(/^DEMO-SALE-[0-9a-f-]{36}$/);
+export const isDemoSaleReference = (value: string) => value.startsWith("DEMO-SALE-");
+
 export const refundTerms = z.strictObject({
   source: z.enum(["test", "square", "paypal"]).optional(),
   reference: z.string().trim().min(1).max(160).regex(/^[^\p{Cc}]+$/u),
-  amount: z.string().trim().regex(/^\d{1,10}(\.\d{1,2})?$/).refine(amount => Number(amount) > 0),
+  amount: usdAmount,
   currency: z.literal("USD"),
   reason: z.string().trim().min(1).max(1200),
 });
@@ -19,6 +23,7 @@ export interface TestSale {
   originalCents: number;
   priorCents: number;
   tender: "Cash" | "Electronic";
+  recordedDemo?: true;
   square?: { merchantId: string; locationId: string };
   paypal?: { merchantId: string; orderId: string };
 }
@@ -45,6 +50,7 @@ export interface RefundCheck {
   balanceCents: number | null;
   cumulativeCents: number | null;
   thresholdCents: number;
+  reservedCents?: number;
   route: "routine" | "manager" | "exception" | "over-balance";
   explanation: string;
   monitoring?: {
@@ -119,6 +125,7 @@ export function requestStatus(request: RefundRequest) {
   if (route === "over-balance") return "Blocked · Over refundable balance";
   if (decision?.decision === "Rejected") return "Rejected";
   if (!decision && (route === "manager" || route === "exception")) return "Needs manager decision";
+  if (request.sale?.recordedDemo) return "Blocked · Processor not connected";
   if (request.sale?.tender === "Cash") return "Ready for cash payout";
   const provider = saleProvider(request.sale);
   if (provider) {

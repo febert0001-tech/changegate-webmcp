@@ -58,6 +58,10 @@ export class RefundRequestStore {
     return (this.db.prepare(this.select()+" WHERE r.merchant_id=? ORDER BY r.created_at DESC,r.id")
       .all(employee.merchantId) as unknown as RequestRow[]).map(project);
   }
+  listForSale(employee: Employee, reference: string) {
+    return (this.db.prepare(this.select() + " WHERE r.merchant_id=? AND json_extract(r.terms,'$.reference')=? ORDER BY r.created_at DESC,r.id")
+      .all(employee.merchantId, reference) as unknown as RequestRow[]).map(project);
+  }
   open(employee: Employee, id: string) {
     const row = this.db.prepare(this.select()+" WHERE r.merchant_id=? AND r.id=?").get(employee.merchantId,id) as RequestRow | undefined;
     if (!row) throw new TeamError("TRANSACTION_NOT_FOUND",404);
@@ -77,8 +81,7 @@ export class RefundRequestStore {
   private saleUsage(employee: Employee, sale: TestSale, countedRefunds: ProviderRefundEvidence[] = [], excludeId?: string) {
     let paidCents=0, reservedCents=0;
     const provider = saleProvider(sale);
-    const rows=(this.db.prepare(this.select()+" WHERE r.merchant_id=? AND json_extract(r.terms,'$.reference')=?")
-      .all(employee.merchantId,sale.reference) as unknown as RequestRow[]).map(project);
+    const rows = this.listForSale(employee, sale.reference);
     for (const request of rows) {
       if (request.id === excludeId || !request.sale || saleProvider(request.sale) !== provider ||
           request.sale.square?.merchantId !== sale.square?.merchantId || request.sale.square?.locationId !== sale.square?.locationId ||
@@ -141,11 +144,14 @@ export class RefundRequestStore {
       check={route:"exception",balanceCents:null,cumulativeCents:null,thresholdCents,monitoring,
         explanation:"The sale could not be verified. Route it to a manager for exception review. Payment remains blocked."};
     } else {
-      const { balanceCents }=this.saleUsage(employee,sale,evidence?.countedRefunds);
+      const { balanceCents, reservedCents }=this.saleUsage(employee,sale,evidence?.countedRefunds);
       const cumulativeCents=sale.originalCents-balanceCents+amount;
-      if(cumulativeCents>=thresholdCents) reasons.push("Cumulative refunds would reach "+money(cumulativeCents)+
-        ", meeting or exceeding the "+money(thresholdCents)+" store threshold.");
-      const base={balanceCents,cumulativeCents,thresholdCents,monitoring};
+      if(cumulativeCents>=thresholdCents) {
+        const reason = "Cumulative refunds would reach "+money(cumulativeCents)+
+          ", meeting or exceeding the "+money(thresholdCents)+" store threshold.";
+        if (sale.recordedDemo) reasons.unshift(reason); else reasons.push(reason);
+      }
+      const base={balanceCents,cumulativeCents,thresholdCents,monitoring,...(sale.recordedDemo&&{reservedCents})};
       if(amount>balanceCents) check={...base,route:"over-balance",
         explanation:"Only "+money(balanceCents)+" remains refundable. This request is blocked."};
       else if(reasons.length) check={...base,route:"manager",explanation:reasons[0]!};

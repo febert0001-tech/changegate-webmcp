@@ -43,7 +43,7 @@ export function generateDemoEvents(seed: string): DemoEvent[] {
 }
 
 type Run = { runId: string; seed: string; step: number };
-export type ShiftSale = { reference: string; location: string; register: string; at: string;
+export type ShiftSale = { reference: string; location: string; register: string; at: string; recordedDemo?: true;
   netCents: number; discountCents: number };
 
 export class DemoShift {

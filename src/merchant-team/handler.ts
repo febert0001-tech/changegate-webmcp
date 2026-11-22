@@ -4,7 +4,8 @@ import { promisify } from "node:util";
 import { TeamError, teamCommand, type Employee, type TeamSession } from "./contracts";
 import type { TeamStore } from "./store";
 import { alertPublicKey } from "./refund-alerts";
-import { canReview } from "./refund-requests";
+import { canReview, isDemoSaleReference } from "./refund-requests";
+import { demoRegister } from "./demo-sales";
 import { demoExplanation } from "./refund-ai-explanation";
 import type { SquareSandbox } from "./square-sandbox";
 import type { PayPalProvider } from "./paypal-provider";
@@ -48,6 +49,7 @@ async function readCommand(request: Request): Promise<unknown> {
 const hostedDemoActions = new Set([
   "signIn", "signOut", "session", "workspace", "demoShift", "shiftOverview", "startDemoShift", "nextDemoEvent", "replayDemoShift",
   "replayHeldDemoRefund",
+  "recordDemoSale", "openDemoSale", "lookupOriginalSale",
   "refundAlertStatus", "listRefundRequests", "openRefundRequest", "createRefundRequest", "decideRefundRequest",
 ]);
 
@@ -96,6 +98,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
   }
 
   function projectSession(employee: Employee, version: string): TeamSession {
+    const assignment = store.demo && demoRegister(employee);
     return {
       sessionVersion: version,
       username: employee.username, name: employee.name, merchantName: employee.merchantName,
@@ -103,6 +106,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
       reviewerConfigured: roster.some(member=>member.merchantId===employee.merchantId&&canReview(member.role)),
       paypalConnected: providers.paypal?.supports(employee.merchantId) ?? false,
       ...(store.demo?.includes(employee) && { demoShift: true }),
+      ...(assignment && { demoRegister: assignment }),
       ...(hostedDemo && { syntheticOnly: true }),
       coworkers: roster.filter((member) => member.merchantId === employee.merchantId)
         .map(({ username, name }) => ({ username, name })),
@@ -118,7 +122,8 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
       if (!parsed.success) return json({ error: "INVALID_COMMAND" }, 400);
       const command = parsed.data;
       if (hostedDemo && (!hostedDemoActions.has(command.action) ||
-          (command.action === "createRefundRequest" && !command.demoRun))) {
+          (command.action === "createRefundRequest" && !command.demoRun && !isDemoSaleReference(command.terms.reference)) ||
+          (command.action === "lookupOriginalSale" && !isDemoSaleReference(command.reference)))) {
         return json({ error: "DEMO_SHIFT_UNAVAILABLE" }, 404);
       }
       if (command.action === "signIn") {
@@ -198,6 +203,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             }
             case "lookupOriginalSale": {
               if (!command.source || command.source === "test") return json(store.lookupRefundSale(employee,token,command.reference));
+              if (isDemoSaleReference(command.reference)) throw new TeamError("TRANSACTION_NOT_FOUND",404);
               const evidence = await providerFor(employee,command.source).lookup(command.reference);
               return json(store.lookupRefundSale(employee,token,command.reference,evidence));
             }
@@ -205,7 +211,9 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "setRefundPolicy": return json(store.setRefundPolicy(employee,token,command.thresholdCents));
             case "reportCashPayout": return json(store.reportCashPayout(employee,token,command.id));
             case "listRefundRequests": return json(store.refundRequests.list(employee));
-            case "shiftOverview": return json(store.shiftOverview(employee,token));
+            case "shiftOverview": return json(store.shiftOverview(employee,token,command.manual));
+            case "recordDemoSale": return json(store.recordDemoSale(employee,token,command));
+            case "openDemoSale": return json(store.openDemoSale(employee,token,command.reference));
             case "replayHeldDemoRefund": return json(store.replayHeldDemoRefund(employee,token,command.runId,roster));
             case "demoShift":
             case "startDemoShift":
@@ -214,7 +222,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "openRefundRequest": return json(store.refundRequests.open(employee,command.id));
             case "createRefundRequest": {
               const { source } = command.terms;
-              if (!source || source === "test" || command.demoRun) {
+              if (!source || source === "test" || command.demoRun || isDemoSaleReference(command.terms.reference)) {
                 return json(store.createRefundRequest(employee,token,command.submissionId,command.terms,undefined,command.demoRun));
               }
               const saved = store.refundRequests.replay(employee,command.submissionId,command.terms);

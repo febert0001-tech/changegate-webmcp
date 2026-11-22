@@ -4,7 +4,7 @@ import { cents, checks, providerVerification, requestDecision, requestReceipt, s
 type Activity = { reference: string; location: string; register: string; at: string; amountCents: number };
 export type ShiftRefund = Activity & { id: string; cashier: string; reason: string; status: string; nextAction: string;
   awaitingApproval: boolean; awaitingSubmission: boolean; confirmedPayoutCents: number | null };
-export type ShiftOverview = { runId: string; seed: string; locations: string[]; sales: ShiftSale[]; refunds: ShiftRefund[] };
+export type ShiftOverview = { runId: string | null; seed: string; locations: string[]; sales: ShiftSale[]; refunds: ShiftRefund[] };
 
 export function summarizeShift(records: Omit<ShiftOverview, "refunds">, requests: RefundRequest[]): ShiftOverview {
   const refunds = requests.map(request => {

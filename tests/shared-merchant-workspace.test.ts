@@ -278,6 +278,51 @@ describe("authenticated synthetic shift", () => {
   });
 });
 
+describe("cashier-recorded demo sales", () => {
+  it("reserves an approved partial refund, blocks an overage and retains both after restart and seeded replay", async () => {
+    const users = roster.map(employee => ({ ...employee, role: employee.username === "maya" ? "cashier" as const : "manager" as const }));
+    let server = app(undefined, users, undefined, undefined, undefined, true);
+    const [maya, jordan, alex] = await Promise.all(users.map(user => signIn(server, user.username)));
+    const command = { action: "recordDemoSale", submissionId: randomUUID(), amount: "75.00", tender: "Electronic" };
+    type DemoSale = import("../src/merchant-team/demo-sales").DemoSale;
+    expect((await maya!.request({ ...command, merchantId: "ridge" })).status).toBe(400);
+    expect((await jordan!.request(command)).status).toBe(403);
+    const [sale, duplicate] = await Promise.all([maya!.send<DemoSale>(command), maya!.send<DemoSale>(command)]);
+    expect(sale).toEqual(duplicate);
+    expect(sale).toMatchObject({ originalCents: 7500, cashier: "Maya Chen", location: "Harbor Fuel", register: "Register 1", recordedDemo: true });
+    expect((await maya!.request({ ...command, amount: "76.00" })).status).toBe(409);
+    const reference = sale.reference;
+    const original = { action: "openDemoSale", reference };
+    expect((await alex!.request(original)).status).toBe(404);
+    expect((await alex!.request({ action: "lookupOriginalSale", reference })).status).toBe(404);
+    const request = (amount: string) => ({ action: "createRefundRequest", submissionId: randomUUID(),
+      terms: { reference, amount, currency: "USD", reason: "Partial demo refund" } });
+    expect((await alex!.request(request("5.00"))).status).toBe(404);
+    const held = await maya!.send<RefundRequest>(request("52.00"));
+    expect(checks(held)).toMatchObject({ route: "manager", thresholdCents: 5000, balanceCents: 7500 });
+    expect(checks(held).explanation).toContain("$50.00 store threshold");
+    const approved = await jordan!.send<RefundRequest>({ action: "decideRefundRequest", id: held.id, decision: "Approved", password });
+    expect(requestReceipt(approved)).toMatchObject({ decision: { status: "Approved", reviewer: "Jordan Lee" }, execution: { status: "Not submitted" } });
+    const blocked = await maya!.send<RefundRequest>(request("24.00"));
+    expect(checks(blocked)).toMatchObject({ route: "over-balance", balanceCents: 2300, reservedCents: 5200 });
+    expect(checks(blocked).explanation).toContain("Only $23.00 remains refundable");
+    const manual = { action: "shiftOverview", manual: true };
+    type Overview = import("../src/merchant-team/shift-overview").ShiftOverview;
+    const beforeRestart = await maya!.send<Overview>(manual);
+    expect(beforeRestart.sales).toHaveLength(1);
+    expect(beforeRestart.refunds.find(row => row.id === held.id)).toMatchObject({ awaitingSubmission: true, confirmedPayoutCents: null });
+    const dbPath = server.path;
+    server.stop();
+    server = app(dbPath, users, undefined, undefined, undefined, true);
+    const resumed = await signIn(server, "maya");
+    expect(await resumed.send(manual)).toEqual(beforeRestart);
+    expect(await resumed.send({ action: "lookupOriginalSale", reference })).toMatchObject({ sale, reservedCents: 5200, paidCents: 0, balanceCents: 2300 });
+    const seeded = await resumed.send<{ state: DemoState }>({ action: "startDemoShift", seed: "harbor-evening" });
+    await resumed.send({ action: "replayDemoShift", runId: seeded.state.runId });
+    expect(await resumed.send(manual)).toEqual(beforeRestart);
+  });
+});
+
 describe("Square Sandbox refunds", () => {
   const users: Employee[] = roster.map(employee => ({ ...employee, role: "manager" }));
   const config = { teamMerchantId: "harbor", merchantId: "square-seller", locationId: "square-location", accessToken: "fixture-key" };

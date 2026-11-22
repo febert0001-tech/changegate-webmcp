@@ -28,9 +28,16 @@ function Attention({ row, canDecide }: { row: ShiftRefund; canDecide: boolean })
   </li>;
 }
 
-export function ShiftOverviewPanel({ session, send, onSessionError }: {
+type PanelProps = {
   session: TeamSession; send: Send; onSessionError: (error: unknown) => boolean;
-}) {
+};
+
+export function ShiftOverviewPanel(props: PanelProps) {
+  const manual = useSearchParams().get("shift") === "manual";
+  return <Overview key={manual ? "manual" : "seeded"} {...props} manual={manual}/>;
+}
+
+function Overview({ session, send, onSessionError, manual }: PanelProps & { manual: boolean }) {
   const params = useSearchParams();
   const [overview, setOverview] = useState<ShiftOverview | null>();
   const [error, setError] = useState("");
@@ -47,7 +54,8 @@ export function ShiftOverviewPanel({ session, send, onSessionError }: {
       const version = replay.current.version;
       loading = true;
       try {
-        const result = await send<ShiftOverview | null>({ action: "shiftOverview" }, { signal: controller.signal, sessionVersion });
+        const result = await send<ShiftOverview | null>({ action: "shiftOverview", ...(manual && { manual: true as const }) },
+          { signal: controller.signal, sessionVersion });
         if (!controller.signal.aborted && version === replay.current.version) { setOverview(result); setError(""); }
       } catch (e) {
         if (!controller.signal.aborted && version === replay.current.version && !onSessionError(e))
@@ -65,7 +73,7 @@ export function ShiftOverviewPanel({ session, send, onSessionError }: {
       window.removeEventListener("focus", load);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
-  }, [demoShift, onSessionError, send, sessionVersion]);
+  }, [demoShift, manual, onSessionError, send, sessionVersion]);
 
   function updateFilter(key: "location" | "metric", value: string) {
     const url = new URL(window.location.href);
@@ -93,6 +101,8 @@ export function ShiftOverviewPanel({ session, send, onSessionError }: {
 
   const replayButton = <button type="button" className={styles.primary} disabled={replaying}
     onClick={() => void replayHeldRefund()}>{replaying ? "Replaying fictional shift…" : "Replay to held $38 refund"}</button>;
+  const switchView = manual ? <Link href="/shift-overview" prefetch={false}>Seeded shift</Link>
+    : <Link href="/shift-overview?shift=manual" prefetch={false}>Manual demo sales</Link>;
 
   if (!demoShift) return <section className={styles.card}>
     <h2>Shift Overview</h2><p>No fictional shift is available in this workspace.</p>
@@ -100,25 +110,27 @@ export function ShiftOverviewPanel({ session, send, onSessionError }: {
   if (!overview) return <section className={styles.card}>
     <h2>Shift Overview</h2>
     <p className={styles.fieldHint}>Fictional shift</p>
+    <p>{switchView}</p>
     {error && <p role="alert">{error}</p>}
-    {overview === undefined ? !error && <p role="status">Loading shift activity…</p> : replayButton}
+    {overview === undefined ? !error && <p role="status">Loading shift activity…</p> : !manual && replayButton}
   </section>;
 
   const location = overview.locations.find(name => name === params.get("location")) ?? "";
-  const selected: ShiftMetric = shiftMetrics.find(([key]) => key === params.get("metric"))?.[0] ?? "approval";
+  const selected: ShiftMetric = shiftMetrics.find(([key]) => key === params.get("metric"))?.[0] ?? (manual ? "sales" : "approval");
   const groups = shiftGroups(overview, location);
   const attention = groups.refunds.filter(row => row.awaitingApproval || row.awaitingSubmission);
   const rows = groups[selected];
   const heading = shiftMetrics.find(([key]) => key === selected)![1];
   return <section className={`${styles.card} ${styles.shiftOverview}`} aria-labelledby="shift-heading">
     <div className={styles.shiftOverviewHeading}>
-      <div><h2 id="shift-heading">Shift Overview</h2><p className={styles.fieldHint}>Fictional shift · {overview.seed}</p></div>
+      <div><h2 id="shift-heading">Shift Overview</h2><p className={styles.fieldHint}>{manual ? "Manual demo · Fictional records" : `Fictional shift · ${overview.seed}`}</p>
+        {switchView}</div>
       <div className={styles.shiftOverviewActions}>
         <label>Location<select value={location} onChange={event => updateFilter("location", event.target.value)}>
           <option value="">All locations</option>
           {overview.locations.map(name => <option key={name} value={name}>{name}</option>)}
         </select></label>
-        {replayButton}
+        {!manual && replayButton}
       </div>
     </div>
     {error && <p role="alert">{error}</p>}
@@ -147,7 +159,8 @@ export function ShiftOverviewPanel({ session, send, onSessionError }: {
       {rows.length ? <ul className={styles.shiftRecords}>{rows.map(row => <li key={row.reference}>
         <div><strong>{row.location} · {money(row.amountCents)}</strong><span>{row.register} · {row.at.slice(11,16)} UTC</span></div>
         {"id" in row ? <><p>{row.status} · {row.cashier}</p><Link href={receipt(row.id)} prefetch={false}>Open receipt for {row.reference}</Link></>
-          : <p>{row.reference}{row.discountCents > 0 && ` · ${money(row.discountCents)} discount applied`}</p>}
+          : row.recordedDemo ? <Link href={`/demo-sales/${row.reference}`} prefetch={false}>Open sale {row.reference}</Link>
+            : <p>{row.reference}{row.discountCents > 0 && ` · ${money(row.discountCents)} discount applied`}</p>}
       </li>)}</ul> : <p className={styles.emptyState}>No matching records.</p>}
     </section>
   </section>;

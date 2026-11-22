@@ -9,11 +9,12 @@ import { summarizeComparison, type ReviewDisposition, type ReviewFindingState } 
 import { RefundAlertStore } from "./refund-alert-store";
 import type { AlertEnrollment } from "./refund-alerts";
 import { RefundRequestStore } from "./refund-request-store";
-import { checks, executionStopped, providerVerification, type ElectronicSaleEvidence, type RefundDecision, type RefundTerms } from "./refund-requests";
+import { cents, checks, executionStopped, isDemoSaleReference, providerVerification, type ElectronicSaleEvidence, type RefundDecision, type RefundTerms } from "./refund-requests";
 import { SquareSubmissionBlocked, type SquareSandbox } from "./square-sandbox";
 import type { PayPalProvider } from "./paypal-provider";
 import { RefundNotSubmitted, RefundSubmissionRejected } from "./paypal-contracts";
 import { DemoShift, demoEscalationMs, demoReferencePrefix } from "./demo-shift";
+import { DemoSales, demoRegister } from "./demo-sales";
 import { summarizeShift } from "./shift-overview";
 
 type ImportRow = ImportSummary & { rejections: string };
@@ -44,6 +45,7 @@ export class TeamStore {
   readonly refundRequests: RefundRequestStore;
   readonly alerts: RefundAlertStore;
   readonly demo?: DemoShift;
+  private readonly demoSales?: DemoSales;
 
   constructor(path: string, private readonly now = () => new Date().toISOString(), demo = false) {
     this.db = new DatabaseSync(path, { enableForeignKeyConstraints: true });
@@ -117,7 +119,10 @@ export class TeamStore {
       `);
       this.refundRequests = new RefundRequestStore(this.db, this.now, demo);
       this.alerts = new RefundAlertStore(this.db);
-      if (demo) this.demo = new DemoShift(this.db);
+      if (demo) {
+        this.demo = new DemoShift(this.db);
+        this.demoSales = new DemoSales(this.db, this.now);
+      }
     } catch (error) {
       this.db.close();
       throw error;
@@ -130,13 +135,42 @@ export class TeamStore {
 
   lookupRefundSale(employee: Employee, token: string, reference: string, evidence?: ElectronicSaleEvidence) {
     this.requireActiveSession(employee, token);
+    if (isDemoSaleReference(reference)) return this.openDemoSale(employee, token, reference);
     const sale = this.demo?.find(employee, reference);
     return this.refundRequests.lookup(employee, reference, sale ? { sale, countedRefunds: [] } : evidence);
+  }
+
+  recordDemoSale(employee: Employee, token: string, command: Extract<TeamCommand, { action: "recordDemoSale" }>) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      if (!this.demoSales) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
+      return this.demoSales.record(employee, command.submissionId, cents(command.amount), command.tender);
+    });
+  }
+
+  private requireDemoSale(employee: Employee, reference: string) {
+    if (!this.demoSales) throw new TeamError("TRANSACTION_NOT_FOUND", 404);
+    return this.demoSales.open(employee, reference);
+  }
+
+  openDemoSale(employee: Employee, token: string, reference: string) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      const sale = this.requireDemoSale(employee, reference);
+      return { ...this.refundRequests.lookup(employee, reference, { sale, countedRefunds: [] }),
+        sale, refunds: this.refundRequests.listForSale(employee, reference) };
+    });
   }
 
   createRefundRequest(employee: Employee, token: string, submissionId: string, terms: RefundTerms, evidence?: ElectronicSaleEvidence, demoRun?: string) {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
+      if (isDemoSaleReference(terms.reference)) {
+        const sale = this.requireDemoSale(employee, terms.reference);
+        if (!demoRegister(employee) || demoRun || (terms.source && terms.source !== "test"))
+          throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
+        return this.refundRequests.create(employee, submissionId, terms, this.alerts, { sale, countedRefunds: [] });
+      }
       if (demoRun || (this.demo && terms.reference.startsWith(demoReferencePrefix))) {
         return this.createDemoRefund(employee, demoRun, terms);
       }
@@ -159,11 +193,19 @@ export class TeamStore {
     return summarizeShift(shift, refundIds.map(id => this.refundRequests.open(employee, id)));
   }
 
-  shiftOverview(employee: Employee, token: string) {
+  shiftOverview(employee: Employee, token: string, manual?: true) {
     const demo = this.demo;
     if (!demo?.includes(employee)) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
+      if (manual) {
+        const sales = this.demoSales!.list(employee);
+        return summarizeShift({
+          runId: null, seed: "Manual demo", locations: [...new Set(sales.map(sale => sale.location))],
+          sales: sales.map(sale => ({ reference: sale.reference, location: sale.location, register: sale.register,
+            at: sale.recordedAt, netCents: sale.originalCents, discountCents: 0, recordedDemo: true })),
+        }, this.refundRequests.list(employee).filter(request => request.sale?.recordedDemo));
+      }
       return this.readShiftOverview(employee, demo);
     });
   }

@@ -8,6 +8,7 @@ import styles from "./merchant.module.css";
 import { StoreEntry } from "./store-entry";
 import { TransactionWorkspace } from "../transactions/transaction-workspace";
 import { ShiftOverviewPanel } from "./shift-overview-panel";
+import { DemoSalesPanel } from "./demo-sales-panel";
 import type { TransactionStep } from "../../merchant-team/refund-requests";
 import { ReviewSummaryPanel } from "./review-summary-panel";
 import { RefundImportPanel } from "./refund-import-panel";
@@ -100,9 +101,10 @@ function notifySessionChange() {
   channel.close();
 }
 
-export function MerchantConsole({ caseId, imports, importId, reviewSummary, transaction, overview }: {
+export function MerchantConsole({ caseId, imports, importId, reviewSummary, transaction, overview, demoSale }: {
   caseId?: string; imports?: boolean; importId?: string; reviewSummary?: boolean; overview?: boolean;
   transaction?: { id: string; step: TransactionStep } | "list";
+  demoSale?: string | true;
 }) {
   const router = useRouter();
   const [ready, setReady] = useState(false);
@@ -212,6 +214,7 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
       {session && <div className={styles.profile}>
         {session.demoShift && <Link href="/shift-overview" prefetch={false} aria-current={overview ? "page" : undefined}>Shift Overview</Link>}
         <Link href="/transactions" prefetch={false}>Transactions</Link>
+        {session.demoRegister && <Link href="/demo-sales" prefetch={false}>Record sale</Link>}
         {transaction && <Link href="/merchant" prefetch={false}>Reconciliation</Link>}
         {(imports || caseId) && <Link href="/merchant" prefetch={false}>Work queue</Link>}
         <span>{session.name}</span>
@@ -227,6 +230,10 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
     {(notice || busy) && <p className={styles.inlineNotice} role="status">{notice || "Working…"}</p>}
     {overview ? (
       <ShiftOverviewPanel key={session.sessionVersion} session={session} send={send} onSessionError={clearOnSessionError} />
+    ) : demoSale ? (
+      <DemoSalesPanel key={versionKey(session.sessionVersion, typeof demoSale === "string" ? demoSale : undefined)}
+        {...(typeof demoSale === "string" && { reference: demoSale })}
+        session={session} send={send} onSessionError={clearOnSessionError} />
     ) : transaction ? (
       <TransactionWorkspace key={versionKey(session.sessionVersion, transaction === "list" ? undefined : transaction.id)}
         destination={transaction} session={session} send={send} onSessionError={clearOnSessionError} />

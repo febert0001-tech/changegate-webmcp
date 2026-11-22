@@ -3,7 +3,7 @@ import { csvText, refundMapping, type CaseEvidence } from "./refund-csv";
 import { dispositionOptions } from "./review-summary";
 import { comparisonInput } from "./refund-comparison";
 import { alertEndpoint, alertEnrollment } from "./refund-alerts";
-import { refundTerms, type MerchantRole } from "./refund-requests";
+import { demoSaleReference, refundTerms, usdAmount, type MerchantRole } from "./refund-requests";
 export { TeamError } from "./error";
 
 const text = (max: number) => z.string().trim().min(1).max(max);
@@ -70,7 +70,10 @@ export const teamCommand = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("reportCashPayout"), id }),
   z.strictObject({ action: z.literal("listRefundRequests") }),
   z.strictObject({ action: z.literal("demoShift") }),
-  z.strictObject({ action: z.literal("shiftOverview") }),
+  z.strictObject({ action: z.literal("shiftOverview"), manual: z.literal(true).optional() }),
+  z.strictObject({ action: z.literal("recordDemoSale"), submissionId: id, amount: usdAmount,
+    tender: z.enum(["Cash", "Electronic"]) }),
+  z.strictObject({ action: z.literal("openDemoSale"), reference: demoSaleReference }),
   z.strictObject({ action: z.literal("replayHeldDemoRefund"), runId: id.nullable() }),
   z.strictObject({ action: z.literal("startDemoShift"), seed: z.string().trim().regex(/^[A-Za-z0-9_-]{1,40}$/) }),
   z.strictObject({ action: z.literal("nextDemoEvent"), runId: id, step: z.number().int().nonnegative() }),
@@ -119,6 +122,7 @@ export interface TeamSession {
   reviewerConfigured?: boolean;
   paypalConnected?: boolean;
   demoShift?: boolean;
+  demoRegister?: { location: string; register: string };
   syntheticOnly?: boolean;
   coworkers: { username: string; name: string }[];
 }

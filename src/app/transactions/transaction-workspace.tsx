@@ -284,6 +284,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   return <section className={styles.card} aria-labelledby="refund-heading">
     <div className={styles.screenHeading}><h2 id="refund-heading">Refund · {money(cents(record.terms.amount))}</h2><Link href="/transactions">All transactions</Link></div>
     <p className={styles.caseReference}>{record.terms.reference} · {record.sale?.location??"Sale unverified"} · {name?name+" Sandbox":"Test data"}</p>
+    {record.sale?.recordedDemo && <Link href={`/demo-sales/${record.sale.reference}`} prefetch={false}>Open recorded demo sale</Link>}
     <section className={styles.transactionSummary} aria-label="Refund status and next action">
       <p className={styles.statusHeading}><strong>{provider==="square"&&status==="Needs manager decision"?"Supervisor approval required":status}</strong><span>Current step · {transactionTabs.find(([tab])=>tab===current)?.[1]}</span></p>
       <dl className={styles.moneySummary}>
@@ -312,6 +313,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
             record.sale?"Original sale found in the test POS records.":"Original sale could not be verified."}</li>
           <li>Remaining refundable balance {check.balanceCents===null?"unavailable":money(check.balanceCents)}</li>
           <li>Store approval threshold {money(check.thresholdCents)}</li>
+          {check.reservedCents!==undefined&&<li>Reserved by ChangeGate before this request {money(check.reservedCents)}</li>}
           {check.cumulativeCents!==null&&<li>Cumulative requested amount {money(check.cumulativeCents)}</li>}
         </ul>
         {check.monitoring&&<>
