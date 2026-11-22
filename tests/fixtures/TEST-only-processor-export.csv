@@ -1,0 +1,6 @@
+Processor refund,Net refunded,ISO code,State
+TEST-DIFFERENCE-1042,24.00,USD,Completed
+TEST-MATCH-1001,10.2,USD,Completed
+TEST-PROCESSOR-ONLY,9.00,USD,Completed
+TEST-AMBIGUOUS,2.00,USD,Completed
+TEST-INVALID,7.00,USD,Completed

@@ -3,22 +3,24 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import type { TeamCaseDetail, TeamCommand, TeamSession } from "../../merchant-team/contracts";
-import { csvLimit, refundMapping, type ImportSummary, type RefundImport, type RefundImportResult, type RefundMapping, type RefundRow, type Rejection } from "../../merchant-team/refund-csv";
+import { refundMapping, type CaseComparison, type EvidenceRow, type ImportSummary, type RefundImport, type RefundImportResult, type RefundMapping, type RefundRow, type Rejection } from "../../merchant-team/refund-csv";
+import { changeMapping, inspectFile, MappingFields, RefundComparisonForm, type FileSelection } from "./refund-comparison-form";
 import styles from "./merchant.module.css";
 
 type Send = <T>(command: TeamCommand, options?: { signal?: AbortSignal; sessionVersion?: string }) => Promise<T>;
 type Preview = { accepted: RefundRow[]; rejections: Rejection[]; findings: unknown[] };
-const columns = [
-  ["reference", "Refund reference"], ["amount", "Amount"], ["currency", "Currency"], ["status", "Status (optional)"],
-] as const;
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 
-export function EvidenceRows({ rows }: { rows: RefundRow[] }) {
+export function EvidenceRows({ rows, files }: { rows: EvidenceRow[]; files?: CaseComparison["files"] }) {
+  const paired = rows.some(row => row.side);
   return <div className={styles.tableWrap}>
     <table className={styles.evidenceTable}>
-      <thead><tr><th scope="col">Source line</th><th scope="col">Refund reference</th><th scope="col">USD amount</th><th scope="col">File status</th></tr></thead>
-      <tbody>{rows.map(row => <tr key={row.line}><td>{row.line}</td><td>{row.reference}</td>
-        <td>{usd.format(row.amountCents / 100)}</td><td>{row.status === undefined ? "Not mapped" : row.status || "Blank"}</td>
+      <thead><tr>{paired && <th scope="col">Export</th>}<th scope="col">Source line</th><th scope="col">Refund reference</th><th scope="col">USD amount</th><th scope="col">File status</th></tr></thead>
+      <tbody>{rows.map(row => <tr key={`${row.side ?? ""}:${row.line}`}>
+        {paired && <td>{row.side}{row.side && files && <small className={styles.sourceFile}>{files[row.side]}</small>}</td>}
+        <td>{row.line}</td><td>{row.reference}</td>
+        <td>{row.amountCents === null ? "Unavailable" : usd.format(row.amountCents / 100)}</td>
+        <td>{row.rejected ? "Rejected row" : row.status === undefined ? "Not mapped" : row.status || "Blank"}</td>
       </tr>)}</tbody>
     </table>
   </div>;
@@ -28,8 +30,8 @@ function RejectedRows({ rows }: { rows: Rejection[] }) {
   if (!rows.length) return null;
   return <details className={styles.importSection} open>
     <summary>Why {rows.length} {rows.length === 1 ? "row was" : "rows were"} rejected</summary>
-    <ul className={styles.rejections}>{rows.map(row => <li key={row.line}>
-      <strong>Line {row.line}</strong> · {row.reasons.join(" ")}
+    <ul className={styles.rejections}>{rows.map(row => <li key={`${row.side ?? ""}:${row.line}`}>
+      <strong>{row.side && row.side + " "}Line {row.line}</strong> · {row.reasons.join(" ")}
     </li>)}</ul>
   </details>;
 }
@@ -37,15 +39,15 @@ function RejectedRows({ rows }: { rows: Rejection[] }) {
 export function RefundImportPanel({ send, session, importId, onSessionError }: {
   send: Send; session: TeamSession; importId?: string; onSessionError: (error: unknown) => boolean;
 }) {
-  const [raw, setRaw] = useState("");
-  const [headers, setHeaders] = useState<string[]>([]);
-  const [selection, setSelection] = useState<Record<string, number>>({});
+  const [file, setFile] = useState<FileSelection | null>(null);
+  const [savedFile, setSavedFile] = useState<FileSelection | null>(null);
+  const [comparing, setComparing] = useState(false);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [batch, setBatch] = useState<RefundImport | null>(null);
   const [history, setHistory] = useState<ImportSummary[]>([]);
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(true);
-  const parsedMapping = refundMapping.safeParse(selection);
+  const parsedMapping = refundMapping.safeParse(file?.selection);
   const version = session.sessionVersion;
 
   useEffect(() => {
@@ -82,42 +84,30 @@ export function RefundImportPanel({ send, session, importId, onSessionError }: {
     <h2 id="refund-import">Import refunds</h2>
     <p className={styles.muted}>Use one redacted USD refund CSV. Map the columns that belong in the review.</p>
     <p role="status" className={styles.notice}>{notice || (busy ? "Working…" : "")}</p>
+    {!comparing && <>
     <label>Refund CSV<input type="file" accept=".csv,text/csv" disabled={busy} onChange={event => {
-      const file = event.currentTarget.files?.[0];
+      const selected = event.currentTarget.files?.[0];
       event.currentTarget.value = "";
-      if (!file) return;
-      setRaw(""); setHeaders([]); setSelection({}); setPreview(null); setBatch(null);
+      if (!selected) return;
+      setFile(null); setPreview(null); setBatch(null);
       void run(async () => {
-        if (file.size > csvLimit) throw Error("Choose a CSV no larger than 96 KiB.");
-        const text = await file.text();
-        const info = await request<{ headers: string[]; rowCount: number }>({ action: "inspectCsv", text });
-        setRaw(text);
-        setHeaders(info.headers);
-        setNotice(info.rowCount + " source rows. Choose the matching columns.");
+        const inspected = await inspectFile(request, selected);
+        setFile(inspected);
+        setNotice(inspected.rowCount + " source rows. Check the selected columns.");
       });
     }} /></label>
-    {!!headers.length && <form className={styles.importSection} onSubmit={event => {
+    {file && <form className={styles.importSection} onSubmit={event => {
       event.preventDefault();
       if (!parsedMapping.success) return;
       const mapping: RefundMapping = parsedMapping.data;
       void run(async () => {
-        setPreview(await request<Preview>({ action: "previewCsv", text: raw, mapping }));
+        setPreview(await request<Preview>({ action: "previewCsv", text: file.text, mapping }));
       });
     }}>
-      <div className={styles.importMapping}>{columns.map(([field, label]) => <label key={field}>{label}
-        <select name={field} disabled={busy} value={selection[field] ?? ""} onChange={event => {
-          const value = event.target.value;
-          setPreview(null);
-          setSelection(current => {
-            const next = { ...current };
-            if (value === "") delete next[field]; else next[field] = Number(value);
-            return next;
-          });
-        }}>
-          <option value="">{field === "status" ? "Do not map" : "Select a column"}</option>
-          {headers.map((header, i) => <option key={i} value={i}>{i + 1}. {header || "(blank header)"}</option>)}
-        </select>
-      </label>)}</div>
+      <MappingFields headers={file.headers} selection={file.selection} busy={busy} update={(field, value) => {
+        setPreview(null);
+        setFile({ ...file, selection: changeMapping(file.selection, field, value) });
+      }} />
       <button disabled={busy || !parsedMapping.success}>Preview rows</button>
     </form>}
     {preview && <section className={styles.importSection} aria-label="Refund preview">
@@ -126,25 +116,49 @@ export function RefundImportPanel({ send, session, importId, onSessionError }: {
       {preview.accepted.length > 25 && <p>Showing the first 25 accepted rows.</p>}
       {!!preview.accepted.length && <EvidenceRows rows={preview.accepted.slice(0, 25)} />}
       <RejectedRows rows={preview.rejections} />
-      <button className={styles.primary} disabled={busy || !parsedMapping.success || !preview.accepted.length} onClick={() => {
-        if (!parsedMapping.success) return;
+      <button className={styles.primary} disabled={busy || !parsedMapping.success || !preview.accepted.length || !file} onClick={() => {
+        if (!parsedMapping.success || !file) return;
         void run(async () => {
-          const result = await request<RefundImportResult>({ action: "importCsv", text: raw, mapping: parsedMapping.data });
+          const result = await request<RefundImportResult>({ action: "importCsv", text: file.text, mapping: parsedMapping.data });
           setBatch(result.batch);
           setHistory(existing => [result.batch.summary, ...existing.filter(item => item.id !== result.batch.summary.id)]);
-          setRaw(""); setHeaders([]); setPreview(null);
+          setSavedFile(file); setFile(null); setPreview(null);
           setNotice(result.existing ? "This file was already imported. Showing its original findings and case links." : "Import saved.");
         });
       }}>Save import</button>
     </section>}
-    {batch && <section className={styles.importSection} aria-label="Saved refund import">
-      <h3>Import findings</h3>
+    {batch && !batch.comparison && <button type="button" disabled={busy} onClick={() => {
+      setComparing(true);
+      setNotice("");
+    }}>Compare processor export</button>}
+    </>}
+    {comparing && <RefundComparisonForm initialMerchant={savedFile} request={request} run={run} busy={busy}
+      onSaved={result => {
+        setBatch(result.batch);
+        setHistory(existing => [result.batch.summary, ...existing.filter(item => item.id !== result.batch.summary.id)]);
+        setComparing(false);
+        setNotice(result.existing ? "This pair was already compared. Showing its original findings and case links." : "Comparison saved.");
+      }}
+      renderPreview={result => <section aria-label="Comparison preview">
+        <p>{result.comparison.exact.length} exact matches · {result.findings.length} exceptions</p>
+        {result.findings.map(finding => <p key={finding.rows[0]!.reference}>{finding.explanation}</p>)}
+        <RejectedRows rows={result.rejections} />
+      </section>} />}
+    {batch && !comparing && <section className={styles.importSection} aria-label="Saved refund import">
+      <h3>{batch.comparison ? "Comparison findings" : "Import findings"}</h3>
+      {batch.comparison && <>
+        <p>Reporting period {batch.comparison.period.start} to {batch.comparison.period.end}</p>
+        <details>
+          <summary>{batch.comparison.exact.length} exact {batch.comparison.exact.length === 1 ? "match" : "matches"}</summary>
+          {!!batch.comparison.exact.length && <EvidenceRows rows={batch.comparison.exact.flat()} files={batch.comparison.files} />}
+        </details>
+      </>}
       <p>{batch.summary.acceptedCount} accepted · {batch.summary.rejectedCount} rejected · {batch.summary.findingCount} findings</p>
       <RejectedRows rows={batch.rejections} />
       {batch.findings.length ? batch.findings.map(finding => <article className={styles.importFinding} key={finding.id}>
         <h4>{finding.kind}</h4>
         <p>{finding.explanation}</p>
-        <EvidenceRows rows={finding.rows} />
+        <EvidenceRows rows={finding.rows} {...(batch.comparison && { files: batch.comparison.files })} />
         {finding.caseId ? <Link href={`/merchant/${finding.caseId}`} prefetch={false}>Open assigned case</Link> :
           <form className={styles.formRow} onSubmit={event => {
             event.preventDefault();

@@ -57,3 +57,7 @@
 .evidenceTable { width: 100%; border-collapse: collapse; text-align: left; font-size: .9rem; }
 .evidenceTable th, .evidenceTable td { border-bottom: 1px solid var(--line); padding: 8px; overflow-wrap: anywhere; }
 .rejections { padding: 8px 0 0 18px; }
+
+.comparisonFile { border: 1px solid var(--line); padding: 12px; display: grid; gap: 10px; min-width: 0; }
+.comparisonFile legend { font-weight: 650; padding: 0 5px; }
+.sourceFile { display: block; color: var(--muted); }

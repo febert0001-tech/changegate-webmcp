@@ -289,7 +289,7 @@ export function MerchantConsole({ caseId, imports, importId }: { caseId?: string
               <h3 id="import-evidence">Imported refund evidence</h3>
               <p><strong>{detail.evidence.finding.kind}</strong></p>
               <p>{detail.evidence.finding.explanation}</p>
-              <EvidenceRows rows={detail.evidence.finding.rows} />
+              <EvidenceRows rows={detail.evidence.finding.rows} {...(detail.evidence.comparison && { files: detail.evidence.comparison.files })} />
               <Link href={`/merchant/imports/${detail.evidence.importId}`} prefetch={false}>Open source import</Link>
             </section>}
             <section className={styles.history} aria-labelledby="history-heading">

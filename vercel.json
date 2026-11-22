@@ -8,6 +8,7 @@
       "feat/shared-merchant-workspace": false,
       "feat/private-merchant-staging": false,
       "feat/merchant-refund-import": false,
+      "feat/merchant-refund-comparison": false,
       "main": false
     }
   }
