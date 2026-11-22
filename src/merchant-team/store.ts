@@ -141,10 +141,14 @@ export class TeamStore {
         try {
           evidence = await square.lookup(state.request.terms.reference);
         } catch (error) {
-          if (!(error instanceof TeamError) || error.code !== "SQUARE_SALE_INELIGIBLE") throw error;
+          if (!(error instanceof TeamError) ||
+              (error.code !== "SQUARE_SALE_INELIGIBLE" && error.code !== "SQUARE_PRIOR_REFUND_FAILED")) throw error;
+          const reason = error.code === "SQUARE_PRIOR_REFUND_FAILED"
+            ? "Square blocks additional refunds because an earlier refund failed on this payment."
+            : "The sale is outside Square’s refund window or has reached its refund limit.";
           return this.atomic(() => {
             this.requireActiveSession(employee, token);
-            return this.refundRequests.stopSquare(employee, id, "The sale is outside Square’s refund window or has reached its refund limit.");
+            return this.refundRequests.stopSquare(employee, id, reason);
           });
         }
       }
@@ -155,7 +159,7 @@ export class TeamStore {
       response = saved;
       if (!response) {
         if (!attempt || this.squareInFlight.has(id)) return this.refundRequests.open(employee, id);
-        // Square does not document a durable retention window for refund keys.
+        // The local retry window includes the instant exactly 15 minutes after the original attempt.
         if (Date.parse(this.now()) - Date.parse(attempt.startedAt) > 15 * 60_000) {
           throw new TeamError("SQUARE_RECONCILIATION_REQUIRED", 409);
         }

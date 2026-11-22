@@ -86,7 +86,7 @@ describe("Square Sandbox refunds", () => {
     const ledger = new Map<string, typeof refund>();
     const settings = { merchant: config.merchantId, location: config.locationId, status: "COMPLETED", currency: "USD",
       loseResponse: false, visible: true, readback: refund, total: 12000, waitForPost: Promise.resolve(),
-      createdAt: new Date().toISOString(), refundIds: [] as string[] };
+      createdAt: new Date().toISOString(), refundIds: [] as string[], priorRefundStatus: "FAILED" };
     const transport: typeof fetch = async (input, init) => {
       const url = new URL(String(input));
       expect(url.origin).toBe("https://connect.squareupsandbox.com");
@@ -107,6 +107,9 @@ describe("Square Sandbox refunds", () => {
       }
       if (url.pathname === "/v2/refunds/" + refund.id) {
         return settings.visible ? Response.json({ refund: settings.readback }) : new Response(null, { status: 503 });
+      }
+      if (url.pathname === "/v2/refunds/earlier-refund") {
+        return Response.json({ refund: { ...refund, id: "earlier-refund", status: settings.priorRefundStatus } });
       }
       return new Response(null, { status: 404 });
     };
@@ -223,6 +226,59 @@ describe("Square Sandbox refunds", () => {
     mock.settings.refundIds = Array.from({ length: 20 }, (_, index) => "refund-" + index);
     expect(await (await cashier.request(submit())).json()).toEqual({ error: "SQUARE_SALE_INELIGIBLE" });
     expect(mock.posts).toHaveLength(0);
+  });
+
+  it("blocks the first Square submission when a prior failed refund appears after approval", async () => {
+    const mock = provider();
+    const server = app(undefined, users, undefined, mock.square);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit());
+    await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    mock.settings.refundIds = ["earlier-refund"];
+    const stopped = await cashier.send<RefundRequest>({ action: "executeSquareRefund", id: request.id });
+    expect(mock.posts).toHaveLength(0);
+    expect(requestReceipt(stopped).execution.status).toBe("Not submitted");
+    expect(stopped.events.at(-1)).toMatchObject({ kind: "Execution stopped", reason: expect.stringContaining("earlier refund failed") });
+    expect(await (await cashier.request(submit())).json()).toEqual({ error: "SQUARE_PRIOR_REFUND_FAILED" });
+    mock.settings.priorRefundStatus = "REJECTED";
+    expect(await cashier.send({ action: "lookupOriginalSale", source: "square", reference: terms.reference }))
+      .toMatchObject({ balanceCents: 12000, reservedCents: 0 });
+  });
+
+  it("reuses one uncertain Square attempt through exactly 15 minutes and preserves its hold after the cutoff", async () => {
+    const mock = provider();
+    mock.settings.loseResponse = true;
+    const started = Date.parse("2026-11-22T12:00:00Z");
+    const cutoff = 15 * 60_000;
+    let clock = started;
+    const server = app(undefined, users, () => new Date(clock).toISOString(), mock.square);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit());
+    await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    const execute = { action: "executeSquareRefund", id: request.id };
+    const original = await cashier.send<RefundRequest>(execute);
+    expect(mock.posts).toHaveLength(1);
+    const originalPost = mock.posts[0];
+    expect(originalPost).toMatchObject({ idempotency_key: expect.stringMatching(/^[a-f0-9-]{36}$/) });
+    clock = started + cutoff - 1;
+    await cashier.send(execute);
+    expect(mock.posts).toHaveLength(2);
+    clock = started + cutoff;
+    const atCutoff = await cashier.send<RefundRequest>(execute);
+    expect(mock.posts).toEqual([originalPost, originalPost, originalPost]);
+    clock = started + cutoff + 1;
+    const denied = await cashier.request(execute);
+    expect(denied.status).toBe(409);
+    expect(await denied.json()).toEqual({ error: "SQUARE_RECONCILIATION_REQUIRED" });
+    expect(mock.posts).toHaveLength(3);
+    expect(mock.ledger.size).toBe(1);
+    expect(await cashier.send({ action: "openRefundRequest", id: request.id })).toEqual(atCutoff);
+    expect(atCutoff.events.filter(event => event.kind === "Square attempt recorded"))
+      .toEqual(original.events.filter(event => event.kind === "Square attempt recorded"));
+    expect(await cashier.send({ action: "lookupOriginalSale", source: "square", reference: terms.reference }))
+      .toMatchObject({ reservedCents: 5000 });
   });
 
   it("requires the configured seller, location, completed status and USD", async () => {

@@ -79,6 +79,7 @@ export class SquareSandbox {
         item.locationId !== original.location_id || item.currency !== "USD")) {
       throw new TeamError("SQUARE_PROVIDER_UNAVAILABLE", 503);
     }
+    if (prior.some(item => item.status === "FAILED")) throw new TeamError("SQUARE_PRIOR_REFUND_FAILED", 422);
     const completed = prior.filter(item => item.status === "COMPLETED").reduce((sum, item) => sum + item.amountCents, 0);
     const active = prior.filter(item => item.status === "COMPLETED" || item.status === "PENDING");
     const priorCents = active.reduce((sum, item) => sum + item.amountCents, 0);
