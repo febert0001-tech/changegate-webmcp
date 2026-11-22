@@ -5,6 +5,7 @@ import { TeamError, teamCommand, type Employee, type TeamSession } from "./contr
 import type { TeamStore } from "./store";
 import { alertPublicKey } from "./refund-alerts";
 import { canReview } from "./refund-requests";
+import { demoExplanation } from "./refund-ai-explanation";
 import type { SquareSandbox } from "./square-sandbox";
 import type { PayPalProvider } from "./paypal-provider";
 import type { ElectronicProvider } from "./refund-requests";
@@ -186,9 +187,13 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "removeRefundAlerts":
               store.removeRefundAlerts(employee,token,command.endpoint);
               return json(null);
-            case "refundAlertStatus":
-              store.refundRequests.open(employee,command.id);
-              return json(store.alerts.status(employee,command.id));
+            case "refundAlertStatus": {
+              const refund = store.refundRequests.open(employee,command.id);
+              const alerts = store.alerts.status(employee,command.id);
+              const explanation = hostedDemo && command.includeExplanation && canReview(employee.role)
+                ? demoExplanation(store.alerts,employee,refund) : undefined;
+              return json(explanation ? alerts.map(alert => alert.phase === 0 ? { ...alert, explanation } : alert) : alerts);
+            }
             case "lookupOriginalSale": {
               if (!command.source || command.source === "test") return json(store.lookupRefundSale(employee,token,command.reference));
               const evidence = await providerFor(employee,command.source).lookup(command.reference);

@@ -3,24 +3,7 @@ import { canReview } from "./refund-requests";
 import { allowedPushEndpoint, alertPublicKey } from "./refund-alerts";
 import type { Employee } from "./contracts";
 import type { RefundAlertStore } from "./refund-alert-store";
-
-export async function explainAlert(evidence:string, key:string, model:string) {
-  const response=await fetch("https://api.openai.com/v1/responses",{
-    method:"POST",headers:{Authorization:"Bearer "+key,"Content-Type":"application/json"},
-    signal:AbortSignal.timeout(8000),body:JSON.stringify({model,store:false,max_output_tokens:180,
-      instructions:"Summarize only the supplied numeric refund warning. Explain the rule evidence in one short sentence. Give no approval, accusation, or payment instruction.",
-      input:evidence,text:{format:{type:"json_schema",name:"refund_advisory",strict:true,schema:{
-        type:"object",properties:{summary:{type:"string"}},required:["summary"],additionalProperties:false,
-      }}},
-    }),
-  });
-  if(!response.ok) return null;
-  const data=await response.json() as {status?:string;output?:{content?:{type?:string;text?:string}[]}[]};
-  const output=data.output?.flatMap(item=>item.content??[]).find(item=>item.type==="output_text")?.text;
-  if(data.status!=="completed"||!output)return null;
-  const summary=(JSON.parse(output) as {summary?:unknown}).summary;
-  return typeof summary==="string"&&summary.trim()?summary.trim().slice(0,500):null;
-}
+import { explainAlert } from "./refund-ai-explanation";
 
 export function startRefundAlerts(store:RefundAlertStore, roster:readonly Employee[]) {
   const publicKey=alertPublicKey(),privateKey=process.env.CHANGEGATE_PUSH_PRIVATE_KEY,subject=process.env.CHANGEGATE_PUSH_SUBJECT;
@@ -36,8 +19,8 @@ export function startRefundAlerts(store:RefundAlertStore, roster:readonly Employ
       if(!job)return;
       if(store.decided(job)){store.finish(job,"cancelled");return;}
       if(job.phase===0&&aiKey&&model&&store.markAi(job)){
-        void explainAlert(job.alertEvidence,aiKey,model).then(note=>{
-          if(note)store.saveAdvisory(job,note);
+        void explainAlert(job.alertEvidence,aiKey,model).then(result=>{
+          if(result)store.saveAdvisory(job,result.summary);
         }).catch(()=>{ /* Advisory failure cannot delay notifications or change approval. */ });
       }
       if(!publicKey||!privateKey||!subject){store.finish(job,"not configured");return;}

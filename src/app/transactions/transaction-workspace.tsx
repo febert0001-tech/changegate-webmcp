@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import type { TeamCommand, TeamSession } from "../../merchant-team/contracts";
 import type { DemoState } from "../../merchant-team/demo-shift";
+import type { DemoExplanation } from "../../merchant-team/refund-ai-explanation";
 import { canReview, cents, checks, currentStep, executionStopped, money, payout, requestDecision, requestReceipt,
   providerAttempt, providerName, providerResponse, providerVerification, saleProvider, type ElectronicProvider,
   requestStatus, submitted, transactionTabs, type RefundRequest, type TestSale, type TransactionStep } from "../../merchant-team/refund-requests";
@@ -15,6 +16,7 @@ import styles from "../merchant/merchant.module.css";
 type Send = <T>(command: TeamCommand, options?: { signal?: AbortSignal; sessionVersion?: string }) => Promise<T>;
 type Lookup = { sale: TestSale; paidCents: number; reservedCents: number; balanceCents: number } | null;
 type DemoView = { state: DemoState | null; inbox: { requestId: string; phase: number }[] };
+type AlertView = { phase: number; status: string; advisory: string | null; explanation?: DemoExplanation };
 const value = (form: FormData, key: string) => String(form.get(key) ?? "").trim();
 const url = (id: string, step?: TransactionStep) => "/transactions/" + id + (step ? "/" + step : "");
 const time = (value: string) => value.replace("T"," ").slice(0,19) + " UTC";
@@ -38,7 +40,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   const router=useRouter();
   const [rows,setRows]=useState<RefundRequest[]>([]);
   const [record,setRecord]=useState<RefundRequest>();
-  const [alertStatus,setAlertStatus]=useState<{phase:number;status:string;advisory:string|null}[]>([]);
+  const [alertStatus,setAlertStatus]=useState<AlertView[]>([]);
   const [threshold,setThreshold]=useState<number>();
   const [query,setQuery]=useState("");
   const [location,setLocation]=useState("");
@@ -58,6 +60,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   const id=destination==="list" ? undefined : destination.id;
   const version=session.sessionVersion;
   const manager=canReview(session.role);
+  const includeExplanation=Boolean(session.syntheticOnly&&manager&&destination!=="list"&&destination.step==="approval");
   const read=useCallback((command:TeamCommand,signal:AbortSignal)=>
     send<RefundRequest|RefundRequest[]>(command,{signal,sessionVersion:version}),[send,version]);
   useTransactionTools(read);
@@ -72,7 +75,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
         if(id){
           const [result,alerts]=await Promise.all([
             send<RefundRequest>({action:"openRefundRequest",id},options),
-            send<{phase:number;status:string;advisory:string|null}[]>({action:"refundAlertStatus",id},options),
+            send<AlertView[]>({action:"refundAlertStatus",id,...(includeExplanation&&{includeExplanation:true as const})},options),
           ]);
           if(!controller.signal.aborted){setRecord(result);setAlertStatus(alerts);}
         }else{
@@ -95,7 +98,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       .catch(e=>{if(!controller.signal.aborted&&!onSessionError(e))setError("Could not load the refund policy.");});
     const timer=id||manager||session.demoShift ? window.setInterval(()=>{if(document.visibilityState==="visible")void load();},5000):undefined;
     return()=>{controller.abort();if(timer!==undefined)window.clearInterval(timer);};
-  },[id,manager,onSessionError,send,session.demoShift,session.role,session.syntheticOnly,version]);
+  },[id,includeExplanation,manager,onSessionError,send,session.demoShift,session.role,session.syntheticOnly,version]);
 
   async function run(work:()=>Promise<void>){
     setBusy(true);setError("");setNotice("");
@@ -331,6 +334,17 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
           <div><dt>Register</dt><dd>{record.sale?.register??"Unavailable"}</dd></div>
         </dl>
         <p><strong>Reason</strong> {record.terms.reason}</p><p><strong>Why it stopped</strong> {check.explanation}</p>
+        {includeExplanation&&alertStatus[0]?.explanation&&<section className={styles.importSection}>
+          <h4>Rule evidence</h4>
+          <ul className={styles.rejections}>{check.monitoring?.reasons.map(reason=><li key={reason}>{reason}</li>)}</ul>
+          <h4>AI explanation</h4>
+          {alertStatus[0].explanation.status==="complete" ? <>
+            <p>{alertStatus[0].explanation.summary}</p>
+            <p className={styles.fieldHint}>{alertStatus[0].explanation.model} · {alertStatus[0].explanation.responseMs} ms
+              {alertStatus[0].explanation.usage&&` · ${alertStatus[0].explanation.usage.input} input / ${alertStatus[0].explanation.usage.output} output tokens`}</p>
+          </> : <p role="status">{alertStatus[0].explanation.status==="pending"?"Preparing AI explanation…":"AI explanation unavailable"}</p>}
+          <p className={styles.fieldHint}>ChangeGate enforces the hold. The supervisor makes the decision.</p>
+        </section>}
         {alertStatus.map(alert=><div key={alert.phase}>
           <p>{alert.phase===0?"Primary":"Backup"} alert · {alert.status}</p>
           {alert.advisory&&<p>AI advisory: {alert.advisory}</p>}

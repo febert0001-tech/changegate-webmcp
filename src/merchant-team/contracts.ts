@@ -60,7 +60,7 @@ export const teamCommand = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("refundAlertSettings") }),
   z.strictObject({ action: z.literal("enrollRefundAlerts"), enrollment: alertEnrollment }),
   z.strictObject({ action: z.literal("removeRefundAlerts"), endpoint: alertEndpoint }),
-  z.strictObject({ action: z.literal("refundAlertStatus"), id }),
+  z.strictObject({ action: z.literal("refundAlertStatus"), id, includeExplanation: z.literal(true).optional() }),
   z.strictObject({ action: z.literal("lookupOriginalSale"), reference: text(160), source: z.enum(["test", "square", "paypal"]).optional() }),
   z.strictObject({ action: z.literal("executeElectronicRefund"), id }),
   z.strictObject({ action: z.literal("verifyElectronicRefund"), id }),

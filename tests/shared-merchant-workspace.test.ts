@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { assessSize, observeRefundShare } from "../src/merchant-team/refund-monitor-rules";
 import { checks, requestStatus, requestReceipt, type RefundRequest } from "../src/merchant-team/refund-requests";
 import { demoAccounts, generateDemoEvents, type DemoState } from "../src/merchant-team/demo-shift";
+import { demoExplanation } from "../src/merchant-team/refund-ai-explanation";
 import type { Employee, TeamCase, TeamCaseDetail, TeamSession, TeamWorkspaceView } from "../src/merchant-team/contracts";
 import { createTeamWorkspace } from "../src/merchant-team/handler";
 import { reviewSummaryCsv, type ReviewSummary } from "../src/merchant-team/review-summary";
@@ -178,6 +179,35 @@ describe("authenticated synthetic shift", () => {
     const first = await play(true);
     expect(first.events).toEqual(generateDemoEvents(seed));
     expect(first.routes).toEqual(["manager", "routine", "routine", "routine", "manager"]);
+    const reviewer = users[2]!;
+    const firstHeld = await jordan!.send<RefundRequest>({ action: "openRefundRequest", id: first.ids[4] });
+    vi.stubEnv("CHANGEGATE_MONITOR_AI_KEY", undefined);
+    vi.stubEnv("CHANGEGATE_MONITOR_AI_MODEL", undefined);
+    try {
+      expect(demoExplanation(server.store.alerts, reviewer, firstHeld)).toEqual({ status:"unavailable" });
+      vi.stubEnv("CHANGEGATE_MONITOR_AI_KEY", "test-only");
+      vi.stubEnv("CHANGEGATE_MONITOR_AI_MODEL", "test-model");
+      const transport = vi.fn(async (_url: string, init: RequestInit) => {
+        const payload = JSON.parse(String(init.body));
+        expect(payload).toMatchObject({ model:"test-model", store:false });
+        expect(JSON.parse(payload.input)).toEqual({ windowMinutes:15, threshold:3, rules:[
+          { label:"Unusual refunds by the same cashier across registers", count:3 },
+          { label:"Unusual refunds at the same register across cashiers", count:3 },
+        ] });
+        return Response.json({ status:"completed", model:"test-model-version", usage:{input_tokens:52,output_tokens:18},
+          output:[{content:[{type:"output_text",text:JSON.stringify({summary:"Both scopes reached three unusual refunds in 15 minutes."})}]}] });
+      });
+      vi.stubGlobal("fetch", transport);
+      expect(demoExplanation(server.store.alerts, reviewer, firstHeld)).toEqual({ status:"pending" });
+      expect(demoExplanation(server.store.alerts, reviewer, firstHeld)).toEqual({ status:"pending" });
+      await vi.waitFor(() => expect(demoExplanation(server.store.alerts, reviewer, firstHeld)).toMatchObject({
+        status:"complete", summary:"Both scopes reached three unusual refunds in 15 minutes.", model:"test-model-version", usage:{input:52,output:18},
+      }));
+      expect(transport).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
     const lastRun = state.runId;
     ({ state } = await maya!.send<View>({ action: "replayDemoShift", runId: lastRun }));
     expect(state.runId).not.toBe(lastRun);
@@ -186,6 +216,22 @@ describe("authenticated synthetic shift", () => {
     const second = await play(false);
     expect(second.events).toEqual(first.events);
     expect(second.routes).toEqual(first.routes);
+    const secondHeld = await jordan!.send<RefundRequest>({ action: "openRefundRequest", id: second.ids[4] });
+    vi.stubEnv("CHANGEGATE_MONITOR_AI_KEY", "test-only");
+    vi.stubEnv("CHANGEGATE_MONITOR_AI_MODEL", "test-model");
+    const timeout = vi.fn(async () => { throw new DOMException("Timed out", "TimeoutError"); });
+    vi.stubGlobal("fetch", timeout);
+    try {
+      expect(demoExplanation(server.store.alerts, reviewer, secondHeld)).toEqual({status:"pending"});
+      await vi.waitFor(() => expect(demoExplanation(server.store.alerts, reviewer, secondHeld)).toEqual({status:"unavailable"}));
+      expect(demoExplanation(server.store.alerts, reviewer, secondHeld)).toEqual({status:"unavailable"});
+      expect(timeout).toHaveBeenCalledTimes(1);
+      const approved = await jordan!.send<RefundRequest>(approve(secondHeld.id));
+      expect(requestReceipt(approved)).toMatchObject({ decision:{status:"Approved"},execution:{status:"Not submitted"} });
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
   });
 });
 

@@ -3,6 +3,7 @@ import type { Employee } from "./contracts";
 import { TeamError } from "./error";
 import type { AlertEnrollment } from "./refund-alerts";
 import { unavailableSaleLocation, type RefundCheck } from "./refund-requests";
+import type { DemoExplanation } from "./refund-ai-explanation";
 
 export type AlertJob={merchantId:string; requestId:string; requester:string; location:string; phase:number;
   route:string; alertEvidence:string; tries:number; createdAt:number};
@@ -30,6 +31,11 @@ export class RefundAlertStore {
         PRIMARY KEY(merchant_id,request_id,phase,endpoint)
       );
       CREATE INDEX IF NOT EXISTS team_refund_alert_due ON team_refund_alert_jobs(status,due,lease);
+      CREATE TABLE IF NOT EXISTS team_demo_refund_explanations (
+        merchant_id TEXT NOT NULL, request_id TEXT NOT NULL, result TEXT NOT NULL,
+        PRIMARY KEY(merchant_id,request_id),
+        FOREIGN KEY(merchant_id,request_id) REFERENCES team_refund_requests(merchant_id,id) ON DELETE CASCADE
+      );
     `);
   }
   enroll(employee:Employee, model:AlertEnrollment) {
@@ -106,6 +112,19 @@ export class RefundAlertStore {
   saveAdvisory(job:AlertJob,advisory:string) {
     this.db.prepare("UPDATE team_refund_alert_jobs SET advisory=? WHERE merchant_id=? AND request_id=? AND phase=0")
       .run(advisory,job.merchantId,job.requestId);
+  }
+  readDemoExplanation(employee: Employee, id: string): DemoExplanation | undefined {
+    const row = this.db.prepare("SELECT result FROM team_demo_refund_explanations WHERE merchant_id=? AND request_id=?")
+      .get(employee.merchantId,id);
+    return typeof row?.result === "string" ? JSON.parse(row.result) as DemoExplanation : undefined;
+  }
+  claimDemoExplanation(employee: Employee, id: string) {
+    return Boolean(this.db.prepare("INSERT OR IGNORE INTO team_demo_refund_explanations VALUES(?,?,?)")
+      .run(employee.merchantId,id,JSON.stringify({status:"pending"})).changes);
+  }
+  finishDemoExplanation(employee: Employee, id: string, result: DemoExplanation) {
+    this.db.prepare("UPDATE team_demo_refund_explanations SET result=? WHERE merchant_id=? AND request_id=?")
+      .run(JSON.stringify(result),employee.merchantId,id);
   }
   finish(job:AlertJob,status:string, due=0) {
     this.db.prepare(`UPDATE team_refund_alert_jobs SET status=?,due=?,lease=0
