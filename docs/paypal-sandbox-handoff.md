@@ -27,4 +27,8 @@ In Railway staging, store credentials in the service's secret store. For a loopb
 
 Unset `CHANGEGATE_PAYPAL_SANDBOX_ALLOW_REFUNDS` to stop new submissions while retaining reads. Unset `CHANGEGATE_PAYPAL_MODE` to stop all PayPal traffic. Restart the server after applying environment changes. Preserve the SQLite volume during rollback. Saved receipts, attempt terms, and reservations remain available when the provider is disabled. If PayPal omits an original invoice from the capture history, investigate the original refund in PayPal before taking any further action.
 
-The automated provider tests use a simulated transport. A real sandbox run and production release are separate decisions.
+## Evidence and remaining checks
+
+The simulated transport and staging container checks passed for runtime commit [56a1d9196647b96e4f86761033c4629db26a7426](https://github.com/febert0001-tech/changegate-webmcp/commit/56a1d9196647b96e4f86761033c4629db26a7426). Recheck the exact candidate's CI before activation.
+
+PayPal Sandbox acceptance still needs an authorized test capture, a review of staging credential isolation, and observed recovery against the provider. Production release requires separate approval.

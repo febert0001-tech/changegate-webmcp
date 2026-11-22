@@ -1,0 +1,53 @@
+name: SonarQube repository scan
+
+on:
+  pull_request:
+    branches: [feat/square-sandbox-refunds]
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Run isolated SonarQube analysis
+        env:
+          SONAR_HOST_URL: http://127.0.0.1:9000
+          SERVER_IMAGE: sonarqube@sha256:7b2296713a92b8ea0dd7a083a25faadc59376c9a1e6daf2744a89711c54ea1ba
+          SCANNER_IMAGE: sonarsource/sonar-scanner-cli@sha256:6e6eca4d552695a98fb7dab84f0c1bd0885ebbfe272654d1552e24bd7f452d51
+        run: |
+          set -euo pipefail
+          sudo sysctl -w vm.max_map_count=524288
+          docker run -d --rm --name changegate-sonar -p 127.0.0.1:9000:9000 "$SERVER_IMAGE"
+          trap 'docker stop changegate-sonar >/dev/null || true' EXIT
+          for attempt in $(seq 1 90); do
+            status=$(curl -fsS "$SONAR_HOST_URL/api/system/status" 2>/dev/null | jq -r '.status' || true)
+            if [ "$status" = UP ]; then break; fi
+            sleep 2
+          done
+          if [ "$status" != UP ]; then docker logs changegate-sonar; exit 1; fi
+          export SONAR_TOKEN
+          SONAR_TOKEN=$(curl -fsS -u admin:admin -d name=runner "$SONAR_HOST_URL/api/user_tokens/generate" | jq -er '.token')
+          echo "::add-mask::$SONAR_TOKEN"
+          docker run --rm --network host -e SONAR_HOST_URL -e SONAR_TOKEN \
+            -v "$GITHUB_WORKSPACE:/usr/src:ro" "$SCANNER_IMAGE" \
+            -Dsonar.projectKey=changegate-webmcp -Dsonar.sources=. \
+            '-Dsonar.exclusions=**/node_modules/**,**/.next/**,**/coverage/**' \
+            -Dsonar.working.directory=/tmp/changegate-sonar -Dsonar.qualitygate.wait=true \
+            "-Dsonar.scm.revision=$(git rev-parse HEAD)" || scan_status=$?
+          curl -fsS -u "$SONAR_TOKEN:" "$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=changegate-webmcp" | jq '.projectStatus'
+          curl -fsS -u "$SONAR_TOKEN:" "$SONAR_HOST_URL/api/measures/component?component=changegate-webmcp&metricKeys=ncloc,bugs,vulnerabilities,code_smells,security_hotspots" | jq '.component.measures'
+          curl -fsS -u "$SONAR_TOKEN:" "$SONAR_HOST_URL/api/issues/search?componentKeys=changegate-webmcp&ps=100" | jq '{total, issues: [.issues[] | {component,line,rule,severity,message}]}'
+          exit "${scan_status:-0}"
