@@ -154,7 +154,7 @@ export class MerchantRefunds {
           }
         });
       } else {
-        this.markUncertain(id, "SUBMISSION_RESPONSE_UNAVAILABLE");
+        this.markEvidenceUnavailable(id, "SUBMISSION_RESPONSE_UNAVAILABLE");
       }
       return this.store.detail(id);
     }
@@ -183,10 +183,17 @@ export class MerchantRefunds {
     this.store.event(id, "SYSTEM", issue, "UNCERTAIN", this.now());
   }
 
-  private markUncertain(id: string, issue: string) {
+  private markEvidenceUnavailable(id: string, issue: string) {
     this.store.atomic(() => {
       const row = this.store.get(id);
-      if (activeAttempt(row.status)) this.recordUncertain(id, issue);
+      if (!activeAttempt(row.status)) return;
+      if (row.status === "PENDING") {
+        // A missing response does not supersede an independently observed pending refund.
+        this.store.db.prepare("UPDATE merchant_cases SET issue=? WHERE id=?").run(issue, id);
+        this.store.event(id, "SYSTEM", issue, "PENDING", this.now());
+        return;
+      }
+      this.recordUncertain(id, issue);
     });
   }
 
@@ -210,14 +217,14 @@ export class MerchantRefunds {
         if (capture.orderId !== row.order_id) throw new MerchantError("CAPTURE_ORDER_MISMATCH");
         const discovered = capture.refunds.filter(({ invoiceId }) => invoiceId === expectedInvoice);
         if (discovered.length !== 1 || !discovered[0]) {
-          this.markUncertain(id, discovered.length > 1 ? "MULTIPLE_PROVIDER_REFUNDS_MATCH_ATTEMPT" : "ORIGINAL_REFUND_NOT_LOCATED");
+          this.markEvidenceUnavailable(id, discovered.length > 1 ? "MULTIPLE_PROVIDER_REFUNDS_MATCH_ATTEMPT" : "ORIGINAL_REFUND_NOT_LOCATED");
           return this.store.detail(id);
         }
         // The history lookup has already independently fetched this refund by its provider ID.
         evidence = discovered[0];
       }
     } catch {
-      this.markUncertain(id, "INDEPENDENT_READBACK_UNAVAILABLE");
+      this.markEvidenceUnavailable(id, "INDEPENDENT_READBACK_UNAVAILABLE");
       return this.store.detail(id);
     }
 

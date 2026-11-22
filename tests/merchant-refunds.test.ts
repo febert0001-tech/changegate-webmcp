@@ -232,6 +232,64 @@ describe("merchant refunds through the authenticated application handler", () =>
     }
   });
 
+  it("keeps independently observed pending evidence when a fresh readback fails", async () => {
+    let readAvailable = true;
+    const instance = app(database(), {
+      inject: (fake) => (url, init) => !readAvailable && url.includes("/refunds/")
+        ? Promise.resolve(Response.json({}, { status: 503 })) : fake(url, init),
+    });
+    const intent = await approved(instance, "DEMOCAPTURE400", 631);
+    const before = await instance.ok<MerchantCaseDetail>({ action: "execute", ...intent });
+    expect(before.case).toMatchObject({ status: "PENDING", observation: { status: "PENDING" } });
+    readAvailable = false;
+    const after = await instance.ok<MerchantCaseDetail>({ action: "reconcile", id: intent.id });
+    expect(after.case).toMatchObject({
+      status: "PENDING", issue: "INDEPENDENT_READBACK_UNAVAILABLE", observation: before.case.observation,
+    });
+    expect(after.audit.events.at(-1)).toMatchObject({
+      type: "INDEPENDENT_READBACK_UNAVAILABLE", lifecycle: "PENDING",
+    });
+    expect(merchantReceipt(after, "Simulated PayPal Sandbox")).toMatchObject({
+      execution: { status: "EXECUTED", refundOutcome: "UNKNOWN" },
+      verification: { status: "IN_PROGRESS", observed: { status: "PENDING" } },
+    });
+    readAvailable = true;
+    const [balance] = await instance.ok<MerchantCapture[]>({ action: "find", kind: "capture", reference: "DEMOCAPTURE400" });
+    expect(balance).toMatchObject({ remainingCents: 4181, outstanding: [{ status: "PENDING" }] });
+  });
+
+  it("keeps a concurrent worker's pending readback when the POST response arrives as a failure", async () => {
+    const accepted = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const first = app(database(), {
+      inject: (fake) => async (url, init) => {
+        const response = await fake(url, init);
+        if (!url.endsWith("/refund")) return response;
+        accepted.resolve();
+        await release.promise;
+        throw Error("Simulated late lost response");
+      },
+    });
+    const intent = await approved(first, "DEMOCAPTURE400", 631);
+    const executing = first.ok<MerchantCaseDetail>({ action: "execute", ...intent });
+    await accepted.promise;
+    try {
+      const reader = app(first.path);
+      const detail = await reader.ok<MerchantCaseDetail>({ action: "reconcile", id: intent.id });
+      expect(detail.case).toMatchObject({ status: "PENDING", observation: { status: "PENDING" } });
+      release.resolve();
+      const settled = await executing;
+      expect(settled.case).toMatchObject({
+        status: "PENDING", issue: "SUBMISSION_RESPONSE_UNAVAILABLE",
+        refundId: detail.case.refundId, observation: detail.case.observation,
+      });
+      expect(reader.store.db.prepare("SELECT count(*) n FROM simulated_provider_refunds").get()?.n).toBe(1);
+    } finally {
+      release.resolve();
+      await executing;
+    }
+  });
+
   it("escalates an undiscoverable refund and refuses a candidate from a different capture", async () => {
     const instance = app();
     const intent = await approved(instance, "DEMOCAPTURE700", 1400);

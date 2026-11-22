@@ -248,6 +248,8 @@ export function MerchantConsole() {
                 <button disabled={busy}>Reconcile original attempt</button>
               </form>}
               {refundCase.issue && <p>{label(refundCase.issue)}</p>}
+              {refundCase.status === "PENDING" && refundCase.issue &&
+                <p>The last independent readback showed Pending. The current result is unavailable. The balance remains held.</p>}
               {refundCase.issue === "REFUND_SUBMISSION_REJECTED" &&
                 <p>PayPal declined this request without creating a refund. The balance hold was released. Check the capture and permissions before requesting a new refund.</p>}
               <h3>Provider evidence</h3>
