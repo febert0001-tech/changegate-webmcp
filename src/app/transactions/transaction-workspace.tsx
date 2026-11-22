@@ -189,10 +189,26 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   const {step}=destination;
   const review=requestDecision(record), check=checks(record), reported=payout(record);
   const status=requestStatus(record), current=currentStep(record);
-  return <section className={styles.card}>
-    <div className={styles.screenHeading}><h2>{money(cents(record.terms.amount))} refund</h2><Link href="/transactions">All transactions</Link></div>
-    <p className={styles.caseReference}>{record.terms.reference} · Test data</p>
-    <p className={styles.inlineNotice}><strong>{status}</strong> · Current step: {transactionTabs.find(([tab])=>tab===current)?.[1]}</p>
+  const outcome=reported ? "Test cash payout reported" : "No payout recorded";
+  const next=status==="Needs manager decision" ? "A different supervisor must approve or reject this request."
+    : check.route==="over-balance" ? "Cashier: check the balance and start a new request for an eligible amount."
+    : review?.decision==="Rejected" ? "No payout action is available. Return to the transaction list."
+    : status==="Ready for cash payout" ? "Cashier: confirm and record the test cash payout in Execution."
+    : reported ? "Cashier: open the receipt for the recorded employee report."
+    : "Execution is blocked until a payment processor is connected.";
+  return <section className={styles.card} aria-labelledby="refund-heading">
+    <div className={styles.screenHeading}><h2 id="refund-heading">Refund · {money(cents(record.terms.amount))}</h2><Link href="/transactions">All transactions</Link></div>
+    <p className={styles.caseReference}>{record.terms.reference} · {record.sale?.location??"Sale unverified"} · Test data</p>
+    <section className={styles.transactionSummary} aria-label="Refund status and next action">
+      <p className={styles.statusHeading}><strong>{status}</strong><span>Current step · {transactionTabs.find(([tab])=>tab===current)?.[1]}</span></p>
+      <dl className={styles.moneySummary}>
+        <div><dt>Requested</dt><dd>{money(cents(record.terms.amount))}</dd></div>
+        <div><dt>Refundable at request</dt><dd>{check.balanceCents===null?"Unavailable":money(check.balanceCents)}</dd></div>
+        <div><dt>Money movement</dt><dd>{outcome}</dd></div>
+      </dl>
+      <p><strong>Next action</strong> {next}</p>
+      {step!==current && status==="Ready for cash payout" && <Link href={url(record.id,current)}>Open execution</Link>}
+    </section>
     <nav className={styles.transactionTabs} aria-label="Refund process">{transactionTabs.map(([tab,label])=>
       <Link key={tab} href={url(record.id,tab)} aria-current={tab===step?"page":undefined} prefetch={false}>{label}</Link>)}</nav>
     {noticeBlock}
@@ -229,8 +245,12 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       </>}
       {step==="approval"&&<>
         <h3>Supervisor decision</h3>
-        <p>{record.terms.reference} · {money(cents(record.terms.amount))} · {submitted(record).actor}</p>
-        <p>{record.terms.reason}</p><p>{check.explanation}</p>
+        <dl className={styles.facts}>
+          <div><dt>Employee</dt><dd>{submitted(record).actor}</dd></div>
+          <div><dt>Original sale</dt><dd>{record.sale?money(record.sale.originalCents):"Unavailable"}</dd></div>
+          <div><dt>Register</dt><dd>{record.sale?.register??"Unavailable"}</dd></div>
+        </dl>
+        <p><strong>Reason</strong> {record.terms.reason}</p><p><strong>Why it stopped</strong> {check.explanation}</p>
         {alertStatus.map(alert=><div key={alert.phase}>
           <p>{alert.phase===0?"Primary":"Backup"} alert · {alert.status}</p>
           {alert.advisory&&<p>AI advisory: {alert.advisory}</p>}
