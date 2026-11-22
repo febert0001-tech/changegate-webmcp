@@ -88,6 +88,34 @@ async function signIn(server: Pick<ReturnType<typeof app>, "request">, username:
 }
 
 describe("authenticated synthetic shift", () => {
+  it("uses the HTTPS staging session boundary and accepts only synthetic writes on Railway", async () => {
+    const demoOrigin = "https://changegate-demo.up.railway.app";
+    const host = new URL(demoOrigin).host;
+    const users = roster.map(employee => ({ ...employee, role: "cashier" as const }));
+    const store = new TeamStore(":memory:", undefined, true);
+    stores.add(store);
+    const app = createTeamWorkspace(store, users, demoOrigin, { staging: true, hostedDemo: true });
+    const request = (body: object, extra: Record<string,string> = {}) => app.handle(new Request(demoOrigin+"/api/merchant", {
+      method: "POST", body: JSON.stringify(body), headers: { Host:host, Origin:demoOrigin, "Content-Type":"application/json",
+        "X-Forwarded-Host":host, "X-Forwarded-Proto":"https", "X-Real-IP":"192.0.2.1", ...extra },
+    }));
+    const login = { action:"signIn", username:"maya", password };
+    expect((await request(login, { "X-Forwarded-Proto":"http" })).status).toBe(403);
+    expect((await request(login, { Origin:"https://unrelated.example" })).status).toBe(403);
+    expect((await request({action:"demoShift"})).status).toBe(401);
+    const signed = await request(login);
+    expect(signed.status).toBe(200);
+    const cookie = signed.headers.get("set-cookie")!;
+    expect(cookie).toMatch(/^__Host-changegate_team_session=.*; HttpOnly; SameSite=Strict; Path=\/;.*; Secure$/);
+    const session = await signed.json() as TeamSession;
+    const credentials = { Cookie:cookie.split(";")[0]!, "X-ChangeGate-Session":session.sessionVersion };
+    expect(session).toMatchObject({ syntheticOnly:true, demoShift:true, paypalConnected:false });
+    expect((await request({action:"importCsv",text:"reference,amount,currency",mapping:{reference:0,amount:1,currency:2}}, credentials)).status).toBe(404);
+    expect((await request({action:"lookupOriginalSale",reference:"sandbox-sale",source:"square"}, credentials)).status).toBe(404);
+    expect((await request({action:"createRefundRequest",submissionId:randomUUID(),terms:{reference:"TEST-SALE-CASH",amount:"50.00",currency:"USD",reason:"Test"}}, credentials)).status).toBe(404);
+    expect((await request({action:"startDemoShift",seed:"harbor-evening"}, credentials)).status).toBe(200);
+  });
+
   it("replays the same scope, decisions and holds without touching other records", async () => {
     const users = demoAccounts.map(account => {
       const salt = randomBytes(16);

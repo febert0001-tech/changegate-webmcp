@@ -116,6 +116,7 @@ export interface TeamSession {
   reviewerConfigured?: boolean;
   paypalConnected?: boolean;
   demoShift?: boolean;
+  syntheticOnly?: boolean;
   coworkers: { username: string; name: string }[];
 }
 

@@ -44,8 +44,14 @@ async function readCommand(request: Request): Promise<unknown> {
   }
 }
 
+const hostedDemoActions = new Set([
+  "signIn", "signOut", "session", "workspace", "demoShift", "startDemoShift", "nextDemoEvent", "replayDemoShift",
+  "refundAlertStatus", "listRefundRequests", "openRefundRequest", "createRefundRequest", "decideRefundRequest",
+]);
+
 export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[], origin: string,
-  { staging = false, ...providers }: { staging?: boolean; square?: SquareSandbox; paypal?: PayPalProvider } = {}) {
+  { staging = false, hostedDemo = false, ...providers }:
+  { staging?: boolean; hostedDemo?: boolean; square?: SquareSandbox; paypal?: PayPalProvider } = {}) {
   const cookieName = staging ? "__Host-changegate_team_session" : "changegate_team_session";
   const cookie = (token: string, age: number) =>
     `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${age}${staging ? "; Secure" : ""}`;
@@ -95,6 +101,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
       reviewerConfigured: roster.some(member=>member.merchantId===employee.merchantId&&canReview(member.role)),
       paypalConnected: providers.paypal?.supports(employee.merchantId) ?? false,
       ...(store.demo?.includes(employee) && { demoShift: true }),
+      ...(hostedDemo && { syntheticOnly: true }),
       coworkers: roster.filter((member) => member.merchantId === employee.merchantId)
         .map(({ username, name }) => ({ username, name })),
     };
@@ -108,6 +115,10 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
       const parsed = teamCommand.safeParse(await readCommand(request));
       if (!parsed.success) return json({ error: "INVALID_COMMAND" }, 400);
       const command = parsed.data;
+      if (hostedDemo && (!hostedDemoActions.has(command.action) ||
+          (command.action === "createRefundRequest" && !command.demoRun))) {
+        return json({ error: "DEMO_SHIFT_UNAVAILABLE" }, 404);
+      }
       if (command.action === "signIn") {
         if (staging) {
           const ip = request.headers.get("x-real-ip");

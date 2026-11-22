@@ -90,12 +90,12 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       }
     }
     void load();
-    if(!id&&session.role==="owner")void send<{thresholdCents:number}>({action:"refundPolicy"},options)
+    if(!id&&session.role==="owner"&&!session.syntheticOnly)void send<{thresholdCents:number}>({action:"refundPolicy"},options)
       .then(result=>{if(!controller.signal.aborted)setThreshold(result.thresholdCents);})
       .catch(e=>{if(!controller.signal.aborted&&!onSessionError(e))setError("Could not load the refund policy.");});
     const timer=id||manager||session.demoShift ? window.setInterval(()=>{if(document.visibilityState==="visible")void load();},5000):undefined;
     return()=>{controller.abort();if(timer!==undefined)window.clearInterval(timer);};
-  },[id,manager,onSessionError,send,session.demoShift,session.role,version]);
+  },[id,manager,onSessionError,send,session.demoShift,session.role,session.syntheticOnly,version]);
 
   async function run(work:()=>Promise<void>){
     setBusy(true);setError("");setNotice("");
@@ -119,9 +119,9 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       </Link></li>)}</ul>;
     return <section className={styles.card}>
       <div className={styles.screenHeading}><h2>Transactions</h2>
-        <button className={styles.primary} type="button" onClick={()=>{
+        {!session.syntheticOnly&&<button className={styles.primary} type="button" onClick={()=>{
           setNewForm(true);setReference("");setSource("test");setLookup(undefined);setFormId(crypto.randomUUID());setError("");
-        }}>New refund</button></div>
+        }}>New refund</button>}</div>
       {session.reviewerConfigured===false&&<p className={styles.formError}>No supervisor is configured for this store. Ask your store administrator to assign a manager or owner.</p>}
       <p className={styles.fieldHint}>Test environment · No real money moves</p>
       {noticeBlock}
@@ -213,12 +213,12 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       </section>}
       {manager&&<section className={styles.importSection} aria-labelledby="manager-queue">
         <h3 id="manager-queue">Manager queue</h3>
-        {!session.demoShift&&<PhoneAlerts api={api}/>}<p role="status">{pending.length} {pending.length===1?"request needs":"requests need"} a decision</p>
+        {!session.demoShift&&!session.syntheticOnly&&<PhoneAlerts api={api}/>}<p role="status">{pending.length} {pending.length===1?"request needs":"requests need"} a decision</p>
         {!!pending.length&&list(pending)}
         {!!overBalance.length&&<details><summary>{overBalance.length} over-balance {overBalance.length===1?"request":"requests"} blocked</summary>
           {list(overBalance.slice(0,10))}</details>}
       </section>}
-      {session.role==="owner"&&<section className={styles.importSection}>
+      {session.role==="owner"&&!session.syntheticOnly&&<section className={styles.importSection}>
         <h3>Owner activity</h3>
         {threshold!==undefined&&<form className={styles.formRow} onSubmit={event=>{
           event.preventDefault();

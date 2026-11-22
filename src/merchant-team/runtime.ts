@@ -14,22 +14,31 @@ export function teamWorkspace() {
   try {
     const env = process.env;
     const staging = env.CHANGEGATE_TEAM_MODE === "staging";
-    const demo = env.CHANGEGATE_TEAM_MODE === "demo";
+    const hostedDemo = env.CHANGEGATE_TEAM_MODE === "railway-demo";
+    const demo = hostedDemo || env.CHANGEGATE_TEAM_MODE === "demo";
     if (env.CHANGEGATE_TEAM_MODE && !staging && !demo) return undefined;
-    const origin = env.CHANGEGATE_TEAM_ORIGIN ?? (staging ? "" : "http://127.0.0.1:3190");
+    const origin = hostedDemo ? `https://${env.RAILWAY_PUBLIC_DOMAIN ?? ""}` :
+      env.CHANGEGATE_TEAM_ORIGIN ?? (staging ? "" : "http://127.0.0.1:3190");
     let db: string;
     let config: unknown;
-    if (staging) {
+    if (staging || hostedDemo) {
       const url = new URL(origin);
-      if (url.protocol !== "https:" || url.origin !== origin || url.port || !url.hostname.endsWith(".up.railway.app") ||
-          env.RAILWAY_VOLUME_MOUNT_PATH !== "/data" ||
-          !readFileSync("/proc/self/mountinfo", "utf8").split("\n").some((line) => line.split(" ")[4] === "/data")) {
+      if (url.protocol !== "https:" || url.origin !== origin || url.port || !url.hostname.endsWith(".up.railway.app")) {
         return undefined;
       }
-      db = join("/data", "merchant.sqlite");
-      const current = rosterSchema.parse(JSON.parse(env.CHANGEGATE_TEAM_ROSTER_JSON ?? "") as unknown);
-      const acceptance = env.CHANGEGATE_TEAM_ACCEPTANCE_ROSTER_JSON;
-      config = acceptance ? [...current, ...rosterSchema.parse(JSON.parse(acceptance) as unknown)] : current;
+      if (hostedDemo) {
+        const path = env.CHANGEGATE_TEAM_DB ?? "";
+        if (env.RAILWAY_VOLUME_MOUNT_PATH || !/^\/tmp\/changegate-demo-[A-Za-z0-9]+\/synthetic-demo\.sqlite$/.test(path)) return undefined;
+        db = path;
+        config = JSON.parse(env.CHANGEGATE_DEMO_ROSTER_JSON ?? "") as unknown;
+      } else {
+        if (env.RAILWAY_VOLUME_MOUNT_PATH !== "/data" ||
+            !readFileSync("/proc/self/mountinfo", "utf8").split("\n").some((line) => line.split(" ")[4] === "/data")) return undefined;
+        db = join("/data", "merchant.sqlite");
+        const current = rosterSchema.parse(JSON.parse(env.CHANGEGATE_TEAM_ROSTER_JSON ?? "") as unknown);
+        const acceptance = env.CHANGEGATE_TEAM_ACCEPTANCE_ROSTER_JSON;
+        config = acceptance ? [...current, ...rosterSchema.parse(JSON.parse(acceptance) as unknown)] : current;
+      }
     } else {
       const localDb = env.CHANGEGATE_TEAM_DB;
       const users = env.CHANGEGATE_TEAM_USERS_FILE;
@@ -48,7 +57,9 @@ export function teamWorkspace() {
     try {
       const square = demo ? undefined : configuredSquareSandbox();
       const paypal = demo ? undefined : configuredPayPalSandbox();
-      return workspace = createTeamWorkspace(store, roster, origin, { staging, ...(square && { square }), ...(paypal && { paypal }) });
+      return workspace = createTeamWorkspace(store, roster, origin, {
+        staging: staging || hostedDemo, hostedDemo, ...(square && { square }), ...(paypal && { paypal }),
+      });
     } catch (error) {
       store.close();
       throw error;

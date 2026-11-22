@@ -1,6 +1,7 @@
 param(
   [Parameter(Mandatory)][string]$StateDirectory,
   [ValidateRange(1024,65535)][int]$Port = 3193,
+  [switch]$PrepareOnly,
   [ValidateSet('maya','qa-cashier-b','jordan','pay-backup','alex')][string]$CopyPasswordFor
 )
 
@@ -18,7 +19,7 @@ if ($CopyPasswordFor) {
   return
 }
 
-if (-not (Test-Path -LiteralPath (Join-Path $demoRoot '.next/BUILD_ID'))) {
+if (-not $PrepareOnly -and -not (Test-Path -LiteralPath (Join-Path $demoRoot '.next/BUILD_ID'))) {
   throw 'Build the application with npm run build before starting the private demo.'
 }
 if (-not (Test-Path -LiteralPath $demoState)) {
@@ -54,6 +55,7 @@ process.stdout.write(JSON.stringify(passwords));
 if (-not ((Test-Path -LiteralPath $demoRoster -PathType Leaf) -and (Test-Path -LiteralPath $demoPasswords -PathType Leaf))) {
   throw 'Choose a new private state directory or pass the directory previously initialized by this launcher.'
 }
+if ($PrepareOnly) { return }
 
 $env:CHANGEGATE_TEAM_MODE = 'demo'
 $env:CHANGEGATE_TEAM_ORIGIN = "http://127.0.0.1:$Port"
