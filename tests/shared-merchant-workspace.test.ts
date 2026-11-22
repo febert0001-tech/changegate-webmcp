@@ -477,4 +477,30 @@ describe("shared merchant workspace", () => {
     const reopened = app(server.path);
     expect(await (await signIn(reopened, "maya")).send<ReviewSummary>(report)).toEqual(unresolved);
   });
+
+  it("keeps the reporting period and reviewed column interpretation in comparison identity", async () => {
+    const reviewer = await signIn(app(), "maya");
+    const mapping = { reference: 0, amount: 1, currency: 3 };
+    const file = (name: string, amounts: string) => ({
+      name, text: "reference,amount,adjusted,currency\nREF-1," + amounts + ",USD", mapping,
+    });
+    const input = {
+      merchant: file("merchant.csv", "42.00,24.00"), processor: file("processor.csv", "24.00,24.00"),
+      period: { start: "2026-11-01", end: "2026-11-07" },
+    };
+    const save = (inputData = input) => reviewer.send<RefundImportResult>({ action: "saveComparison", input: inputData });
+    const original = await save();
+    expect(original.batch.findings[0]?.differenceCents).toBe(1800);
+    const repeated = await save({ ...input, merchant: { ...input.merchant, name: "renamed.csv" } });
+    expect(repeated).toMatchObject({ existing: true, batch: { summary: { id: original.batch.summary.id } } });
+    const period = { start: "2026-11-08", end: "2026-11-14" };
+    const nextWeek = await save({ ...input, period });
+    expect(nextWeek.existing).toBe(false);
+    expect(nextWeek.batch.comparison?.period).toEqual(period);
+    const corrected = await save({ ...input, merchant: { ...input.merchant, mapping: { ...mapping, amount: 2 } } });
+    expect(corrected.existing).toBe(false);
+    expect(corrected.batch.findings).toEqual([]);
+    expect(corrected.batch.comparison?.exact).toHaveLength(1);
+    expect((await save()).batch.summary.id).toBe(original.batch.summary.id);
+  });
 });

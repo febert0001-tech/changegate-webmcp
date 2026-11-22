@@ -16,6 +16,12 @@ const projectFinding = (row: FindingRow): SavedFinding => ({
   ...JSON.parse(row.evidence) as RefundFinding, id: row.id, caseId: row.caseId,
 });
 
+function comparisonSignature(comparison: ComparisonEvidence, findings: RefundFinding[], rejections: Rejection[]) {
+  const evidence = findings.map(({ kind, rows, explanation, differenceCents }) =>
+    [kind, rows, explanation, differenceCents ?? null]);
+  return JSON.stringify([comparison.period.start, comparison.period.end, comparison.exact, evidence, rejections]);
+}
+
 type Change = Extract<TeamCommand, { action: "record" | "assign" | "note" | "resolve" }>;
 interface SessionRow { username: string; merchantId: string; passwordVersion: string }
 
@@ -274,13 +280,27 @@ export class TeamStore {
 
   importRefunds(employee: Employee, token: string, raw: string,
     review: () => { accepted: unknown[]; findings: RefundFinding[]; rejections: Rejection[]; comparison?: ComparisonEvidence }): RefundImportResult {
-    const fingerprint = createHash("sha256").update(raw).digest("hex");
+    const legacyFingerprint = createHash("sha256").update(raw).digest("hex");
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
-      const saved = this.db.prepare("SELECT id FROM team_refund_imports WHERE merchant_id=? AND fingerprint=?")
-        .get(employee.merchantId, fingerprint)?.id;
-      if (typeof saved === "string") return { batch: this.openImport(employee, saved), existing: true };
+      const lookup = this.db.prepare("SELECT id FROM team_refund_imports WHERE merchant_id=? AND fingerprint=?");
+      const oldId = lookup.get(employee.merchantId, legacyFingerprint)?.id;
+      const legacy = typeof oldId === "string" ? this.openImport(employee, oldId) : undefined;
+      if (legacy && !legacy.comparison) return { batch: legacy, existing: true };
       const { accepted, findings, rejections, comparison } = review();
+      let fingerprint = legacyFingerprint;
+      if (comparison) {
+        // File names are provenance, not comparison identity. Bind the declared period and
+        // saved interpretation so corrected mappings or a different week cannot reuse stale evidence.
+        const signature = comparisonSignature(comparison, findings, rejections);
+        if (legacy?.comparison) {
+          const previous = comparisonSignature(legacy.comparison, legacy.findings, legacy.rejections);
+          if (signature === previous) return { batch: legacy, existing: true };
+        }
+        fingerprint = createHash("sha256").update("refund-comparison-v2\0").update(legacyFingerprint).update(signature).digest("hex");
+        const saved = lookup.get(employee.merchantId, fingerprint)?.id;
+        if (typeof saved === "string") return { batch: this.openImport(employee, saved), existing: true };
+      }
       if (!accepted.length) throw new TeamError("CSV_NO_ACCEPTED_ROWS", 422);
       const id = randomUUID();
       this.db.prepare(`INSERT INTO team_refund_imports VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
