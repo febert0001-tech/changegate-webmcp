@@ -54,15 +54,15 @@ export async function inspectFile(request: Request, file: File): Promise<FileSel
   return { text, name: file.name, ...info, selection: detectMapping(info.headers) };
 }
 
-export function RefundComparisonForm({ initialMerchant, request, run, busy, onSaved, renderPreview }: {
+export function RefundComparisonForm({ initialMerchant, request, run, busy, onSaved, onCancel, renderPreview }: {
   initialMerchant: FileSelection | null; request: Request; run: (work: () => Promise<void>) => Promise<void>; busy: boolean;
-  onSaved: (result: RefundImportResult) => void; renderPreview: (preview: ComparisonPreview) => React.ReactNode;
+  onSaved: (result: RefundImportResult) => void; onCancel: () => void; renderPreview: (preview: ComparisonPreview) => React.ReactNode;
 }) {
   const [merchant, setMerchant] = useState(initialMerchant);
   const [processor, setProcessor] = useState<FileSelection | null>(null);
   const [preview, setPreview] = useState<{ input: ComparisonInput; result: ComparisonPreview } | null>(null);
   const [dateError, setDateError] = useState("");
-  return <form className={styles.importSection} aria-label="Compare processor export" onSubmit={event => {
+  return <form className={styles.comparisonForm} aria-label="Compare processor export" onSubmit={event => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const start = String(data.get("periodStart") ?? "");
@@ -82,13 +82,12 @@ export function RefundComparisonForm({ initialMerchant, request, run, busy, onSa
     }
     void run(async () => setPreview({ input: input.data, result: await request({ action: "previewComparison", input: input.data }) }));
   }}>
-    <h3>Compare processor export</h3>
     <p>Choose two redacted USD exports from the same reporting period.</p>
-    {([["Merchant", merchant, setMerchant], ["Processor", processor, setProcessor]] as const).map(([side, file, setFile]) => {
+    {([["Processor", processor, setProcessor], ["Merchant", merchant, setMerchant]] as const).map(([side, file, setFile]) => {
       const prefix = side.toLowerCase();
       return <fieldset className={styles.comparisonFile} key={side}>
         <legend>{side === "Merchant" ? "Merchant refund register" : "Processor export"}</legend>
-        <label>{side} CSV<input name={prefix + "Csv"} type="file" accept=".csv,text/csv" disabled={busy} onChange={event => {
+        <label>{file ? "Replace file" : side + " CSV"}<input name={prefix + "Csv"} type="file" accept=".csv,text/csv" disabled={busy} onChange={event => {
           const next = event.currentTarget.files?.[0];
           event.currentTarget.value = "";
           if (!next) return;
@@ -97,7 +96,7 @@ export function RefundComparisonForm({ initialMerchant, request, run, busy, onSa
           void run(async () => setFile(await inspectFile(request, next)));
         }} /></label>
         {file && <>
-          <p className={styles.muted}>{file.name} · {file.rowCount} source rows</p>
+          <p className={styles.fieldHint}>{file.name} · {file.rowCount} source rows</p>
           <MappingFields headers={file.headers} selection={file.selection} prefix={prefix + "-"} busy={busy}
             update={(field, value) => {
               setPreview(null);
@@ -110,14 +109,16 @@ export function RefundComparisonForm({ initialMerchant, request, run, busy, onSa
       <label>Period start<input type="date" name="periodStart" required onInput={() => { setPreview(null); setDateError(""); }} /></label>
       <label>Period end<input type="date" name="periodEnd" required onInput={() => { setPreview(null); setDateError(""); }} /></label>
     </div>
-    {dateError && <p role="alert">{dateError}</p>}
-    {!preview ? <button className={styles.primary} disabled={busy || !refundMapping.safeParse(merchant?.selection).success ||
-      !refundMapping.safeParse(processor?.selection).success}>Preview comparison</button> : <>
-      {renderPreview(preview.result)}
-      <button type="button" className={styles.primary} disabled={busy || !preview.result.acceptedCount}
-        onClick={() => void run(async () => onSaved(await request({ action: "saveComparison", input: preview.input })))}>
-        Save comparison
-      </button>
-    </>}
+    {dateError && <p className={styles.formError} role="alert">{dateError}</p>}
+    {preview && renderPreview(preview.result)}
+    <div className={styles.actions}>
+      {!preview ? <button className={styles.primary} disabled={busy || !refundMapping.safeParse(merchant?.selection).success ||
+        !refundMapping.safeParse(processor?.selection).success}>Preview comparison</button> :
+        <button type="button" className={styles.primary} disabled={busy || !preview.result.acceptedCount}
+          onClick={() => void run(async () => onSaved(await request({ action: "saveComparison", input: preview.input })))}>
+          Save comparison
+        </button>}
+      <button type="button" disabled={busy} onClick={onCancel}>Back to import findings</button>
+    </div>
   </form>;
 }

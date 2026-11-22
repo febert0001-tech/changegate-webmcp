@@ -5,7 +5,9 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { activeStatuses, type TeamCaseDetail, type TeamCommand, type TeamSession, type TeamWorkspaceView } from "../../merchant-team/contracts";
 import styles from "./merchant.module.css";
-import { EvidenceRows, RefundImportPanel } from "./refund-import-panel";
+import { RefundImportPanel } from "./refund-import-panel";
+import { EvidenceRows, findingTitle } from "./refund-evidence";
+import { formatUsd } from "../../merchant-team/refund-comparison";
 
 const errors: Record<string, string> = {
   SIGN_IN_FAILED: "Check your username and password.",
@@ -73,11 +75,12 @@ export function MerchantConsole({ caseId, imports, importId }: { caseId?: string
   const [workspace, setWorkspace] = useState<TeamWorkspaceView | null>(null);
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  const [assignedOnly, setAssignedOnly] = useState(true);
+  const [filter, setFilter] = useState<"Needs attention" | "Assigned to me" | "Resolved">("Needs attention");
   const session = workspace?.session;
   const cases = workspace?.cases ?? [];
   const detail = workspace?.detail;
   const item = detail?.case;
+  const canResolve = Boolean(item?.finding && item.nextAction);
 
   useEffect(() => {
     if (typeof BroadcastChannel === "undefined") return;
@@ -143,16 +146,16 @@ export function MerchantConsole({ caseId, imports, importId }: { caseId?: string
     });
   }
 
-  const visible = session && assignedOnly ? cases.filter((row) => row.assignee === session.username) : cases;
+  const visible = cases.filter(row => filter === "Resolved" ? row.status === "Resolved" :
+    row.status !== "Resolved" && (filter !== "Assigned to me" || row.assignee === session?.username));
   return <main className={styles.shell}>
     <header className={styles.header}>
       <div>
         <p className={styles.brand}>ChangeGate</p>
-        <h1>Merchant workspace</h1>
-        {session && <p className={styles.merchant}>{session.merchantName}</p>}
+        <h1>{session?.merchantName ?? "Merchant workspace"}</h1>
       </div>
       {session && <div className={styles.profile}>
-        <Link href={imports ? "/merchant" : "/merchant/imports"} prefetch={false}>{imports ? "Case workspace" : "Import refunds"}</Link>
+        {(imports || caseId) && <Link href="/merchant" prefetch={false}>Work queue</Link>}
         <span>{session.name}</span>
         <button type="button" disabled={busy} onClick={() => void run(async () => {
           await send<null>({ action: "signOut" }, { sessionVersion: session.sessionVersion });
@@ -163,7 +166,7 @@ export function MerchantConsole({ caseId, imports, importId }: { caseId?: string
         })}>Sign out</button>
       </div>}
     </header>
-    <p className={styles.notice} role="status">{notice || (busy ? "Working…" : "")}</p>
+    {(notice || busy) && <p className={styles.inlineNotice} role="status">{notice || "Working…"}</p>}
     {!ready || (busy && !session) ? <p>Loading workspace…</p> : !session ? (
       <form className={styles.signIn} method="post" onSubmit={(event) => {
         const data = formValues(event);
@@ -184,26 +187,31 @@ export function MerchantConsole({ caseId, imports, importId }: { caseId?: string
       <RefundImportPanel key={versionKey(session.sessionVersion, importId)} send={send} session={session}
         {...(importId && { importId })} onSessionError={clearOnSessionError} />
     ) : (
-      <div className={styles.grid}>
-        <aside className={styles.card} aria-label="Case queue">
-          <div className={styles.queueHeader}>
-            <h2>{assignedOnly ? "Assigned to me" : "All cases"}</h2>
-            <button type="button" disabled={busy} onClick={() => void run(async () => {
-              setWorkspace(null);
-              setWorkspace(await send<TeamWorkspaceView>({ action: "workspace", id: caseId }));
-            })}>Refresh</button>
-          </div>
-          <div className={styles.filters} aria-label="Queue filter">
-            <button type="button" aria-pressed={assignedOnly} onClick={() => setAssignedOnly(true)}>Assigned to me</button>
-            <button type="button" aria-pressed={!assignedOnly} onClick={() => setAssignedOnly(false)}>All cases</button>
-          </div>
-          {visible.length ? <ul className={styles.queue}>{visible.map((row) =>
-            <li key={row.id}>
-              <Link href={`/merchant/${row.id}`} prefetch={false} aria-current={row.id === caseId ? "page" : undefined}>
-                <strong>{row.reference}</strong><span>{row.assigneeName} · {row.status}</span>
-              </Link>
-            </li>)}</ul> : <p className={styles.muted}>{assignedOnly ? "No cases are assigned to you." : "No cases yet."}</p>}
-          <form className={styles.newCase} onSubmit={(event) => {
+      !caseId ? <section className={styles.card} aria-labelledby="queue-heading">
+        <div className={styles.screenHeading}>
+          <h2 id="queue-heading">Work queue</h2>
+          <Link className={styles.primary} href="/merchant/imports" prefetch={false}>Import refunds</Link>
+        </div>
+        <div className={styles.filters} aria-label="Queue filter">
+          {(["Needs attention", "Assigned to me", "Resolved"] as const).map(label =>
+            <button type="button" key={label} aria-pressed={filter === label} onClick={() => setFilter(label)}>{label}</button>)}
+        </div>
+        {visible.length ? <ul className={styles.queue} aria-label="Cases">{visible.map(row =>
+          <li key={row.id}>
+            <Link className={styles.queueCase} href={`/merchant/${row.id}`} prefetch={false}>
+              <div>
+                <strong>{row.differenceCents === undefined ? row.finding || row.reference :
+                  "Refund amounts differ by " + formatUsd(row.differenceCents)}</strong>
+                {(row.finding || row.differenceCents !== undefined) && <span>{row.reference}</span>}
+              </div>
+              <div><span>Assignee</span>{row.assigneeName}</div>
+              <div><span>Status</span>{row.status}</div>
+            </Link>
+          </li>)}</ul> : <p className={styles.emptyState}>{filter === "Assigned to me" ? "No open cases are assigned to you." :
+          filter === "Resolved" ? "No resolved cases yet." : "No cases need attention. Import refunds to look for findings."}</p>}
+        <details className={styles.newCase}>
+          <summary>Open a case manually</summary>
+          <form onSubmit={(event) => {
             const data = formValues(event);
             void run(async () => {
               const saved = await send<TeamCaseDetail>({ action: "create", reference: field(data, "reference") },
@@ -211,31 +219,35 @@ export function MerchantConsole({ caseId, imports, importId }: { caseId?: string
               router.push(`/merchant/${saved.case.id}`);
             });
           }}>
-            <h3>Open a case</h3>
             <label>Refund or ticket reference<input name="reference" maxLength={160} required /></label>
-            <button className={styles.primary} disabled={busy}>Open case</button>
+            <button disabled={busy}>Open case</button>
           </form>
-        </aside>
-        <section className={styles.card} aria-labelledby="case-heading">
-          {!item || !detail ? <>
-            <h2 id="case-heading">{caseId ? "Case unavailable" : "Refund case"}</h2>
-            <p className={styles.muted}>{caseId ? "This case could not be opened in your workspace." : "Open a case or select one from the queue."}</p>
-          </> : <>
-            <div className={styles.caseHeader}>
-              <h2 id="case-heading">{item.reference}</h2>
-              <span className={styles.caseStatus} data-resolved={item.status === "Resolved"}>{item.status}</span>
-            </div>
-            <dl className={styles.facts}>
-              <div><dt>Assigned to</dt><dd>{item.assigneeName}</dd></div>
-              <div><dt>Last update</dt><dd><time dateTime={item.updatedAt}>{timeText(item.updatedAt)}</time></dd></div>
-            </dl>
-            {item.status === "Resolved" ? <dl className={styles.finding}>
-              <dt>Finding</dt><dd>{item.finding}</dd>
-              <dt>Next action</dt><dd>{item.nextAction}</dd>
-            </dl> : (
-              <fieldset key={item.id} className={styles.editors} disabled={busy}>
-                <legend className={styles.visuallyHidden}>Case updates</legend>
-                <form key={JSON.stringify([item.finding, item.nextAction, item.status])} onSubmit={(event) => {
+        </details>
+      </section> : <section className={styles.card} aria-labelledby="case-heading">
+        {!item || !detail ? <>
+          <h2 id="case-heading">Case unavailable</h2>
+          <p className={styles.fieldHint}>This case could not be opened in your workspace.</p>
+        </> : <>
+          <p className={styles.caseReference}>{item.reference}</p>
+          <h2 id="case-heading">{detail.evidence ? findingTitle(detail.evidence.finding) : "Refund case"}</h2>
+          {item.finding && <p className={styles.findingSummary}>{item.finding}</p>}
+          <dl className={styles.facts}>
+            <div><dt>Assignee</dt><dd>{item.assigneeName}</dd></div>
+            <div><dt>Status</dt><dd>{item.status}</dd></div>
+            <div><dt>Next action</dt><dd>{item.nextAction || "Add a next action."}</dd></div>
+          </dl>
+          {detail.evidence && <section className={styles.importSection} aria-labelledby="import-evidence">
+            <h3 id="import-evidence">Source evidence</h3>
+            {item.finding !== detail.evidence.finding.explanation && <p>{detail.evidence.finding.explanation}</p>}
+            <EvidenceRows rows={detail.evidence.finding.rows} {...(detail.evidence.comparison && { files: detail.evidence.comparison.files })} />
+            <Link href={`/merchant/imports/${detail.evidence.importId}`} prefetch={false}>Open source import</Link>
+          </section>}
+          {item.status !== "Resolved" && (
+            <fieldset key={item.id} className={styles.editors} disabled={busy}>
+              <legend className={styles.visuallyHidden}>Case updates</legend>
+              <details className={styles.caseEdit} open={!canResolve}>
+                <summary>Edit finding or assignment</summary>
+                <form key={JSON.stringify([item.finding, item.nextAction, item.status])} onSubmit={event => {
                   const data = formValues(event);
                   change({ action: "record", id: item.id, revision: item.revision, finding: field(data, "finding"),
                     nextAction: field(data, "nextAction"), status: field(data, "status") === "Awaiting evidence" ?
@@ -245,12 +257,12 @@ export function MerchantConsole({ caseId, imports, importId }: { caseId?: string
                   <label>Next action<textarea name="nextAction" defaultValue={item.nextAction} maxLength={1200} required /></label>
                   <div className={styles.formRow}>
                     <label>Case status<select name="status" defaultValue={item.status}>
-                      {activeStatuses.map((label) => <option key={label}>{label}</option>)}
+                      {activeStatuses.map(label => <option key={label}>{label}</option>)}
                     </select></label>
-                    <button className={styles.primary}>Save finding</button>
+                    <button className={!canResolve ? styles.primary : undefined}>Save finding</button>
                   </div>
                 </form>
-                <form key={item.assignee} className={styles.formRow} onSubmit={(event) => {
+                <form key={item.assignee} className={styles.formRow} onSubmit={event => {
                   const data = formValues(event);
                   change({ action: "assign", id: item.id, revision: item.revision, assignee: field(data, "assignee") }, "Assignment saved.");
                 }}>
@@ -260,7 +272,10 @@ export function MerchantConsole({ caseId, imports, importId }: { caseId?: string
                   </select></label>
                   <button>Assign case</button>
                 </form>
-                <form onSubmit={(event) => {
+              </details>
+              <details className={styles.caseEdit}>
+                <summary>Add a note</summary>
+                <form onSubmit={event => {
                   const form = event.currentTarget;
                   const data = formValues(event);
                   change({ action: "note", id: item.id, revision: item.revision, note: field(data, "note") },
@@ -269,39 +284,31 @@ export function MerchantConsole({ caseId, imports, importId }: { caseId?: string
                   <label>Case note<textarea name="note" maxLength={1600} required /></label>
                   <button>Add note</button>
                 </form>
-                <button type="button" className={styles.resolve} disabled={!item.finding || !item.nextAction}
-                  onClick={(event) => {
-                    const controls = event.currentTarget.closest("fieldset")?.elements;
-                    const value = (name: string) => {
-                      const control = controls?.namedItem(name);
-                      return control instanceof HTMLTextAreaElement || control instanceof HTMLSelectElement ? control.value : "";
-                    };
-                    if (value("finding") !== item.finding || value("nextAction") !== item.nextAction ||
-                        value("status") !== item.status || (value("assignee") && value("assignee") !== item.assignee) || value("note").trim()) {
-                      setNotice("Save your edits or restore the saved values before resolving.");
-                      return;
-                    }
-                    change({ action: "resolve", id: item.id, revision: item.revision }, "Case resolved.");
-                  }}>Resolve case</button>
-              </fieldset>
-            )}
-            {detail.evidence && <section className={styles.importSection} aria-labelledby="import-evidence">
-              <h3 id="import-evidence">Imported refund evidence</h3>
-              <p><strong>{detail.evidence.finding.kind}</strong></p>
-              <p>{detail.evidence.finding.explanation}</p>
-              <EvidenceRows rows={detail.evidence.finding.rows} {...(detail.evidence.comparison && { files: detail.evidence.comparison.files })} />
-              <Link href={`/merchant/imports/${detail.evidence.importId}`} prefetch={false}>Open source import</Link>
-            </section>}
-            <section className={styles.history} aria-labelledby="history-heading">
-              <h3 id="history-heading">Case history</h3>
-              <ol>{detail.history.map((event) => <li key={event.sequence}>
-                <div><strong>{event.kind}</strong><span>{event.actor} · <time dateTime={event.occurredAt}>{timeText(event.occurredAt)}</time></span></div>
-                <p>{event.detail}</p>
-              </li>)}</ol>
-            </section>
+              </details>
+              {canResolve && <button type="button" className={styles.primary} onClick={event => {
+                const controls = event.currentTarget.closest("fieldset")?.elements;
+                const value = (name: string) => {
+                  const control = controls?.namedItem(name);
+                  return control instanceof HTMLTextAreaElement || control instanceof HTMLSelectElement ? control.value : "";
+                };
+                if (value("finding") !== item.finding || value("nextAction") !== item.nextAction ||
+                    value("status") !== item.status || (value("assignee") && value("assignee") !== item.assignee) || value("note").trim()) {
+                  setNotice("Save your edits or restore the saved values before resolving.");
+                  return;
+                }
+                change({ action: "resolve", id: item.id, revision: item.revision }, "Case resolved.");
+              }}>Resolve case</button>}
+            </fieldset>
+          )}
+          <section className={styles.history} aria-labelledby="history-heading">
+            <h3 id="history-heading">Case history</h3>
+            <ol>{detail.history.map(event => <li key={event.sequence}>
+              <div><strong>{event.kind}</strong><span>{event.actor} · <time dateTime={event.occurredAt}>{timeText(event.occurredAt)}</time></span></div>
+              <p>{event.detail}</p>
+            </li>)}</ol>
+          </section>
           </>}
         </section>
-      </div>
     )}
   </main>;
 }
