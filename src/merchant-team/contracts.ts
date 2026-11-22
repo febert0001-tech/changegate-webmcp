@@ -2,6 +2,7 @@ import { z } from "zod";
 import { csvText, refundMapping, type CaseEvidence } from "./refund-csv";
 import { dispositionOptions } from "./review-summary";
 import { comparisonInput } from "./refund-comparison";
+import { refundTerms, type MerchantRole } from "./refund-requests";
 export { TeamError } from "./error";
 
 const text = (max: number) => z.string().trim().min(1).max(max);
@@ -16,6 +17,7 @@ export const rosterSchema = z.array(z.strictObject({
   name: text(120),
   merchantId: slug,
   merchantName: text(120),
+  role: z.enum(["cashier","manager","owner"]).optional(),
   salt: z.string().regex(/^[0-9a-f]{32}$/),
   passwordHash: z.string().regex(/^[0-9a-f]{64}$/),
 })).min(1).max(500).superRefine((roster, ctx) => {
@@ -54,6 +56,14 @@ export const teamCommand = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("recordDisposition"), id, findingId: id,
     expectedRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER - 1),
     disposition: z.enum(dispositionOptions), note: text(1600) }),
+  z.strictObject({ action: z.literal("lookupOriginalSale"), reference: text(160) }),
+  z.strictObject({ action: z.literal("refundPolicy") }),
+  z.strictObject({ action: z.literal("setRefundPolicy"), thresholdCents: z.number().int().min(0).max(999999999999) }),
+  z.strictObject({ action: z.literal("reportCashPayout"), id }),
+  z.strictObject({ action: z.literal("listRefundRequests") }),
+  z.strictObject({ action: z.literal("openRefundRequest"), id }),
+  z.strictObject({ action: z.literal("createRefundRequest"), submissionId: id, terms: refundTerms }),
+  z.strictObject({ action: z.literal("decideRefundRequest"), id, decision: z.enum(["Approved","Rejected"]), password: z.string().min(1).max(160) }),
   z.strictObject({ action: z.literal("listImports") }),
   z.strictObject({ action: z.literal("openImport"), id }),
   z.strictObject({ action: z.literal("assignFinding"), id, assignee: slug }),
@@ -91,6 +101,7 @@ export interface TeamSession {
   username: string;
   name: string;
   merchantName: string;
+  role?: MerchantRole;
   coworkers: { username: string; name: string }[];
 }
 

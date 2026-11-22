@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { activeStatuses, type TeamCaseDetail, type TeamCommand, type TeamSession, type TeamWorkspaceView } from "../../merchant-team/contracts";
 import styles from "./merchant.module.css";
+import { TransactionWorkspace } from "../transactions/transaction-workspace";
+import type { TransactionStep } from "../../merchant-team/refund-requests";
 import { ReviewSummaryPanel } from "./review-summary-panel";
 import { RefundImportPanel } from "./refund-import-panel";
 import { EvidenceRows, findingTitle } from "./refund-evidence";
@@ -24,6 +26,13 @@ const errors: Record<string, string> = {
   INVALID_COMMAND: "Check the required fields and try again.",
   IMPORT_NOT_FOUND: "This import is unavailable in your workspace.",
   DISPOSITION_CHANGED: "A coworker updated this disposition. Reload the summary before saving again.",
+  TRANSACTION_CONFIRMATION_FAILED: "Confirm the decision with your supervisor password.",
+  TRANSACTION_ROLE_REQUIRED: "This action requires a manager or owner.",
+  TRANSACTION_SELF_REVIEW: "Another manager must review this employee’s request.",
+  TRANSACTION_ACTION_UNAVAILABLE: "This transaction cannot take that action.",
+  TRANSACTION_NOT_FOUND: "This transaction is unavailable in your workspace.",
+  TRANSACTION_SUBMISSION_CHANGED: "This form was already submitted. Open the original transaction.",
+  TRANSACTION_DECIDED: "A decision already exists. Reload the transaction.",
   FINDING_NOT_FOUND: "This finding is unavailable in your workspace.",
   CSV_TOO_LARGE: "Choose a file no larger than 96 KiB.",
   CSV_ENCODING: "Save the CSV as UTF-8 and try again.",
@@ -70,7 +79,10 @@ function notifySessionChange() {
   channel.close();
 }
 
-export function MerchantConsole({ caseId, imports, importId, reviewSummary }: { caseId?: string; imports?: boolean; importId?: string; reviewSummary?: boolean }) {
+export function MerchantConsole({ caseId, imports, importId, reviewSummary, transaction }: {
+  caseId?: string; imports?: boolean; importId?: string; reviewSummary?: boolean;
+  transaction?: { id: string; step: TransactionStep } | "list";
+}) {
   const router = useRouter();
   const [ready, setReady] = useState(false);
   const [recoverSession, setRecoverSession] = useState(false);
@@ -157,13 +169,15 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary }: { 
         <h1>{session?.merchantName ?? "Merchant workspace"}</h1>
       </div>
       {session && <div className={styles.profile}>
+        <Link href="/transactions" prefetch={false}>Transactions</Link>
+        {transaction && <Link href="/merchant" prefetch={false}>Reconciliation</Link>}
         {(imports || caseId) && <Link href="/merchant" prefetch={false}>Work queue</Link>}
         <span>{session.name}</span>
         <button type="button" disabled={busy} onClick={() => void run(async () => {
           await send<null>({ action: "signOut" }, { sessionVersion: session.sessionVersion });
           setWorkspace(null);
           notifySessionChange();
-          router.replace("/merchant");
+          router.replace(transaction ? "/transactions" : "/merchant");
           router.refresh();
         })}>Sign out</button>
       </div>}
@@ -185,6 +199,9 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary }: { 
         <label>Password<input name="password" type="password" autoComplete="current-password" maxLength={160} required /></label>
         <button className={styles.primary} disabled={busy}>{recoverSession ? "Recover sign-in" : "Sign in"}</button>
       </form>
+    ) : transaction ? (
+      <TransactionWorkspace key={versionKey(session.sessionVersion, transaction === "list" ? undefined : transaction.id)}
+        destination={transaction} session={session} send={send} onSessionError={clearOnSessionError} />
     ) : reviewSummary && importId ? (
       <ReviewSummaryPanel key={versionKey(session.sessionVersion, importId)} send={send} session={session}
         importId={importId} onSessionError={clearOnSessionError} />

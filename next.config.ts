@@ -4,9 +4,6 @@ const stagingBuild = process.env.CHANGEGATE_STAGING_BUILD === "1";
 
 const nextConfig: NextConfig = stagingBuild ? {
   output: "standalone",
-  async redirects() {
-    return [{ source: "/", destination: "/merchant", permanent: false }];
-  },
   async headers() {
     return [{
       source: "/:path*",

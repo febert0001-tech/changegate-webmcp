@@ -127,8 +127,7 @@ try {
   docker(["volume", "create", volume]);
   await start(first);
   const entry = await request("/");
-  assert.equal(entry.status, 307);
-  assert.equal(entry.headers.location, "/merchant");
+  assert.equal(entry.status, 200);
   const signInPage = await request("/merchant");
   assert.equal(signInPage.status, 200);
   assert.match(signInPage.headers["x-robots-tag"], /noindex/);

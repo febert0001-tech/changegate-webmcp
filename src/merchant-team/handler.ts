@@ -3,6 +3,7 @@ import { isIP } from "node:net";
 import { promisify } from "node:util";
 import { TeamError, teamCommand, type Employee, type TeamSession } from "./contracts";
 import type { TeamStore } from "./store";
+import { canReview } from "./refund-requests";
 import { csvLimit, inspectRefundCsv, reviewRefundCsv } from "./refund-csv";
 
 import { compareRefunds } from "./refund-comparison";
@@ -78,6 +79,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
     return {
       sessionVersion: version,
       username: employee.username, name: employee.name, merchantName: employee.merchantName,
+      ...(employee.role && { role: employee.role }),
       coworkers: roster.filter((member) => member.merchantId === employee.merchantId)
         .map(({ username, name }) => ({ username, name })),
     };
@@ -145,6 +147,25 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             }
             case "reviewSummary": return json(store.openReviewSummary(employee, command.id));
             case "recordDisposition": return json(store.recordDisposition(employee, token, command));
+            case "lookupOriginalSale": return json(store.refundRequests.lookup(employee,command.reference));
+            case "refundPolicy": return json(store.refundRequests.policy(employee));
+            case "setRefundPolicy": return json(store.setRefundPolicy(employee,token,command.thresholdCents));
+            case "reportCashPayout": return json(store.reportCashPayout(employee,token,command.id));
+            case "listRefundRequests": return json(store.refundRequests.list(employee));
+            case "openRefundRequest": return json(store.refundRequests.open(employee,command.id));
+            case "createRefundRequest": return json(store.createRefundRequest(employee,token,command.submissionId,command.terms));
+            case "decideRefundRequest": {
+              store.refundRequests.open(employee, command.id);
+              if (!canReview(employee.role)) throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
+              if (staging) {
+                const ip = request.headers.get("x-real-ip");
+                if (!ip || !isIP(ip)) throw new TeamError("ORIGIN_DENIED", 403);
+                if (!store.allowSignIn(digest(ip))) throw new TeamError("SIGN_IN_LIMIT", 429);
+              }
+              const actual = await hash(command.password, Buffer.from(employee.salt,"hex"), 32) as Buffer;
+              if (!timingSafeEqual(actual,Buffer.from(employee.passwordHash,"hex"))) throw new TeamError("TRANSACTION_CONFIRMATION_FAILED", 403);
+              return json(store.decideRefundRequest(employee,token,command.id,command.decision));
+            }
             case "listImports": return json(store.listImports(employee));
             case "openImport": return json(store.openImport(employee, command.id));
             case "assignFinding": {
@@ -165,6 +186,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
 
   return {
     handle,
+    openRefundRequest: (employee: Employee, id: string) => store.refundRequests.open(employee,id),
     openImport: (employee: Employee, id: string) => store.openImport(employee, id),
     employeeFor: (headers: Pick<Headers, "get">) => authenticate(headers)?.employee,
     open: (employee: Employee, id: string) => store.open(employee, id),

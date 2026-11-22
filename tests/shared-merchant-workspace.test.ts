@@ -1,8 +1,9 @@
-import { randomBytes, scryptSync } from "node:crypto";
+import { randomBytes, randomUUID, scryptSync } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { requestStatus, requestReceipt, type RefundRequest } from "../src/merchant-team/refund-requests";
 import type { Employee, TeamCase, TeamCaseDetail, TeamSession, TeamWorkspaceView } from "../src/merchant-team/contracts";
 import { createTeamWorkspace } from "../src/merchant-team/handler";
 import { reviewSummaryCsv, type ReviewSummary } from "../src/merchant-team/review-summary";
@@ -502,5 +503,53 @@ describe("shared merchant workspace", () => {
     expect(corrected.batch.findings).toEqual([]);
     expect(corrected.batch.comparison?.exact).toHaveLength(1);
     expect((await save()).batch.summary.id).toBe(original.batch.summary.id);
+  });
+
+  it("enforces cumulative limits, persisted cash reports, separate managers and merchant isolation", async () => {
+    const roles: Employee[] = roster.map(employee => ({ ...employee, role: employee.username === "jordan" ? "manager" as const : "cashier" as const }));
+    roles.push({ ...roles[0]!, username: "owner", role: "owner", name: "Store Owner" });
+    const server = app(undefined, roles);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    const owner = await signIn(server, "owner");
+    const outsider = await signIn(server, "alex");
+    expect((await cashier.request({ action: "setRefundPolicy", thresholdCents: 5000 })).status).toBe(403);
+    expect(await owner.send({ action: "setRefundPolicy", thresholdCents: 5000 })).toEqual({ thresholdCents: 5000 });
+    const command = (reference: string, amount: string) => ({ action: "createRefundRequest", submissionId: randomUUID(),
+      terms: { reference, amount, currency: "USD", reason: "Test correction" } });
+    const initial = command("TEST-SALE-PARTIAL", "18.00");
+    const first = await cashier.send<RefundRequest>(initial);
+    expect(requestStatus(first)).toBe("Ready for cash payout");
+    expect(await cashier.send(initial)).toEqual(first);
+    const cash = { action: "reportCashPayout", id: first.id };
+    const paid = await cashier.send<RefundRequest>(cash);
+    expect(requestStatus(paid)).toBe("Cash payout recorded");
+    expect(await cashier.send(cash)).toEqual(paid);
+    const second = await cashier.send<RefundRequest>(command("TEST-SALE-PARTIAL", "8.00"));
+    expect(requestStatus(second)).toBe("Needs manager decision");
+    expect(JSON.stringify(second)).toContain("bring refunds on this sale to $55.00");
+    expect((await cashier.request({ action: "reportCashPayout", id: second.id })).status).toBe(409);
+    const approve = { action: "decideRefundRequest", id: second.id, decision: "Approved", password };
+    expect((await cashier.request(approve)).status).toBe(403);
+    expect((await outsider.request(approve)).status).toBe(404);
+    expect(await outsider.send({ action: "listRefundRequests" })).toEqual([]);
+    expect((await manager.request({ ...approve, password: "incorrect" })).status).toBe(403);
+    const approved = await manager.send<RefundRequest>(approve);
+    expect(await manager.send(approve)).toEqual(approved);
+    const over = await cashier.send<RefundRequest>(command("TEST-SALE-BALANCE", "42.00"));
+    expect(requestStatus(over)).toBe("Blocked · Over refundable balance");
+    expect(JSON.stringify(over)).toContain("Only $24.00 remains refundable.");
+    const own = await manager.send<RefundRequest>(command("TEST-SALE-ELECTRONIC", "55.00"));
+    expect((await manager.request({ ...approve, id: own.id })).status).toBe(403);
+    const approvedElectronic = await owner.send<RefundRequest>({ ...approve, id: own.id });
+    expect(requestStatus(approvedElectronic)).toBe("Blocked · Processor not connected");
+    expect(requestReceipt(approvedElectronic)).toMatchObject({ execution: { status: "Not submitted", attempt: null },
+      verification: { status: "Not run", independentReadback: null } });
+    const fourth = await cashier.send<RefundRequest>(command("TEST-SALE-CASH", "2.00"));
+    expect(requestStatus(fourth)).toBe("Needs manager decision");
+    expect(JSON.stringify(fourth)).toContain("fourth or later");
+    server.stop();
+    const restored = app(server.path, roles);
+    expect(await (await signIn(restored, "maya")).send({ action: "openRefundRequest", id: second.id })).toEqual(approved);
   });
 });

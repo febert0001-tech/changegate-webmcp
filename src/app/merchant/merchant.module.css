@@ -133,3 +133,9 @@
   .reviewTotals { gap: 5px; }
   .reviewTotals > div { padding: 8px; }
 }
+.frontDoor { max-width: 660px; margin: 11vh auto 0; background: white; border: 1px solid var(--line); border-radius: 14px; padding: clamp(20px, 6vw, 58px); display: grid; gap: 18px; }
+.frontDoor h1 { font-size: clamp(2.2rem, 7vw, 4rem); letter-spacing: -.055em; line-height: 1.05; }
+.frontDoor p { max-width: 44ch; }
+.transactionTabs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+.transactionTabs a { padding: 9px 12px; border: 1px solid var(--line); border-radius: 7px; text-decoration: none; }
+.transactionTabs a[aria-current="page"] { color: white; background: var(--teal); border-color: var(--teal); font-weight: 650; }
