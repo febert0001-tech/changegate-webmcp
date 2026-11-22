@@ -89,7 +89,7 @@ describe("Square Sandbox refunds", () => {
     const settings = { merchant: config.merchantId, location: config.locationId, status: "COMPLETED", currency: "USD",
       loseResponse: false, visible: true, readback: refund, total: 12000, waitForPost: Promise.resolve(),
       createdAt: new Date().toISOString(), refundIds: [] as string[], priorRefundStatus: "FAILED",
-      failMerchantRead: 0, denyRefund: false };
+      failMerchantRead: 0, denyRefund: false, rejectionCode: "INSUFFICIENT_PERMISSIONS_FOR_REFUND" };
     let merchantReads = 0;
     const transport: typeof fetch = async (input, init) => {
       const url = new URL(String(input));
@@ -107,7 +107,7 @@ describe("Square Sandbox refunds", () => {
       if (url.pathname === "/v2/refunds" && typeof init?.body === "string") {
         const body = JSON.parse(init.body) as { idempotency_key: string };
         posts.push(body);
-        if (settings.denyRefund) return Response.json({ errors: [{ code: "INSUFFICIENT_PERMISSIONS_FOR_REFUND" }] }, { status: 400 });
+        if (settings.denyRefund) return Response.json({ errors: [{ code: settings.rejectionCode }] }, { status: 400 });
         await settings.waitForPost;
         ledger.set(body.idempotency_key, refund);
         if (settings.loseResponse) throw new Error("lost provider response");
@@ -171,7 +171,12 @@ describe("Square Sandbox refunds", () => {
       .toMatchObject({ balanceCents: 7000, reservedCents: 0 });
   });
 
-  it.each([{ denyRefund: false, failMerchantRead: 3, posts: 0 }, { denyRefund: true, failMerchantRead: 0, posts: 1 }])(
+  it.each([
+    { denyRefund: false, failMerchantRead: 3, posts: 0 },
+    { denyRefund: true, failMerchantRead: 0, posts: 1 },
+    ...["REFUND_AMOUNT_INVALID", "PAYMENT_NOT_REFUNDABLE", "PAYMENT_NOT_REFUNDABLE_DUE_TO_DISPUTE",
+      "REFUND_ERROR_PAYMENT_NEEDS_COMPLETION"].map(rejectionCode => ({ denyRefund: true, failMerchantRead: 0, posts: 1, rejectionCode })),
+  ])(
     "stops a definite first Square failure and releases the reservation ($posts POSTs)", async (failure) => {
       const mock = provider();
       Object.assign(mock.settings, failure);
@@ -452,7 +457,8 @@ describe("PayPal Sandbox refunds with simulated transport", () => {
     const posts: { key: string; invoice: string }[] = [];
     const priorRefunds: { id: string; status: string; amount: string }[] = [];
     const settings = { payee: merchantId, lost: true, visible: true, denied: false, amount: "50.00", invoice: "",
-      expectedAmount: "50.00", captureAmount: "120.00", providerStatus: "COMPLETED", beforeRead: async () => {}, unreadableRefund: "" };
+      expectedAmount: "50.00", captureAmount: "120.00", providerStatus: "COMPLETED", beforeRead: async () => {},
+      beforeSubmit: async () => {}, unreadableRefund: "" };
     const transport = vi.fn(async (input: string, init: RequestInit) => {
       const url = new URL(input);
       expect(url.origin).toBe("https://api-m.sandbox.paypal.com");
@@ -471,6 +477,7 @@ describe("PayPal Sandbox refunds with simulated transport", () => {
           refunds: [...priorRefunds.map(({ id }) => ({ id })), ...(posts.length && settings.visible ? [{ id: refund }] : [])] } },
       ] });
       if (url.pathname === "/v2/payments/captures/" + capture + "/refund" && init.method === "POST") {
+        await settings.beforeSubmit();
         if (settings.denied) return Response.json({ name: "UNPROCESSABLE_ENTITY",
           details: [{ issue: "REFUND_AMOUNT_EXCEEDED" }] }, { status: 422 });
         const key = new Headers(init.headers).get("PayPal-Request-Id") ?? "";
@@ -725,6 +732,66 @@ describe("PayPal Sandbox refunds with simulated transport", () => {
     expect(await cashier.send(source)).toMatchObject({ balanceCents: 2001, reservedCents: 5000 });
     mock.settings.amount = "50.00";
     expect(await cashier.send(source)).toMatchObject({ balanceCents: 7000, reservedCents: 0 });
+    expect(mock.refundSubmissions()).toHaveLength(1);
+  });
+
+  it.each(["lowered threshold", "new external refund"])("holds routine PayPal execution after a %s", async change => {
+    const mock = simulator();
+    Object.assign(mock.settings, { lost: false, amount: "20.00", expectedAmount: "20.00" });
+    const roles: Employee[] = [...users, { ...users[0]!, username: "pay-owner", role: "owner" }];
+    const server = app(undefined, roles, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const supervisor = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit("20.00"));
+    expect(requestStatus(request)).toBe("Ready for PayPal Sandbox refund");
+
+    if (change === "lowered threshold") {
+      const owner = await signIn(server, "pay-owner");
+      await owner.send({ action: "setRefundPolicy", thresholdCents: 2000 });
+    } else {
+      mock.priorRefunds.push({ ...pendingPrior, amount: "30.00" });
+    }
+
+    const execute = { action: "executeElectronicRefund", id: request.id };
+    const held = await supervisor.send<RefundRequest>(execute);
+    expect(requestStatus(held)).toBe("Needs manager decision");
+    expect(requestReceipt(held).execution.attempt).toBeNull();
+    expect(server.store.alerts.claim(Date.now())).toMatchObject({ requestId: request.id, requester: "maya", route: "manager" });
+    expect((await cashier.request(execute)).status).toBe(409);
+    expect(mock.refundSubmissions()).toHaveLength(0);
+    const approve = { action: "decideRefundRequest", id: request.id, decision: "Approved", password };
+    expect((await cashier.request(approve)).status).toBe(403);
+    await supervisor.send(approve);
+    expect(requestReceipt(await cashier.send<RefundRequest>(execute)).verification.status).toBe("Verified");
+    expect(mock.refundSubmissions()).toHaveLength(1);
+  });
+
+  it.each([true, false])("keeps the PayPal outcome but denies a signed-out caller (definite rejection: %s)", async denied => {
+    const mock = simulator();
+    mock.settings.denied = denied;
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const supervisor = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit());
+    await supervisor.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
+    mock.settings.beforeSubmit = async () => { entered.resolve(); await resume.promise; };
+    const execute = { action: "executeElectronicRefund", id: request.id };
+    const submitting = cashier.request(execute);
+    await entered.promise;
+    try {
+      expect((await cashier.request({ action: "signOut" })).ok).toBe(true);
+    } finally {
+      resume.resolve();
+    }
+
+    expect((await submitting).status).toBe(401);
+    const saved = await supervisor.send<RefundRequest>({ action: "openRefundRequest", id: request.id });
+    expect(requestReceipt(saved).execution.status).toBe(denied ? "Not submitted" : "Outcome unconfirmed");
+    expect(await supervisor.send(source)).toMatchObject({ reservedCents: denied ? 0 : 5000 });
+    if (!denied) {
+      expect(requestReceipt(await supervisor.send<RefundRequest>(execute)).verification.status).toBe("Verified");
+    }
     expect(mock.refundSubmissions()).toHaveLength(1);
   });
 

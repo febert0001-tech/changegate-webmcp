@@ -214,12 +214,15 @@ export class TeamStore {
             const reason = error instanceof RefundNotSubmitted
               ? "ChangeGate could not authenticate before submission. No refund was sent."
               : "PayPal rejected the submission without creating a refund.";
-            return this.atomic(() => this.refundRequests.stopElectronic(employee, id, reason, true));
+            const stopped = this.atomic(() => this.refundRequests.stopElectronic(employee, id, reason, true));
+            this.requireActiveSession(employee, token);
+            return stopped;
           }
           refundId = null;
         }
         response = this.atomic(() => this.refundRequests.recordProviderResponse(employee, id,
           refundId ? { id: refundId, status: null } : null)) ?? undefined;
+        this.requireActiveSession(employee, token);
         if (!response) return this.refundRequests.open(employee, id);
       }
     }
