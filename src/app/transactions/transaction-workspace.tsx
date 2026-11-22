@@ -7,6 +7,7 @@ import type { TeamCommand, TeamSession } from "../../merchant-team/contracts";
 import { canReview, cents, checks, currentStep, executionStopped, money, payout, requestDecision, requestReceipt,
   providerAttempt, providerName, providerResponse, providerVerification, saleProvider, type ElectronicProvider,
   requestStatus, submitted, transactionTabs, type RefundRequest, type TestSale, type TransactionStep } from "../../merchant-team/refund-requests";
+import { RefundHistory } from "./refund-history";
 import { PhoneAlerts } from "./phone-alerts";
 import { useTransactionTools } from "./use-transaction-tools";
 import styles from "../merchant/merchant.module.css";
@@ -197,7 +198,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
     </section>;
   }
 
-  if(!record)return <section className={styles.card}>{noticeBlock}{loading&&<p>Loading refund…</p>}</section>;
+  if(!record||record.id!==destination.id)return <section className={styles.card}>{noticeBlock}{loading&&<p>Loading refund…</p>}</section>;
   const {step}=destination;
   const review=requestDecision(record), check=checks(record), reported=payout(record);
   const stopped=executionStopped(record);
@@ -354,7 +355,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
           const anchor=document.createElement("a");anchor.href=href;anchor.download="changegate-refund-"+record.id+".json";anchor.click();
           window.setTimeout(()=>URL.revokeObjectURL(href),1000);
         }}>Download request receipt</button>
-        <ol className={styles.rejections}>{record.events.map((event,index)=><li key={index}>{event.kind} · {event.actor} · {time(event.occurredAt)}</li>)}</ol>
+        <RefundHistory request={record} alerts={alertStatus}/>
       </>}
     </section>
   </section>;
