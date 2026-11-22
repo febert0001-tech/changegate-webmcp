@@ -783,10 +783,17 @@ describe("shared merchant workspace", () => {
     expect((await request({ action: "session" }, { Cookie: key })).status).toBe(200);
     expect((await request({ action: "session" }, { Cookie: key.replace("__Host-", "") })).status).toBe(401);
 
-    for (let i = 0; i < 29; i++) {
-      expect((await request({ ...signIn, password: "incorrect" })).status).toBe(401);
+    // Use one stable rate-limit window even when CI starts just before a five-minute rollover.
+    const fixedClock = vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 10, 22, 13, 31));
+    try {
+      const throttled = { "X-Real-IP": "192.0.2.6" };
+      for (let i = 0; i < 30; i++) {
+        expect((await request({ ...signIn, password: "incorrect" }, throttled)).status).toBe(401);
+      }
+      expect((await request(signIn, throttled)).status).toBe(429);
+    } finally {
+      fixedClock.mockRestore();
     }
-    expect((await request(signIn)).status).toBe(429);
     expect((await request(signIn, { "X-Real-IP": "192.0.2.5" })).status).toBe(200);
   });
 
