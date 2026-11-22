@@ -403,7 +403,7 @@ describe("PayPal Sandbox refunds with simulated transport", () => {
     const posts: { key: string; invoice: string }[] = [];
     const priorRefunds: { id: string; status: string; amount: string }[] = [];
     const settings = { payee: merchantId, lost: true, visible: true, denied: false, amount: "50.00", invoice: "",
-      expectedAmount: "50.00", providerStatus: "COMPLETED", beforeRead: async () => {}, unreadableRefund: "" };
+      expectedAmount: "50.00", captureAmount: "120.00", providerStatus: "COMPLETED", beforeRead: async () => {}, unreadableRefund: "" };
     const transport = vi.fn(async (input: string, init: RequestInit) => {
       const url = new URL(input);
       expect(url.origin).toBe("https://api-m.sandbox.paypal.com");
@@ -413,8 +413,8 @@ describe("PayPal Sandbox refunds with simulated transport", () => {
         const totalRefunded = priorRefunds.filter(row => row.status === "COMPLETED")
           .reduce((sum, row) => sum + Math.round(Number(row.amount) * 100),
             posts.length && settings.providerStatus === "COMPLETED" ? Math.round(Number(settings.amount) * 100) : 0);
-        return Response.json({ id: capture, amount: money("120.00"),
-          status: totalRefunded === 12000 ? "REFUNDED" : totalRefunded ? "PARTIALLY_REFUNDED" : "COMPLETED",
+        return Response.json({ id: capture, amount: money(settings.captureAmount),
+          status: totalRefunded === Math.round(Number(settings.captureAmount) * 100) ? "REFUNDED" : totalRefunded ? "PARTIALLY_REFUNDED" : "COMPLETED",
           supplementary_data: { related_ids: { order_id: order } } });
       }
       if (url.pathname === "/v2/checkout/orders/" + order) return Response.json({ id: order, purchase_units: [
@@ -455,6 +455,34 @@ describe("PayPal Sandbox refunds with simulated transport", () => {
       init.method === "POST" && new URL(url).pathname === "/v2/payments/captures/" + capture + "/refund");
     return { settings, transport, connect, provider: connect(), posts, priorRefunds, refundSubmissions };
   }
+
+  it("excludes PayPal's unavailable register but retains the cashier monitoring threshold", async () => {
+    const mock = simulator();
+    mock.settings.captureAmount = "300.00";
+    const roles: Employee[] = [...users, { ...users[0]!, username: "pay-operator", role: "cashier" },
+      { ...users[0]!, username: "pay-owner", role: "owner" }];
+    const server = app(undefined, roles, undefined, undefined, mock.provider);
+    const owner = await signIn(server, "pay-owner");
+    await owner.send({ action: "setRefundPolicy", thresholdCents: 25000 });
+    const first = await signIn(server, "maya");
+    const second = await signIn(server, "jordan");
+    const third = await signIn(server, "pay-operator");
+    for (const operator of [first, second, third]) {
+      const request = await operator.send<RefundRequest>(submit("34.00"));
+      expect(request.events.find(event => event.kind === "Checks recorded")).toMatchObject({ check: {
+        route: "routine", monitoring: { watch: true, cashierWatchCount: 1, registerWatchCount: 0 },
+      } });
+    }
+    const secondForCashier = await first.send<RefundRequest>(submit("34.00"));
+    expect(secondForCashier.events.find(event => event.kind === "Checks recorded")).toMatchObject({ check: {
+      route: "routine", monitoring: { cashierWatchCount: 2, registerWatchCount: 0 },
+    } });
+    const thirdForCashier = await first.send<RefundRequest>(submit("34.00"));
+    expect(thirdForCashier.events.find(event => event.kind === "Checks recorded")).toMatchObject({ check: {
+      route: "manager", monitoring: { cashierWatchCount: 3, registerWatchCount: 0 },
+    } });
+    expect(mock.refundSubmissions()).toHaveLength(0);
+  });
 
   it.each([
     { label: "completed", history: [completedPrior], cents: 10277, amount: "102.77" },
