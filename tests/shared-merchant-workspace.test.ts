@@ -88,7 +88,7 @@ describe("Square Sandbox refunds", () => {
     const settings = { merchant: config.merchantId, location: config.locationId, status: "COMPLETED", currency: "USD",
       loseResponse: false, visible: true, readback: refund, total: 12000, waitForPost: Promise.resolve(),
       createdAt: new Date().toISOString(), refundIds: [] as string[], priorRefundStatus: "FAILED",
-      failMerchantRead: 0, denyRefund: false, rejectionCode: "INSUFFICIENT_PERMISSIONS_FOR_REFUND" };
+      failMerchantRead: 0, denyRefund: false, rejectionCode: "INSUFFICIENT_PERMISSIONS_FOR_REFUND", beforePaymentRead: async () => {} };
     let merchantReads = 0;
     const transport: typeof fetch = async (input, init) => {
       const url = new URL(String(input));
@@ -98,6 +98,7 @@ describe("Square Sandbox refunds", () => {
           Response.json({ merchant: { id: settings.merchant } });
       }
       if (url.pathname === "/v2/payments/" + terms.reference) {
+        await settings.beforePaymentRead();
         return Response.json({ payment: { id: terms.reference, location_id: settings.location, status: settings.status,
           source_type: "CARD", created_at: settings.createdAt, total_money: { amount: settings.total, currency: settings.currency },
           refund_ids: [...settings.refundIds, ...[...ledger.values()].map(row => row.id)],
@@ -401,6 +402,23 @@ describe("Square Sandbox refunds", () => {
       .toEqual(original.events.filter(event => event.kind === "Square attempt recorded"));
     expect(await cashier.send({ action: "lookupOriginalSale", source: "square", reference: terms.reference }))
       .toMatchObject({ reservedCents: 5000 });
+  });
+
+  it("denies Square balance lookup after the cashier signs out during the provider read", async () => {
+    const mock = provider();
+    const server = app(undefined, users, undefined, mock.square);
+    const cashier = await signIn(server, "maya");
+    const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
+    mock.settings.beforePaymentRead = async () => { entered.resolve(); await resume.promise; };
+    const lookup = cashier.request({ action: "lookupOriginalSale", source: "square", reference: terms.reference });
+    await entered.promise;
+    try {
+      expect((await cashier.request({ action: "signOut" })).ok).toBe(true);
+    } finally {
+      resume.resolve();
+    }
+    expect((await lookup).status).toBe(401);
+    expect(mock.posts).toHaveLength(0);
   });
 
   it("requires the configured seller, location, completed status and USD", async () => {

@@ -120,6 +120,11 @@ export class TeamStore {
     this.db.close();
   }
 
+  lookupRefundSale(employee: Employee, token: string, reference: string, evidence?: SquareSaleEvidence) {
+    this.requireActiveSession(employee, token);
+    return this.refundRequests.lookup(employee, reference, evidence);
+  }
+
   createRefundRequest(employee: Employee, token: string, submissionId: string, terms: RefundTerms, evidence?: SquareSaleEvidence) {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
@@ -168,7 +173,9 @@ export class TeamStore {
         try {
           const result = await square.submit(attempt.terms).catch((error: unknown) => error instanceof SquareSubmissionBlocked ? error : null);
           if (started && result instanceof SquareSubmissionBlocked) {
-            return this.atomic(() => this.refundRequests.stopSquare(employee, id, result.reason, true));
+            const stopped = this.atomic(() => this.refundRequests.stopSquare(employee, id, result.reason, true));
+            this.requireActiveSession(employee, token);
+            return stopped;
           }
           response = this.atomic(() => this.refundRequests.recordSquareResponse(employee, id,
             result instanceof SquareSubmissionBlocked ? null : result)) ?? undefined;
@@ -177,6 +184,7 @@ export class TeamStore {
         }
       }
     }
+    this.requireActiveSession(employee, token);
     if (!response) return this.refundRequests.open(employee, id);
     const readback = await square.verify(response.id).catch(() => null);
     return this.atomic(() => {

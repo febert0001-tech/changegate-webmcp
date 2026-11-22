@@ -167,10 +167,10 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
               store.refundRequests.open(employee,command.id);
               return json(store.alerts.status(employee,command.id));
             case "lookupOriginalSale": {
-              if (command.source !== "square") return json(store.refundRequests.lookup(employee,command.reference));
+              if (command.source !== "square") return json(store.lookupRefundSale(employee,token,command.reference));
               if (!square?.supports(employee.merchantId)) throw new TeamError("SQUARE_NOT_CONNECTED",503);
               const evidence = await square.lookup(command.reference);
-              return json(store.refundRequests.lookup(employee,command.reference,evidence));
+              return json(store.lookupRefundSale(employee,token,command.reference,evidence));
             }
             case "refundPolicy": return json(store.refundRequests.policy(employee));
             case "setRefundPolicy": return json(store.setRefundPolicy(employee,token,command.thresholdCents));
