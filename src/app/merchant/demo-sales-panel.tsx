@@ -93,7 +93,7 @@ export function DemoSalesPanel({ reference, session, send, onSessionError }: {
             <label>Refund amount (USD)<input name="amount" inputMode="decimal" pattern={usdPattern} required /></label>
             <label>Reason<input name="reason" maxLength={1200} required /></label>
           </div>
-          <button className={styles.primary} disabled={busy}>Submit refund request</button>
+          <button className={styles.primary} type="submit" disabled={busy}>Submit refund request</button>
         </form> : <button className={styles.primary} type="button" onClick={() => setRefunding(true)}>Request refund</button>)}
       </>}
     </> : <>
@@ -108,7 +108,7 @@ export function DemoSalesPanel({ reference, session, send, onSessionError }: {
           <label>Sale amount (USD)<input name="amount" inputMode="decimal" pattern={usdPattern} required /></label>
           <label>Tender<select name="tender"><option>Electronic</option><option>Cash</option></select></label>
         </div>
-        <button className={styles.primary} disabled={busy}>Save sale</button>
+        <button className={styles.primary} type="submit" disabled={busy}>Save sale</button>
       </form>}
       <form className={styles.importSection} onSubmit={event => void submit(event, async form => {
         const result = await send<Lookup>({ action: "lookupOriginalSale", reference: field(form, "reference") }, { sessionVersion });
@@ -116,7 +116,7 @@ export function DemoSalesPanel({ reference, session, send, onSessionError }: {
         router.push(saleUrl(result.sale.reference));
       })}>
         <label>Demo sale reference<input name="reference" required maxLength={46} /></label>
-        <button disabled={busy}>Find demo sale</button>
+        <button type="submit" disabled={busy}>Find demo sale</button>
       </form>
     </>}
   </section>;

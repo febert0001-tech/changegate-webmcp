@@ -31,7 +31,7 @@ export function teamWorkspace() {
         const mount = env.RAILWAY_VOLUME_MOUNT_PATH;
         const volumeReady = mount === "/demo-data" && path === "/demo-data/changegate/synthetic-demo.sqlite" &&
           readFileSync("/proc/self/mountinfo", "utf8").split("\n").some(line => line.split(" ")[4] === mount);
-        if (mount ? !volumeReady : !/^\/tmp\/changegate-demo-[A-Za-z0-9]+\/synthetic-demo\.sqlite$/.test(path)) return undefined;
+        if (!volumeReady) return undefined;
         db = path;
         config = JSON.parse(env.CHANGEGATE_DEMO_ROSTER_JSON ?? "") as unknown;
       } else {
