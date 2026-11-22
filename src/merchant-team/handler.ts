@@ -190,8 +190,9 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "refundAlertStatus": {
               const refund = store.refundRequests.open(employee,command.id);
               const alerts = store.alerts.status(employee,command.id);
-              const explanation = hostedDemo && command.includeExplanation && canReview(employee.role)
-                ? demoExplanation(store.alerts,employee,refund) : undefined;
+              const explanation = !hostedDemo ? undefined : command.includeSavedExplanation
+                ? store.alerts.readDemoExplanation(employee,command.id)
+                : command.includeExplanation && canReview(employee.role) ? demoExplanation(store.alerts,employee,refund) : undefined;
               return json(explanation ? alerts.map(alert => alert.phase === 0 ? { ...alert, explanation } : alert) : alerts);
             }
             case "lookupOriginalSale": {

@@ -10,6 +10,7 @@ import { canReview, cents, checks, currentStep, executionStopped, money, payout,
   providerAttempt, providerName, providerResponse, providerVerification, saleProvider, type ElectronicProvider,
   requestStatus, submitted, transactionTabs, type RefundRequest, type TestSale, type TransactionStep } from "../../merchant-team/refund-requests";
 import { PhoneAlerts } from "./phone-alerts";
+import { RefundHistory } from "./refund-history";
 import { useTransactionTools } from "./use-transaction-tools";
 import styles from "../merchant/merchant.module.css";
 
@@ -61,6 +62,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   const version=session.sessionVersion;
   const manager=canReview(session.role);
   const includeExplanation=Boolean(session.syntheticOnly&&manager&&destination!=="list"&&destination.step==="approval");
+  const includeSavedExplanation=Boolean(session.syntheticOnly&&destination!=="list"&&destination.step==="receipt");
   const read=useCallback((command:TeamCommand,signal:AbortSignal)=>
     send<RefundRequest|RefundRequest[]>(command,{signal,sessionVersion:version}),[send,version]);
   useTransactionTools(read);
@@ -75,7 +77,8 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
         if(id){
           const [result,alerts]=await Promise.all([
             send<RefundRequest>({action:"openRefundRequest",id},options),
-            send<AlertView[]>({action:"refundAlertStatus",id,...(includeExplanation&&{includeExplanation:true as const})},options),
+            send<AlertView[]>({action:"refundAlertStatus",id,...(includeExplanation&&{includeExplanation:true as const}),
+              ...(includeSavedExplanation&&{includeSavedExplanation:true as const})},options),
           ]);
           if(!controller.signal.aborted){setRecord(result);setAlertStatus(alerts);}
         }else{
@@ -98,7 +101,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       .catch(e=>{if(!controller.signal.aborted&&!onSessionError(e))setError("Could not load the refund policy.");});
     const timer=id||manager||session.demoShift ? window.setInterval(()=>{if(document.visibilityState==="visible")void load();},5000):undefined;
     return()=>{controller.abort();if(timer!==undefined)window.clearInterval(timer);};
-  },[id,includeExplanation,manager,onSessionError,send,session.demoShift,session.role,session.syntheticOnly,version]);
+  },[id,includeExplanation,includeSavedExplanation,manager,onSessionError,send,session.demoShift,session.role,session.syntheticOnly,version]);
 
   async function run(work:()=>Promise<void>){
     setBusy(true);setError("");setNotice("");
@@ -252,7 +255,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
     </section>;
   }
 
-  if(!record)return <section className={styles.card}>{noticeBlock}{loading&&<p>Loading refund…</p>}</section>;
+  if(!record||record.id!==destination.id)return <section className={styles.card}>{noticeBlock}{loading&&<p>Loading refund…</p>}</section>;
   const {step}=destination;
   const review=requestDecision(record), check=checks(record), reported=payout(record);
   const stopped=executionStopped(record);
@@ -395,7 +398,6 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       </>}
       {step==="receipt"&&<>
         <h3>Receipt and verification</h3>
-        {record.sale?.shift==="Demo shift"&&review?.decision==="Approved"&&<p><strong>Approved / Not submitted</strong></p>}
         {provider?<><p>{response?.kind==="PayPal refund recovered" ? "Recovered original PayPal refund reference." :
           response ? response.refund.status ? name+" returned "+response.refund.status : name+" refund reference recorded." :
           attempt && !stopped ? name+" response unavailable." : "No "+name+" refund recorded."}</p>
@@ -421,7 +423,8 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
           const anchor=document.createElement("a");anchor.href=href;anchor.download="changegate-refund-"+record.id+".json";anchor.click();
           window.setTimeout(()=>URL.revokeObjectURL(href),1000);
         }}>Download request receipt</button>
-        <ol className={styles.rejections}>{record.events.map((event,index)=><li key={index}>{event.kind} · {event.actor} · {time(event.occurredAt)}</li>)}</ol>
+        <RefundHistory request={record} alerts={alertStatus.map(alert=>({phase:alert.phase,
+          advisory:alert.explanation?.status==="complete"?alert.explanation.summary:alert.advisory}))}/>
       </>}
     </section>
   </section>;
