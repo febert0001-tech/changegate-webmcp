@@ -26,6 +26,8 @@ const errors: Record<string, string> = {
   INVALID_COMMAND: "Check the required fields and try again.",
   IMPORT_NOT_FOUND: "This import is unavailable in your workspace.",
   DISPOSITION_CHANGED: "A coworker updated this disposition. Reload the summary before saving again.",
+  ALERT_DEVICE_IN_USE: "This device belongs to another supervisor. Unsubscribe from that account first.",
+  ALERTS_UNAVAILABLE: "Device delivery is currently unavailable.",
   TRANSACTION_CONFIRMATION_FAILED: "Confirm the decision with your supervisor password.",
   TRANSACTION_ROLE_REQUIRED: "This action requires a manager or owner.",
   TRANSACTION_SELF_REVIEW: "Another manager must review this employee’s request.",

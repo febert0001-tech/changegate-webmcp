@@ -24,6 +24,10 @@ export interface RefundCheck {
   thresholdCents: number;
   route: "routine" | "manager" | "exception" | "over-balance";
   explanation: string;
+  monitoring?: {
+    ruleVersion: string; z: number | null; watch: boolean; cashierWatchCount: number;
+    registerWatchCount: number; related: string[]; reasons: string[];
+  };
 }
 export type TransactionEvent =
   | { kind: "Request submitted"; actor: string; occurredAt: string }
@@ -54,6 +58,8 @@ const sales: TestSale[] = [
   { reference:"TEST-SALE-BALANCE", location:"Harbor Fuel", register:"Register 2", shift:"Morning", originalCents:4200, priorCents:1800, tender:"Electronic" },
   { reference:"TEST-SALE-PARTIAL", location:"Harbor Bar", register:"Bar 1", shift:"Evening", originalCents:9000, priorCents:2900, tender:"Cash" },
   { reference:"TEST-SALE-ELECTRONIC", location:"Harbor Bar", register:"Bar 1", shift:"Evening", originalCents:7800, priorCents:0, tender:"Electronic" },
+  ...[1,2,3,4,5,6].map(number => ({reference:"TEST-MONITOR-"+number,location:"Harbor Fuel",register:number<=3?"Register 2":"Register "+number,
+    shift:"Morning",originalCents:25000,priorCents:0,tender:"Electronic" as const})),
 ];
 export const testSale = (reference: string) => sales.find(sale => sale.reference === reference) ?? null;
 export const submitted = (request: RefundRequest) => request.events.find(event => event.kind === "Request submitted")!;

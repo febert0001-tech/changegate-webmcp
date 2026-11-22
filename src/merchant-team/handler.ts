@@ -3,6 +3,7 @@ import { isIP } from "node:net";
 import { promisify } from "node:util";
 import { TeamError, teamCommand, type Employee, type TeamSession } from "./contracts";
 import type { TeamStore } from "./store";
+import { alertPublicKey } from "./refund-alerts";
 import { canReview } from "./refund-requests";
 import { csvLimit, inspectRefundCsv, reviewRefundCsv } from "./refund-csv";
 
@@ -147,6 +148,22 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             }
             case "reviewSummary": return json(store.openReviewSummary(employee, command.id));
             case "recordDisposition": return json(store.recordDisposition(employee, token, command));
+            case "refundAlertSettings": {
+              if(!canReview(employee.role)) throw new TeamError("TRANSACTION_ROLE_REQUIRED",403);
+              return json({publicKey:alertPublicKey()});
+            }
+            case "enrollRefundAlerts": {
+              if(!canReview(employee.role)) throw new TeamError("TRANSACTION_ROLE_REQUIRED",403);
+              if(!alertPublicKey()) throw new TeamError("ALERTS_UNAVAILABLE",503);
+              store.enrollRefundAlerts(employee,token,command.enrollment);
+              return json(null);
+            }
+            case "removeRefundAlerts":
+              store.removeRefundAlerts(employee,token,command.endpoint);
+              return json(null);
+            case "refundAlertStatus":
+              store.refundRequests.open(employee,command.id);
+              return json(store.alerts.status(employee,command.id));
             case "lookupOriginalSale": return json(store.refundRequests.lookup(employee,command.reference));
             case "refundPolicy": return json(store.refundRequests.policy(employee));
             case "setRefundPolicy": return json(store.setRefundPolicy(employee,token,command.thresholdCents));
@@ -186,6 +203,8 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
 
   return {
     handle,
+    alerts:store.alerts,
+    roster,
     openRefundRequest: (employee: Employee, id: string) => store.refundRequests.open(employee,id),
     openImport: (employee: Employee, id: string) => store.openImport(employee, id),
     employeeFor: (headers: Pick<Headers, "get">) => authenticate(headers)?.employee,

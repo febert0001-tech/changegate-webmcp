@@ -527,7 +527,7 @@ describe("shared merchant workspace", () => {
     expect(await cashier.send(cash)).toEqual(paid);
     const second = await cashier.send<RefundRequest>(command("TEST-SALE-PARTIAL", "8.00"));
     expect(requestStatus(second)).toBe("Needs manager decision");
-    expect(JSON.stringify(second)).toContain("bring refunds on this sale to $55.00");
+    expect(JSON.stringify(second)).toContain("Cumulative refunds would reach $55.00");
     expect((await cashier.request({ action: "reportCashPayout", id: second.id })).status).toBe(409);
     const approve = { action: "decideRefundRequest", id: second.id, decision: "Approved", password };
     expect((await cashier.request(approve)).status).toBe(403);
@@ -546,10 +546,48 @@ describe("shared merchant workspace", () => {
     expect(requestReceipt(approvedElectronic)).toMatchObject({ execution: { status: "Not submitted", attempt: null },
       verification: { status: "Not run", independentReadback: null } });
     const fourth = await cashier.send<RefundRequest>(command("TEST-SALE-CASH", "2.00"));
-    expect(requestStatus(fourth)).toBe("Needs manager decision");
-    expect(JSON.stringify(fourth)).toContain("fourth or later");
+    expect(requestStatus(fourth)).toBe("Ready for cash payout");
     server.stop();
     const restored = app(server.path, roles);
     expect(await (await signIn(restored, "maya")).send({ action: "openRefundRequest", id: second.id })).toEqual(approved);
+  });
+
+  it("holds at the exact cumulative threshold and queues a backup without releasing the hold", async () => {
+    const server=app();
+    const cashier=await signIn(server,"maya");
+    const request=(reference:string, amount:string)=>cashier.send<RefundRequest>({action:"createRefundRequest",
+      submissionId:randomUUID(),terms:{reference,amount,currency:"USD",reason:"Synthetic boundary test"}});
+    for(const [reference,amount,present] of [["TEST-MONITOR-1","49.99",false],["TEST-MONITOR-2","50.00",true],
+      ["TEST-MONITOR-3","50.01",true]] as const) {
+      const record=await request(reference,amount);
+      const validation=record.events.find(event=>event.kind==="Checks recorded");
+      expect(validation?.check.monitoring?.reasons.some(reason=>reason.includes("store threshold"))).toBe(present);
+      if(!present)continue;
+      expect(requestStatus(record)).toBe("Needs manager decision");
+      expect((await cashier.request({action:"reportCashPayout",id:record.id})).status).toBe(409);
+      expect(await cashier.send({action:"refundAlertStatus",id:record.id})).toMatchObject([
+        {phase:0,status:"pending"},{phase:1,status:"pending"}]);
+    }
+  });
+
+  it("counts unique watch transactions by register and cashier, ignoring regular requests and retries", async () => {
+    const sam={...roster[0]!,username:"sam",name:"Sam"};
+    const server=app(undefined,[...roster,sam]);
+    const maya=await signIn(server,"maya"), jordan=await signIn(server,"jordan"), third=await signIn(server,"sam");
+    const command=(n:number,amount="34.00")=>({action:"createRefundRequest",submissionId:randomUUID(),
+      terms:{reference:"TEST-MONITOR-"+n,amount,currency:"USD",reason:"Synthetic watch test"}});
+    const first=command(1);
+    const watch=await maya.send<RefundRequest>(first);
+    expect(await maya.send(first)).toEqual(watch);
+    expect(requestStatus(watch)).toBe("Blocked · Processor not connected");
+    const normal=await maya.send<RefundRequest>(command(4,"2.00"));
+    expect(normal.events[1]).toMatchObject({check:{monitoring:{watch:false,cashierWatchCount:0}}});
+    const second=await jordan.send<RefundRequest>(command(2));
+    expect(second.events[1]).toMatchObject({check:{monitoring:{cashierWatchCount:1,registerWatchCount:2}}});
+    const atRegister=await third.send<RefundRequest>(command(3));
+    expect(atRegister.events[1]).toMatchObject({check:{route:"manager",monitoring:{cashierWatchCount:1,registerWatchCount:3}}});
+    await maya.send<RefundRequest>(command(5));
+    const acrossRegisters=await maya.send<RefundRequest>(command(6));
+    expect(acrossRegisters.events[1]).toMatchObject({check:{route:"manager",monitoring:{cashierWatchCount:3,registerWatchCount:1}}});
   });
 });

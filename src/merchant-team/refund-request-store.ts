@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Employee } from "./contracts";
+import type { RefundAlertStore } from "./refund-alert-store";
+import { assessSize, individualLimitCents, ruleVersion, watchWindowMs } from "./refund-monitor-rules";
 import { TeamError } from "./error";
 import { canReview, cents, checks, money, payout, requestDecision, requestStatus, testSale,
   type RefundCheck, type RefundDecision, type RefundRequest, type RefundTerms, type TestSale, type TransactionEvent } from "./refund-requests";
@@ -23,6 +25,13 @@ export class RefundRequestStore {
         username TEXT NOT NULL, payload TEXT NOT NULL,
         FOREIGN KEY (merchant_id, request_id) REFERENCES team_refund_requests(merchant_id, id)
       );
+      CREATE TABLE IF NOT EXISTS team_refund_watch (
+        merchant_id TEXT NOT NULL, request_id TEXT NOT NULL, cashier TEXT NOT NULL, register_scope TEXT NOT NULL,
+        seen_at TEXT NOT NULL, PRIMARY KEY(merchant_id,request_id),
+        FOREIGN KEY(merchant_id,request_id) REFERENCES team_refund_requests(merchant_id,id)
+      );
+      CREATE INDEX IF NOT EXISTS team_refund_watch_cashier ON team_refund_watch(merchant_id,cashier,seen_at);
+      CREATE INDEX IF NOT EXISTS team_refund_watch_register ON team_refund_watch(merchant_id,register_scope,seen_at);
       CREATE INDEX IF NOT EXISTS team_request_events_by_id ON team_refund_request_events(merchant_id, request_id, sequence);
     `);
   }
@@ -67,7 +76,7 @@ export class RefundRequestStore {
     const sale=testSale(reference);
     return sale ? {sale,...this.saleUsage(employee,sale)} : null;
   }
-  create(employee: Employee, submissionId: string, terms: RefundTerms) {
+  create(employee: Employee, submissionId: string, terms: RefundTerms, alerts:RefundAlertStore) {
     const payload = JSON.stringify(terms);
     const existing = this.db.prepare("SELECT id,terms FROM team_refund_requests WHERE merchant_id=? AND submission_id=?")
       .get(employee.merchantId,submissionId);
@@ -78,33 +87,43 @@ export class RefundRequestStore {
     const id=randomUUID(), occurredAt=this.now(), sale=testSale(terms.reference);
     const { thresholdCents }=this.policy(employee);
     let check: RefundCheck;
+    const amount=cents(terms.amount);
+    const registerScope=sale ? JSON.stringify([sale.location,sale.register]) : "";
+    // This baseline is explicitly synthetic. Real cohorts need comparable POS history.
+    const size=assessSize(amount,sale ? { median:1800,mad:500,floor:500 } : undefined);
+    const cutoff=new Date(Date.parse(occurredAt)-watchWindowMs).toISOString();
+    const recent=size.watch ? (this.db.prepare(`SELECT request_id AS id,cashier,register_scope AS scope
+      FROM team_refund_watch WHERE merchant_id=? AND seen_at>? AND seen_at<=? AND (cashier=? OR register_scope=?)
+      ORDER BY seen_at DESC,request_id`).all(employee.merchantId,cutoff,occurredAt,employee.username,registerScope) as { id:string; cashier:string; scope:string }[]) : [];
+    const cashierWatchCount=size.watch ? 1+recent.filter(row=>row.cashier===employee.username).length : 0;
+    const registerWatchCount=size.watch ? 1+recent.filter(row=>row.scope===registerScope).length : 0;
+    const reasons:string[]=[];
+    if (size.absoluteHold) reasons.push("The amount meets the "+money(individualLimitCents)+" individual limit.");
+    if (size.relativeHold) reasons.push("The amount is unusually large for the test baseline (score "+size.z?.toFixed(2)+").");
+    if (cashierWatchCount>=3) reasons.push(cashierWatchCount+" unusual refunds by this cashier across registers in 15 minutes.");
+    if (registerWatchCount>=3) reasons.push(registerWatchCount+" unusual refunds at this register across cashiers in 15 minutes.");
+    const monitoring={ruleVersion,z:size.z,watch:size.watch,cashierWatchCount,registerWatchCount,related:recent.slice(0,8).map(row=>row.id),reasons};
     if (!sale) {
-      check={route:"exception",balanceCents:null,cumulativeCents:null,thresholdCents,
+      check={route:"exception",balanceCents:null,cumulativeCents:null,thresholdCents,monitoring,
         explanation:"The sale could not be verified. Route it to a manager for exception review. Payment remains blocked."};
     } else {
       const { balanceCents }=this.saleUsage(employee,sale);
-      const amount=cents(terms.amount);
       const cumulativeCents=sale.originalCents-balanceCents+amount;
-      const recent = this.db.prepare(`SELECT terms FROM team_refund_requests
-        WHERE merchant_id=? AND requester=? AND created_at>=?`).all(employee.merchantId,employee.username,
-          new Date(Date.parse(occurredAt)-15*60*1000).toISOString()) as {terms:string}[];
-      const repeated = recent.some(row => {
-        const prior=JSON.parse(row.terms) as RefundTerms;
-        return prior.reference===terms.reference && cents(prior.amount)===amount;
-      });
-      const base={ balanceCents,cumulativeCents,thresholdCents };
-      if (amount>balanceCents) check={...base,route:"over-balance",explanation:"Only "+money(balanceCents)+" remains refundable. This request is blocked."};
-      else if (cumulativeCents>thresholdCents) check={...base,route:"manager",
-        explanation:"This request would bring refunds on this sale to "+money(cumulativeCents)+", above the store’s "+money(thresholdCents)+" approval threshold."};
-      else if (repeated || recent.length>=3) check={...base,route:"manager",
-        explanation:repeated ? "The employee submitted the same amount for this sale in the last 15 minutes. Review whether it is a repeat."
-          : "This is the employee’s fourth or later refund request in 15 minutes. Review the recent activity."};
-      else check={...base,route:"routine",explanation:"The request fits the remaining balance and the store’s cumulative approval threshold."};
+      if(cumulativeCents>=thresholdCents) reasons.push("Cumulative refunds would reach "+money(cumulativeCents)+
+        ", meeting or exceeding the "+money(thresholdCents)+" store threshold.");
+      const base={balanceCents,cumulativeCents,thresholdCents,monitoring};
+      if(amount>balanceCents) check={...base,route:"over-balance",
+        explanation:"Only "+money(balanceCents)+" remains refundable. This request is blocked."};
+      else if(reasons.length) check={...base,route:"manager",explanation:reasons[0]!};
+      else check={...base,route:"routine",explanation:"The request fits the refundable balance and configured review limits."};
     }
     this.db.prepare("INSERT INTO team_refund_requests VALUES (?,?,?,?,?,?,?)")
       .run(employee.merchantId,id,submissionId,employee.username,payload,JSON.stringify(sale),occurredAt);
+    if(size.watch) this.db.prepare("INSERT INTO team_refund_watch VALUES (?,?,?,?,?)")
+      .run(employee.merchantId,id,employee.username,registerScope,occurredAt);
     this.add(employee,id,{kind:"Request submitted",actor:employee.name,occurredAt});
     this.add(employee,id,{kind:"Checks recorded",actor:"ChangeGate",occurredAt,check});
+    alerts.queue(employee,id,sale?.location??"",check,occurredAt);
     return this.open(employee,id);
   }
 
