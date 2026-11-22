@@ -308,7 +308,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
         {response ? <><p>{response.kind==="PayPal refund recovered"?"Recovered PayPal refund reference":name+" response"} · {response.refund.status??"Reference recorded"} · {response.refund.id}</p>
           <Link href={url(record.id,"receipt")}>Open receipt</Link></>:
           !connected ? <p>PayPal not connected</p>:
-          provider&&!stopped&&(status==="Ready for "+name+" Sandbox refund"||attempt)?<>
+          provider&&!stopped&&(status==="Ready for "+name+" Sandbox refund"||(attempt&&(provider!=="square"||review?.decision==="Approved")))?<>
             <p>{attempt ? provider==="paypal" ? "Look up the original attempt in PayPal." :
               "Square’s response is unavailable. Retrying uses the original attempt." : "Submit this refund to "+name+" Sandbox."}</p>
             <button className={styles.primary} disabled={busy} onClick={()=>void run(async()=>{

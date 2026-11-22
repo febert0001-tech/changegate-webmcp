@@ -5,7 +5,7 @@ import type { RefundAlertStore } from "./refund-alert-store";
 import { assessSize, individualLimitCents, ruleVersion, syntheticRegisterDrift, watchWindowMs } from "./refund-monitor-rules";
 import { TeamError } from "./error";
 import { canReview, cents, checks, executionStopped, money, payout, providerName, providerResponse, providerVerification,
-  requestDecision, requestStatus, saleProvider, testSale, type ElectronicAttemptTerms,
+  requestDecision, requestStatus, saleProvider, squareApprovalReason, testSale, type ElectronicAttemptTerms,
   type ElectronicSaleEvidence, type ProviderRefundEvidence, type ProviderRefundResponse, type RefundCheck,
   type RefundDecision, type RefundRequest, type RefundTerms, type RefundVerification, type TestSale, type TransactionEvent } from "./refund-requests";
 
@@ -145,6 +145,7 @@ export class RefundRequestStore {
       if(amount>balanceCents) check={...base,route:"over-balance",
         explanation:"Only "+money(balanceCents)+" remains refundable. This request is blocked."};
       else if(reasons.length) check={...base,route:"manager",explanation:reasons[0]!};
+      else if(sale.square) check={...base,route:"manager",explanation:squareApprovalReason};
       else check={...base,route:"routine",explanation:"The request fits the refundable balance and configured review limits."};
     }
     this.db.prepare("INSERT INTO team_refund_requests VALUES (?,?,?,?,?,?,?)")
@@ -183,7 +184,7 @@ export class RefundRequestStore {
     const request = this.open(employee, id);
     const provider = saleProvider(request.sale);
     if (!provider || checks(request).route === "over-balance" ||
-        (checks(request).route !== "routine" && requestDecision(request)?.decision !== "Approved")) {
+        ((provider === "square" || checks(request).route !== "routine") && requestDecision(request)?.decision !== "Approved")) {
       throw new TeamError("TRANSACTION_ACTION_UNAVAILABLE", 409);
     }
     const table = provider === "square" ? "team_square_attempts" : "team_paypal_attempts";
@@ -211,7 +212,7 @@ export class RefundRequestStore {
       this.stopElectronic(employee, id, "The refundable balance dropped below the approved amount.");
       return { ...state, started: false };
     }
-    if (this.holdForCurrentThreshold(employee, request, evidence.sale, balanceCents, alerts)) return { ...state, started: false };
+    if (provider === "paypal" && this.holdForCurrentThreshold(employee, request, evidence.sale, balanceCents, alerts)) return { ...state, started: false };
     const scope = sale.square ?? sale.paypal!;
     const terms: ElectronicAttemptTerms = { ...scope, key: randomUUID(), paymentId: sale.reference, amountCents, currency: "USD" };
     const startedAt = this.now();

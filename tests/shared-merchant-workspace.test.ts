@@ -2,6 +2,7 @@ import { randomBytes, randomUUID, scryptSync } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assessSize, observeRefundShare } from "../src/merchant-team/refund-monitor-rules";
 import { requestStatus, requestReceipt, type RefundRequest } from "../src/merchant-team/refund-requests";
@@ -232,19 +233,65 @@ describe("Square Sandbox refunds", () => {
     expect(mock.posts).toHaveLength(1);
   });
 
-  it("requires supervisor review if the store threshold changes before the first submission", async () => {
+  it("holds a below-threshold Square refund and submits the exact approved amount despite a late external refund", async () => {
     const mock = provider();
-    const roles: Employee[] = [...users, { ...users[0]!, username: "owner", role: "owner" }];
-    const server = app(undefined, roles, undefined, mock.square);
-    const cashier = await signIn(server, "maya");
-    const owner = await signIn(server, "owner");
-    const request = await cashier.send<RefundRequest>(submit({ amount: "20.00" }));
-    expect(requestStatus(request)).toBe("Ready for Square Sandbox refund");
-    await owner.send({ action: "setRefundPolicy", thresholdCents: 2000 });
+    const server = app(undefined, users, undefined, mock.square);
+    const requester = await signIn(server, "maya");
+    const supervisor = await signIn(server, "jordan");
+    const request = await requester.send<RefundRequest>(submit({ amount: "20.00" }));
     const execute = { action: "executeElectronicRefund", id: request.id };
-    expect(requestStatus(await cashier.send<RefundRequest>(execute))).toBe("Needs manager decision");
-    expect((await cashier.request(execute)).status).toBe(409);
+    const approve = { action: "decideRefundRequest", id: request.id, decision: "Approved", password };
+    const submitToSquare = mock.square.submit.bind(mock.square);
+    const squareSubmit = vi.spyOn(mock.square, "submit").mockImplementationOnce(attempt => {
+      // An external $50 refund posts after the final provider lookup on the $120 sale.
+      mock.settings.refundIds = ["earlier-refund"];
+      mock.settings.priorRefundStatus = "PENDING";
+      return submitToSquare(attempt);
+    });
+
+    expect(requestStatus(request)).toBe("Needs manager decision");
+    expect(requestReceipt(request).checks).toMatchObject({ cumulativeCents: 2000, thresholdCents: 5000 });
+    expect((await requester.request(approve)).status).toBe(403);
+    expect((await requester.request(execute)).status).toBe(409);
+    expect(squareSubmit).not.toHaveBeenCalled();
     expect(mock.posts).toHaveLength(0);
+
+    const approved = await supervisor.send<RefundRequest>(approve);
+    expect(requestReceipt(approved).decision.status).toBe("Approved");
+    expect(requestReceipt(approved).execution.status).toBe("Not submitted");
+    expect(mock.posts).toHaveLength(0);
+
+    await requester.send(execute);
+    expect(squareSubmit).toHaveBeenCalledTimes(1);
+    expect(mock.posts).toEqual([expect.objectContaining({
+      payment_id: terms.reference, amount_money: { amount: 2000, currency: "USD" },
+    })]);
+  });
+
+  it("requires approval for a Square request saved with the old routine route", async () => {
+    const mock = provider();
+    const server = app(undefined, users, undefined, mock.square);
+    const requester = await signIn(server, "maya");
+    const supervisor = await signIn(server, "jordan");
+    const request = await requester.send<RefundRequest>(submit({ amount: "20.00" }));
+    const db = new DatabaseSync(server.path);
+    try {
+      db.prepare(`UPDATE team_refund_request_events
+        SET payload=json_set(payload, '$.check.route', 'routine')
+        WHERE merchant_id=? AND request_id=? AND json_extract(payload, '$.kind')='Checks recorded'`)
+        .run("harbor", request.id);
+    } finally {
+      db.close();
+    }
+
+    const reopened = await requester.send<RefundRequest>({ action: "openRefundRequest", id: request.id });
+    expect(requestStatus(reopened)).toBe("Needs manager decision");
+    expect((await requester.request({ action: "executeElectronicRefund", id: request.id })).status).toBe(409);
+    expect(mock.posts).toHaveLength(0);
+    const approved = await supervisor.send<RefundRequest>({
+      action: "decideRefundRequest", id: request.id, decision: "Approved", password,
+    });
+    expect(requestStatus(approved)).toBe("Ready for Square Sandbox refund");
   });
 
   it("coalesces concurrent Square submissions while the first call is in flight", async () => {
@@ -372,6 +419,8 @@ describe("Square Sandbox refunds", () => {
     const server = app(undefined, users, undefined, mock.square);
     const cashier = await signIn(server, "maya");
     const request = await cashier.send<RefundRequest>(submit({ amount: "12.34" }));
+    const supervisor = await signIn(server, "jordan");
+    await supervisor.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
     mock.settings.visible = false;
     const result = await cashier.send<RefundRequest>({ action: "executeElectronicRefund", id: request.id });
     expect(requestReceipt(result).verification.status).toBe("Unconfirmed");
