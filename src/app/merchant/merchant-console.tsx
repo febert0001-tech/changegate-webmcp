@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { activeStatuses, type TeamCaseDetail, type TeamCommand, type TeamSession, type TeamWorkspaceView } from "../../merchant-team/contracts";
 import styles from "./merchant.module.css";
+import { ReviewSummaryPanel } from "./review-summary-panel";
 import { RefundImportPanel } from "./refund-import-panel";
 import { EvidenceRows, findingTitle } from "./refund-evidence";
 import { formatUsd } from "../../merchant-team/refund-comparison";
@@ -22,6 +23,7 @@ const errors: Record<string, string> = {
   FINDING_REQUIRED: "Record a finding and next action before resolving this case.",
   INVALID_COMMAND: "Check the required fields and try again.",
   IMPORT_NOT_FOUND: "This import is unavailable in your workspace.",
+  DISPOSITION_CHANGED: "A coworker updated this disposition. Reload the summary before saving again.",
   FINDING_NOT_FOUND: "This finding is unavailable in your workspace.",
   CSV_TOO_LARGE: "Choose a file no larger than 96 KiB.",
   CSV_ENCODING: "Save the CSV as UTF-8 and try again.",
@@ -68,7 +70,7 @@ function notifySessionChange() {
   channel.close();
 }
 
-export function MerchantConsole({ caseId, imports, importId }: { caseId?: string; imports?: boolean; importId?: string }) {
+export function MerchantConsole({ caseId, imports, importId, reviewSummary }: { caseId?: string; imports?: boolean; importId?: string; reviewSummary?: boolean }) {
   const router = useRouter();
   const [ready, setReady] = useState(false);
   const [recoverSession, setRecoverSession] = useState(false);
@@ -183,6 +185,9 @@ export function MerchantConsole({ caseId, imports, importId }: { caseId?: string
         <label>Password<input name="password" type="password" autoComplete="current-password" maxLength={160} required /></label>
         <button className={styles.primary} disabled={busy}>{recoverSession ? "Recover sign-in" : "Sign in"}</button>
       </form>
+    ) : reviewSummary && importId ? (
+      <ReviewSummaryPanel key={versionKey(session.sessionVersion, importId)} send={send} session={session}
+        importId={importId} onSessionError={clearOnSessionError} />
     ) : imports ? (
       <RefundImportPanel key={versionKey(session.sessionVersion, importId)} send={send} session={session}
         {...(importId && { importId })} onSessionError={clearOnSessionError} />

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { csvText, refundMapping, type CaseEvidence } from "./refund-csv";
+import { dispositionOptions } from "./review-summary";
 import { comparisonInput } from "./refund-comparison";
 export { TeamError } from "./error";
 
@@ -49,6 +50,10 @@ export const teamCommand = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("importCsv"), text: csvText, mapping: refundMapping }),
   z.strictObject({ action: z.literal("previewComparison"), input: comparisonInput }),
   z.strictObject({ action: z.literal("saveComparison"), input: comparisonInput }),
+  z.strictObject({ action: z.literal("reviewSummary"), id }),
+  z.strictObject({ action: z.literal("recordDisposition"), id, findingId: id,
+    expectedRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER - 1),
+    disposition: z.enum(dispositionOptions), note: text(1600) }),
   z.strictObject({ action: z.literal("listImports") }),
   z.strictObject({ action: z.literal("openImport"), id }),
   z.strictObject({ action: z.literal("assignFinding"), id, assignee: slug }),

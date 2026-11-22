@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Employee, TeamCase, TeamCaseDetail, TeamSession, TeamWorkspaceView } from "../src/merchant-team/contracts";
 import { createTeamWorkspace } from "../src/merchant-team/handler";
+import { reviewSummaryCsv, type ReviewSummary } from "../src/merchant-team/review-summary";
 import { TeamStore } from "../src/merchant-team/store";
 import { reviewRefundCsv, type ImportSummary, type RefundImport, type RefundImportResult } from "../src/merchant-team/refund-csv";
 
@@ -436,5 +437,44 @@ describe("shared merchant workspace", () => {
     expect(persisted.evidence?.finding.rows.map(row => [row.side, row.line, row.amountCents]))
       .toEqual([["Merchant", 2, 4200], ["Processor", 2, 2400]]);
     expect(await jordan.send({ action: "list" })).toMatchObject([{ assignee: "jordan", differenceCents: 1800 }]);
+    const report = { action: "reviewSummary", id: batch.summary.id };
+    const initial = await jordan.send<ReviewSummary>(report);
+    expect(initial.files.map(({ accepted, rejected }) => [accepted, rejected])).toEqual([[5, 1], [5, 0]]);
+    expect(initial.matches).toEqual(["TEST-MATCH-1001"]);
+    expect(initial.counts).toEqual([
+      { kind: "Amount difference", count: 1 }, { kind: "Merchant only", count: 1 },
+      { kind: "Ambiguous reference", count: 2 }, { kind: "Processor only", count: 1 },
+    ]);
+    expect(initial.needsInvestigation).toBe(5);
+    const decision = { action: "recordDisposition", id: batch.summary.id, findingId: finding.id,
+      expectedRevision: 0, disposition: "Timing difference", note: '=TEST, "next close"' };
+    const decided = await jordan.send<ReviewSummary>(decision);
+    expect(decided.exceptions.find(row => row.id === finding.id)).toMatchObject({
+      assigneeName: "Jordan Lee", caseStatus: "Awaiting evidence", needsInvestigation: true,
+      decision: { reviewer: "Jordan Lee", revision: 1, recordedAt: expect.stringMatching(/Z$/), note: decision.note },
+    });
+    expect((await jordan.request(decision)).status).toBe(409);
+    expect((await jordan.request({ ...decision, id: original.case.id })).status).toBe(404);
+    const foreign = await signIn(restarted, "alex");
+    expect((await foreign.request(report)).status).toBe(404);
+    expect((await foreign.request(decision)).status).toBe(404);
+    const comparisonRepeat = await jordan.send<RefundImportResult>(command);
+    expect(comparisonRepeat.existing).toBe(true);
+    expect(await jordan.send<ReviewSummary>(report)).toEqual(decided);
+
+    await jordan.send({ action: "resolve", id: original.case.id, revision: original.case.revision });
+    const closed = await jordan.send<ReviewSummary>(report);
+    expect(closed.needsInvestigation).toBe(4);
+    const csv = reviewSummaryCsv(closed);
+    expect(csv).toContain('"Summary","Exceptions","5"');
+    expect(csv).toContain('"Exception count","Ambiguous reference","2"');
+    expect(csv).toContain('"Match","TEST-MATCH-1001"');
+    expect(csv).toContain('"Jordan Lee","Resolved","No","Timing difference","Jordan Lee"');
+    expect(csv).toContain("\"'=TEST, \"\"next close\"\"\"");
+    const unresolved = await jordan.send<ReviewSummary>({ ...decision, expectedRevision: 1, disposition: "Still unresolved" });
+    expect(unresolved.needsInvestigation).toBe(5);
+    restarted.stop();
+    const reopened = app(server.path);
+    expect(await (await signIn(reopened, "maya")).send<ReviewSummary>(report)).toEqual(unresolved);
   });
 });
