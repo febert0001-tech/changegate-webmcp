@@ -57,7 +57,10 @@ export function checkDecisionReceiptConsistency(receipt: DecisionReceiptSummary)
   }
 
   const compatible = compatibleStatuses[execution];
-  if (verification !== null && !compatible.verification.includes(verification)) {
+  // Merchant readback can fail while the execution outcome is still unknown.
+  const failedMerchantReadback = receipt.environment !== SYNTHETIC_ENVIRONMENT_LABEL &&
+    execution === "IN_PROGRESS" && verification === "FAILED";
+  if (verification !== null && !failedMerchantReadback && !compatible.verification.includes(verification)) {
     return {
       status: "inconsistent",
       explanation: execution === "PENDING_EXECUTE"

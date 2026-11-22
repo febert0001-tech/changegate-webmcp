@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readDecisionReceipt } from "../src/application/read-decision-receipt";
+import { checkDecisionReceiptConsistency, readDecisionReceipt } from "../src/application/read-decision-receipt";
 import type { MerchantCapture, MerchantCaseDetail, MerchantCommand } from "../src/merchant/contracts";
 import { createMerchantHandler } from "../src/merchant/handler";
 import { PayPalMerchantSandbox, type SandboxTransport } from "../src/merchant/paypal-sandbox";
@@ -339,6 +339,14 @@ describe("merchant refunds through the authenticated application handler", () =>
     if (!other.case.refundId) throw Error("Expected unrelated refund reference");
     const conflict = await instance.ok<MerchantCaseDetail>({ action: "reconcile", id: intent.id, refundId: other.case.refundId });
     expect(conflict.case).toMatchObject({ status: "UNCERTAIN", refundId: null, observation: null });
+    const receipt = readDecisionReceipt(JSON.stringify(merchantReceipt(conflict, "Simulated PayPal Sandbox")));
+    expect(receipt).toMatchObject({
+      execution: { status: "IN_PROGRESS" }, verification: { status: "FAILED" },
+    });
+    if (!receipt) throw Error("Expected a readable merchant receipt");
+    expect(checkDecisionReceiptConsistency(receipt)).toEqual({ status: "consistent" });
+    expect(checkDecisionReceiptConsistency({ ...receipt, verification: { status: "VERIFIED" } }))
+      .toMatchObject({ status: "inconsistent" });
     const blocked = await instance.command({ action: "propose", captureId: "DEMOCAPTURE700", amountCents: 100 });
     expect(await blocked.json()).toEqual({ error: "REFUND_HISTORY_UNCERTAIN" });
     expect(instance.store.db.prepare("SELECT count(*) n FROM simulated_provider_refunds WHERE capture_id=?").get("DEMOCAPTURE700")?.n)
