@@ -14,7 +14,7 @@ const project = (row: RequestRow): RefundRequest => ({
   id: row.id, terms: JSON.parse(row.terms), sale: JSON.parse(row.sale), events: JSON.parse(row.events),
 });
 export class RefundRequestStore {
-  constructor(private readonly db: DatabaseSync, private readonly now: () => string) {
+  constructor(private readonly db: DatabaseSync, private readonly now: () => string, private readonly demoWorkspace = false) {
     db.exec(`
       CREATE TABLE IF NOT EXISTS team_refund_policy (merchant_id TEXT PRIMARY KEY, threshold_cents INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS team_refund_requests (
@@ -108,13 +108,14 @@ export class RefundRequestStore {
       return this.open(employee,existing.id);
     }
   }
-  create(employee: Employee, submissionId: string, terms: RefundTerms, alerts:RefundAlertStore, evidence?: ElectronicSaleEvidence) {
+  create(employee: Employee, submissionId: string, terms: RefundTerms, alerts:RefundAlertStore, evidence?: ElectronicSaleEvidence,
+    demo?: { sale: TestSale; occurredAt: string; escalationMs: number }) {
     const existing = this.replay(employee, submissionId, terms);
     if (existing) return existing;
     if (terms.source === "square" && !evidence) throw new TeamError("SQUARE_SALE_UNAVAILABLE",422);
     if (terms.source === "paypal" && !evidence) throw new TeamError("PAYPAL_CAPTURE_UNAVAILABLE",422);
     const payload = JSON.stringify(terms);
-    const id=randomUUID(), occurredAt=this.now(), sale=evidence?.sale ?? testSale(terms.reference);
+    const id=randomUUID(), occurredAt=demo?.occurredAt ?? this.now(), sale=demo?.sale ?? evidence?.sale ?? testSale(terms.reference);
     const { thresholdCents }=this.policy(employee);
     let check: RefundCheck;
     const amount=cents(terms.amount);
@@ -123,8 +124,11 @@ export class RefundRequestStore {
     const size=assessSize(amount,sale ? { median:1800,mad:500,floor:500 } : undefined);
     const cutoff=new Date(Date.parse(occurredAt)-watchWindowMs).toISOString();
     const recent=size.watch ? (this.db.prepare(`SELECT request_id AS id,cashier,register_scope AS scope
-      FROM team_refund_watch WHERE merchant_id=? AND seen_at>? AND seen_at<=? AND (cashier=? OR (?<>'' AND register_scope=?))
-      ORDER BY seen_at DESC,request_id`).all(employee.merchantId,cutoff,occurredAt,employee.username,registerScope,registerScope) as { id:string; cashier:string; scope:string }[]) : [];
+      FROM team_refund_watch w WHERE merchant_id=? AND seen_at>? AND seen_at<=? AND (cashier=? OR (?<>'' AND register_scope=?))
+      AND (? IS NULL OR EXISTS (SELECT 1 FROM team_refund_requests r WHERE r.merchant_id=w.merchant_id AND r.id=w.request_id
+        AND COALESCE(json_extract(r.sale,'$.shift')='Demo shift',0)=?))
+      ORDER BY seen_at DESC,request_id`).all(employee.merchantId,cutoff,occurredAt,employee.username,registerScope,registerScope,
+        this.demoWorkspace ? 1 : null,demo ? 1 : 0) as { id:string; cashier:string; scope:string }[]) : [];
     const cashierWatchCount=size.watch ? 1+recent.filter(row=>row.cashier===employee.username).length : 0;
     const registerWatchCount=size.watch && registerScope ? 1+recent.filter(row=>row.scope===registerScope).length : 0;
     const reasons:string[]=[];
@@ -154,11 +158,11 @@ export class RefundRequestStore {
       .run(employee.merchantId,id,employee.username,registerScope,occurredAt);
     this.add(employee,id,{kind:"Request submitted",actor:employee.name,occurredAt});
     this.add(employee,id,{kind:"Checks recorded",actor:"ChangeGate",occurredAt,check});
-    alerts.queue(employee,id,sale?.location??"",check,occurredAt);
+    alerts.queue(employee,id,sale?.location??"",check,occurredAt,demo?.escalationMs);
     return this.open(employee,id);
   }
 
-  decide(employee: Employee, id: string, decision: RefundDecision) {
+  decide(employee: Employee, id: string, decision: RefundDecision, occurredAt = this.now()) {
     const request=this.open(employee,id);
     if (!canReview(employee.role)) throw new TeamError("TRANSACTION_ROLE_REQUIRED",403);
     const requester=this.db.prepare("SELECT requester FROM team_refund_requests WHERE merchant_id=? AND id=?").get(employee.merchantId,id);
@@ -168,7 +172,7 @@ export class RefundRequestStore {
     if (previous) throw new TeamError("TRANSACTION_DECIDED",409);
     const route=checks(request).route;
     if (route!=="manager"&&route!=="exception") throw new TeamError("TRANSACTION_ACTION_UNAVAILABLE",409);
-    this.add(employee,id,{kind:"Decision recorded",actor:employee.name,occurredAt:this.now(),decision});
+    this.add(employee,id,{kind:"Decision recorded",actor:employee.name,occurredAt,decision});
     return this.open(employee,id);
   }
 

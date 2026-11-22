@@ -68,8 +68,12 @@ export const teamCommand = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("setRefundPolicy"), thresholdCents: z.number().int().min(0).max(999999999999) }),
   z.strictObject({ action: z.literal("reportCashPayout"), id }),
   z.strictObject({ action: z.literal("listRefundRequests") }),
+  z.strictObject({ action: z.literal("demoShift") }),
+  z.strictObject({ action: z.literal("startDemoShift"), seed: z.string().trim().regex(/^[A-Za-z0-9_-]{1,40}$/) }),
+  z.strictObject({ action: z.literal("nextDemoEvent"), runId: id, step: z.number().int().nonnegative() }),
+  z.strictObject({ action: z.literal("replayDemoShift"), runId: id }),
   z.strictObject({ action: z.literal("openRefundRequest"), id }),
-  z.strictObject({ action: z.literal("createRefundRequest"), submissionId: id, terms: refundTerms }),
+  z.strictObject({ action: z.literal("createRefundRequest"), submissionId: id, terms: refundTerms, demoRun: id.optional() }),
   z.strictObject({ action: z.literal("decideRefundRequest"), id, decision: z.enum(["Approved","Rejected"]), password: z.string().min(1).max(160) }),
   z.strictObject({ action: z.literal("listImports") }),
   z.strictObject({ action: z.literal("openImport"), id }),
@@ -111,6 +115,7 @@ export interface TeamSession {
   role?: MerchantRole;
   reviewerConfigured?: boolean;
   paypalConnected?: boolean;
+  demoShift?: boolean;
   coworkers: { username: string; name: string }[];
 }
 

@@ -94,6 +94,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
       ...(employee.role && { role: employee.role }),
       reviewerConfigured: roster.some(member=>member.merchantId===employee.merchantId&&canReview(member.role)),
       paypalConnected: providers.paypal?.supports(employee.merchantId) ?? false,
+      ...(store.demo?.includes(employee) && { demoShift: true }),
       coworkers: roster.filter((member) => member.merchantId === employee.merchantId)
         .map(({ username, name }) => ({ username, name })),
     };
@@ -163,11 +164,11 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "recordDisposition": return json(store.recordDisposition(employee, token, command));
             case "refundAlertSettings": {
               if(!canReview(employee.role)) throw new TeamError("TRANSACTION_ROLE_REQUIRED",403);
-              return json({publicKey:alertPublicKey()});
+              return json({publicKey:store.demo ? null : alertPublicKey()});
             }
             case "enrollRefundAlerts": {
               if(!canReview(employee.role)) throw new TeamError("TRANSACTION_ROLE_REQUIRED",403);
-              if(!alertPublicKey()) throw new TeamError("ALERTS_UNAVAILABLE",503);
+              if(store.demo || !alertPublicKey()) throw new TeamError("ALERTS_UNAVAILABLE",503);
               store.enrollRefundAlerts(employee,token,command.enrollment);
               return json(null);
             }
@@ -186,10 +187,16 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "setRefundPolicy": return json(store.setRefundPolicy(employee,token,command.thresholdCents));
             case "reportCashPayout": return json(store.reportCashPayout(employee,token,command.id));
             case "listRefundRequests": return json(store.refundRequests.list(employee));
+            case "demoShift":
+            case "startDemoShift":
+            case "nextDemoEvent":
+            case "replayDemoShift": return json(store.demoShift(employee,token,command));
             case "openRefundRequest": return json(store.refundRequests.open(employee,command.id));
             case "createRefundRequest": {
               const { source } = command.terms;
-              if (!source || source === "test") return json(store.createRefundRequest(employee,token,command.submissionId,command.terms));
+              if (!source || source === "test" || command.demoRun) {
+                return json(store.createRefundRequest(employee,token,command.submissionId,command.terms,undefined,command.demoRun));
+              }
               const saved = store.refundRequests.replay(employee,command.submissionId,command.terms);
               if (saved) return json(saved);
               const evidence = await providerFor(employee,source).lookup(command.terms.reference);

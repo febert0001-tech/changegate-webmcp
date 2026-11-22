@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import type { TeamCommand, TeamSession } from "../../merchant-team/contracts";
+import type { DemoState } from "../../merchant-team/demo-shift";
 import { canReview, cents, checks, currentStep, executionStopped, money, payout, requestDecision, requestReceipt,
   providerAttempt, providerName, providerResponse, providerVerification, saleProvider, type ElectronicProvider,
   requestStatus, submitted, transactionTabs, type RefundRequest, type TestSale, type TransactionStep } from "../../merchant-team/refund-requests";
@@ -13,6 +14,7 @@ import styles from "../merchant/merchant.module.css";
 
 type Send = <T>(command: TeamCommand, options?: { signal?: AbortSignal; sessionVersion?: string }) => Promise<T>;
 type Lookup = { sale: TestSale; paidCents: number; reservedCents: number; balanceCents: number } | null;
+type DemoView = { state: DemoState | null; inbox: { requestId: string; phase: number }[] };
 const value = (form: FormData, key: string) => String(form.get(key) ?? "").trim();
 const url = (id: string, step?: TransactionStep) => "/transactions/" + id + (step ? "/" + step : "");
 const time = (value: string) => value.replace("T"," ").slice(0,19) + " UTC";
@@ -52,6 +54,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState("");
   const [notice,setNotice]=useState("");
+  const [demo,setDemo]=useState<DemoView>();
   const id=destination==="list" ? undefined : destination.id;
   const version=session.sessionVersion;
   const manager=canReview(session.role);
@@ -73,8 +76,11 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
           ]);
           if(!controller.signal.aborted){setRecord(result);setAlertStatus(alerts);}
         }else{
-          const result=await send<RefundRequest[]>({action:"listRefundRequests"},options);
-          if(!controller.signal.aborted)setRows(result);
+          const [result, shift]=await Promise.all([
+            send<RefundRequest[]>({action:"listRefundRequests"},options),
+            session.demoShift ? send<DemoView>({action:"demoShift"},options) : undefined,
+          ]);
+          if(!controller.signal.aborted){setRows(result);setDemo(shift);}
         }
       }catch(e){
         if(!controller.signal.aborted&&!onSessionError(e))setError(e instanceof Error?e.message:"Transactions unavailable.");
@@ -87,9 +93,9 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
     if(!id&&session.role==="owner")void send<{thresholdCents:number}>({action:"refundPolicy"},options)
       .then(result=>{if(!controller.signal.aborted)setThreshold(result.thresholdCents);})
       .catch(e=>{if(!controller.signal.aborted&&!onSessionError(e))setError("Could not load the refund policy.");});
-    const timer=id||manager ? window.setInterval(()=>{if(document.visibilityState==="visible")void load();},5000):undefined;
+    const timer=id||manager||session.demoShift ? window.setInterval(()=>{if(document.visibilityState==="visible")void load();},5000):undefined;
     return()=>{controller.abort();if(timer!==undefined)window.clearInterval(timer);};
-  },[id,manager,onSessionError,send,session.role,version]);
+  },[id,manager,onSessionError,send,session.demoShift,session.role,version]);
 
   async function run(work:()=>Promise<void>){
     setBusy(true);setError("");setNotice("");
@@ -99,7 +105,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   const api=<T,>(command:TeamCommand)=>send<T>(command,{sessionVersion:version});
   const noticeBlock=<>{error&&<p className={styles.formError} role="alert">{error}</p>}{notice&&<p role="status">{notice}</p>}</>;
   if(destination==="list"){
-    const pending=rows.filter(r=>requestStatus(r)==="Needs manager decision");
+    const pending=rows.filter(r=>requestStatus(r)==="Needs manager decision"&&r.sale?.shift!=="Demo shift");
     const overBalance=rows.filter(r=>checks(r).route==="over-balance");
     const filtered=rows.filter(r=>
       (!location||r.sale?.location===location)&&(!register||r.sale?.register===register)&&(!shift||r.sale?.shift===shift)&&
@@ -119,6 +125,52 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       {session.reviewerConfigured===false&&<p className={styles.formError}>No supervisor is configured for this store. Ask your store administrator to assign a manager or owner.</p>}
       <p className={styles.fieldHint}>Test environment · No real money moves</p>
       {noticeBlock}
+      {demo&&<section className={styles.importSection} aria-label="Synthetic shift">
+        <h3>Synthetic shift</h3>
+        <p>Harbor Fuel and Harbor Bar · Fictional transactions · Payment connectors disabled</p>
+        {!demo.state&&session.role==="cashier"&&<form className={styles.formRow} onSubmit={event=>{
+          event.preventDefault();
+          const seed=value(new FormData(event.currentTarget),"seed");
+          void run(async()=>setDemo(await api<DemoView>({action:"startDemoShift",seed})));
+        }}>
+          <label>Seed<input name="seed" defaultValue="harbor-evening" pattern="[A-Za-z0-9_\-]{1,40}" required disabled={busy}/></label>
+          <button type="submit" disabled={busy}>Run demo shift</button>
+        </form>}
+        {demo.state&&(() => {
+          const { event, finished, requestId, runId, seed, step, total }=demo.state;
+          const refund=event.refund;
+          return <>
+            <p>Seed <strong>{seed}</strong> · Event {step+1} of {total} · {time(event.at)}</p>
+            <h4>{event.title}</h4>
+            {event.sale&&<><p>Reference <strong>{event.sale.reference}</strong></p><SaleFacts sale={event.sale}/></>}
+            {event.discountCents!==undefined&&<p>Discount {money(event.discountCents)}</p>}
+            {refund&&<p>Refund {money(cents(refund.amount))} · Assigned cashier {session.coworkers.find(member=>member.username===refund.cashier)?.name}</p>}
+            {requestId&&<p><Link href={url(requestId)} prefetch={false}>Open generated refund</Link></p>}
+            {refund&&event.sale&&refund.cashier===session.username&&!requestId&&<button type="button" className={styles.primary} disabled={busy}
+              onClick={()=>void run(async()=>{
+                if(!event.sale)return;
+                const result=await api<RefundRequest>({action:"createRefundRequest",submissionId:crypto.randomUUID(),demoRun:runId,
+                  terms:{reference:event.sale.reference,amount:refund.amount,currency:"USD",reason:refund.reason}});
+                router.push(url(result.id,currentStep(result)));
+              })}>Submit generated refund request</button>}
+            {session.role==="cashier"&&<div className={styles.formRow}>
+              <button type="button" disabled={busy||finished||Boolean(refund&&!requestId)} onClick={()=>void run(async()=>
+                setDemo(await api<DemoView>({action:"nextDemoEvent",runId,step})))}>Next event</button>
+              <button type="button" disabled={busy} onClick={()=>void run(async()=>{
+                setDemo(await api<DemoView>({action:"replayDemoShift",runId}));
+                setRows(await api<RefundRequest[]>({action:"listRefundRequests"}));
+              })}>Replay this seed</button>
+            </div>}
+            {finished&&<p role="status">Generated shift complete.</p>}
+          </>;
+        })()}
+        {manager&&<><h4>Simulated supervisor alerts</h4>
+          {demo.inbox.length ? <ul className={styles.queue}>{demo.inbox.map(alert=><li key={alert.requestId}>
+            <Link href={url(alert.requestId,"approval")} prefetch={false}>
+              {alert.phase===0?"Primary review":"Backup escalation"} · {rows.find(row=>row.id===alert.requestId)?.terms.reference ?? "Open refund"}
+            </Link></li>)}</ul> : <p>No demo alerts awaiting your decision.</p>}
+        </>}
+      </section>}
       {newForm&&<section className={styles.importSection} aria-label="New refund">
         <h3>Find original sale</h3>
         <form className={styles.formRow} onSubmit={event=>{
@@ -161,7 +213,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       </section>}
       {manager&&<section className={styles.importSection} aria-labelledby="manager-queue">
         <h3 id="manager-queue">Manager queue</h3>
-        <PhoneAlerts api={api}/><p role="status">{pending.length} {pending.length===1?"request needs":"requests need"} a decision</p>
+        {!session.demoShift&&<PhoneAlerts api={api}/>}<p role="status">{pending.length} {pending.length===1?"request needs":"requests need"} a decision</p>
         {!!pending.length&&list(pending)}
         {!!overBalance.length&&<details><summary>{overBalance.length} over-balance {overBalance.length===1?"request":"requests"} blocked</summary>
           {list(overBalance.slice(0,10))}</details>}
@@ -329,6 +381,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       </>}
       {step==="receipt"&&<>
         <h3>Receipt and verification</h3>
+        {record.sale?.shift==="Demo shift"&&review?.decision==="Approved"&&<p><strong>Approved / Not submitted</strong></p>}
         {provider?<><p>{response?.kind==="PayPal refund recovered" ? "Recovered original PayPal refund reference." :
           response ? response.refund.status ? name+" returned "+response.refund.status : name+" refund reference recorded." :
           attempt && !stopped ? name+" response unavailable." : "No "+name+" refund recorded."}</p>

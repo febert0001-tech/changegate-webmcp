@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assessSize, observeRefundShare } from "../src/merchant-team/refund-monitor-rules";
-import { requestStatus, requestReceipt, type RefundRequest } from "../src/merchant-team/refund-requests";
+import { checks, requestStatus, requestReceipt, type RefundRequest } from "../src/merchant-team/refund-requests";
+import { demoAccounts, generateDemoEvents, type DemoState } from "../src/merchant-team/demo-shift";
 import type { Employee, TeamCase, TeamCaseDetail, TeamSession, TeamWorkspaceView } from "../src/merchant-team/contracts";
 import { createTeamWorkspace } from "../src/merchant-team/handler";
 import { reviewSummaryCsv, type ReviewSummary } from "../src/merchant-team/review-summary";
@@ -32,13 +33,13 @@ const folders: string[] = [];
 const stores = new Set<TeamStore>();
 const children = new Set<ChildProcess>();
 
-function app(path?: string, users = roster, clock?: () => string, square?: SquareSandbox, paypal?: PayPalProvider) {
+function app(path?: string, users = roster, clock?: () => string, square?: SquareSandbox, paypal?: PayPalProvider, demo = false) {
   if (!path) {
     const folder = mkdtempSync(join(tmpdir(), "changegate-team-"));
     folders.push(folder);
     path = join(folder, "merchant.sqlite");
   }
-  const store = new TeamStore(path, clock);
+  const store = new TeamStore(path, clock, demo);
   stores.add(store);
   const workspace = createTeamWorkspace(store, users, origin, { ...(square && { square }), ...(paypal && { paypal }) });
   return {
@@ -85,6 +86,80 @@ async function signIn(server: Pick<ReturnType<typeof app>, "request">, username:
     },
   };
 }
+
+describe("authenticated synthetic shift", () => {
+  it("replays the same scope, decisions and holds without touching other records", async () => {
+    const users = demoAccounts.map(account => {
+      const salt = randomBytes(16);
+      return { ...account, role: account.role as Employee["role"], salt: salt.toString("hex"),
+        passwordHash: scryptSync(password, salt, 32).toString("hex") } as Employee;
+    });
+    const server = app(undefined, users, undefined, undefined, undefined, true);
+    const [maya, robin, jordan, backup, alex] = await Promise.all(users.map(user => signIn(server,user.username)));
+    type View = { state: DemoState; inbox: { requestId: string; phase: number }[] };
+    const seed = "harbor-evening";
+    let { state } = await maya!.send<View>({ action: "startDemoShift", seed });
+    const otherTerms = { reference: "TEST-SALE-ELECTRONIC", currency: "USD", amount: "5.00", reason: "Unrelated fixture" };
+    const other = await alex!.send<RefundRequest>({ action: "createRefundRequest", submissionId: randomUUID(), terms: otherTerms });
+    const sameMerchant = await maya!.send<RefundRequest>({ action: "createRefundRequest", submissionId: randomUUID(), terms: otherTerms });
+    const advance = async () => {
+      const result = await maya!.send<View>({ action: "nextDemoEvent", runId: state.runId, step: state.step });
+      state = result.state;
+    };
+    const submit = (cashier: typeof maya) => cashier!.send<RefundRequest>({ action: "createRefundRequest", submissionId: randomUUID(),
+      demoRun: state.runId, terms: { reference: state.event.sale!.reference, amount: state.event.refund!.amount,
+        reason: state.event.refund!.reason, currency: "USD" } });
+    const approve = (id: string) => ({ action: "decideRefundRequest", id, decision: "Approved", password });
+    async function play(verifyRoles: boolean) {
+      const events = [state.event];
+      const routes: string[] = [];
+      const ids: string[] = [];
+      while (!state.finished) {
+        if (state.event.refund) {
+          const cashier = state.event.refund.cashier === "maya" ? maya : robin;
+          const lookup = await cashier!.send<{ sale: object }>({ action: "lookupOriginalSale", reference: state.event.sale!.reference });
+          expect(lookup.sale).toEqual(state.event.sale);
+          const result = await submit(cashier);
+          expect((await submit(cashier)).id).toBe(result.id);
+          const check = checks(result);
+          routes.push(check.route);
+          ids.push(result.id);
+          if (state.step === 6) {
+            expect(check.monitoring).toMatchObject({ cashierWatchCount: 3, registerWatchCount: 3 });
+            expect(check.monitoring?.reasons.join(" ")).toMatch(/across registers.*across cashiers/);
+          }
+          if (state.step === 2 && verifyRoles) {
+            expect(check.cumulativeCents).toBe(5000);
+            expect((await jordan!.send<View>({ action: "demoShift" })).inbox).toEqual([{ requestId: result.id, phase: 0 }]);
+            expect((await backup!.send<View>({ action: "demoShift" })).inbox).toEqual([]);
+            expect((await maya!.request(approve(result.id))).status).toBe(403);
+            expect((await alex!.request(approve(result.id))).status).toBe(404);
+            expect((await alex!.request({ action: "openRefundRequest", id: result.id })).status).toBe(404);
+            expect((await alex!.request({ action: "demoShift" })).status).toBe(404);
+            const receipt = requestReceipt(await jordan!.send<RefundRequest>(approve(result.id)));
+            expect(receipt.decision).toMatchObject({ status: "Approved" });
+            expect(receipt.execution).toMatchObject({ status: "Not submitted", attempt: null, providerResponse: null });
+          }
+        }
+        await advance();
+        events.push(state.event);
+      }
+      expect((await backup!.send<View>({ action: "demoShift" })).inbox).toContainEqual({ requestId: ids[4], phase: 1 });
+      return { events, routes, ids };
+    }
+    const first = await play(true);
+    expect(first.events).toEqual(generateDemoEvents(seed));
+    expect(first.routes).toEqual(["manager", "routine", "routine", "routine", "manager"]);
+    const lastRun = state.runId;
+    ({ state } = await maya!.send<View>({ action: "replayDemoShift", runId: lastRun }));
+    expect(state.runId).not.toBe(lastRun);
+    expect(await maya!.send<RefundRequest[]>({ action: "listRefundRequests" })).toEqual([sameMerchant]);
+    expect(await alex!.send<RefundRequest[]>({ action: "listRefundRequests" })).toEqual([other]);
+    const second = await play(false);
+    expect(second.events).toEqual(first.events);
+    expect(second.routes).toEqual(first.routes);
+  });
+});
 
 describe("Square Sandbox refunds", () => {
   const users: Employee[] = roster.map(employee => ({ ...employee, role: "manager" }));

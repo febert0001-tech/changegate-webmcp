@@ -1,10 +1,11 @@
 import { readFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import { rosterSchema } from "./contracts";
 import { createTeamWorkspace } from "./handler";
 import { configuredSquareSandbox } from "./square-sandbox";
 import { configuredPayPalSandbox } from "./paypal-provider";
 import { TeamStore } from "./store";
+import { demoAccounts } from "./demo-shift";
 
 let workspace: ReturnType<typeof createTeamWorkspace> | undefined;
 
@@ -13,7 +14,8 @@ export function teamWorkspace() {
   try {
     const env = process.env;
     const staging = env.CHANGEGATE_TEAM_MODE === "staging";
-    if (env.CHANGEGATE_TEAM_MODE && !staging) return undefined;
+    const demo = env.CHANGEGATE_TEAM_MODE === "demo";
+    if (env.CHANGEGATE_TEAM_MODE && !staging && !demo) return undefined;
     const origin = env.CHANGEGATE_TEAM_ORIGIN ?? (staging ? "" : "http://127.0.0.1:3190");
     let db: string;
     let config: unknown;
@@ -33,15 +35,19 @@ export function teamWorkspace() {
       const users = env.CHANGEGATE_TEAM_USERS_FILE;
       if (!/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(origin) || !localDb || !users ||
           !isAbsolute(localDb) || !isAbsolute(users) || localDb === users) return undefined;
+      if (demo && basename(localDb) !== "synthetic-demo.sqlite") return undefined;
       db = localDb;
       config = JSON.parse(readFileSync(users, "utf8"));
     }
 
     const roster = rosterSchema.parse(config);
-    const store = new TeamStore(db);
+    if (demo && (roster.length !== demoAccounts.length || !demoAccounts.every(account => roster.some(member =>
+      member.username === account.username && member.role === account.role && member.merchantId === account.merchantId &&
+      member.merchantName === account.merchantName)))) return undefined;
+    const store = new TeamStore(db, undefined, demo);
     try {
-      const square = configuredSquareSandbox();
-      const paypal = configuredPayPalSandbox();
+      const square = demo ? undefined : configuredSquareSandbox();
+      const paypal = demo ? undefined : configuredPayPalSandbox();
       return workspace = createTeamWorkspace(store, roster, origin, { staging, ...(square && { square }), ...(paypal && { paypal }) });
     } catch (error) {
       store.close();

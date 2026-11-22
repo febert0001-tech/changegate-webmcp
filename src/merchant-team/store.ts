@@ -13,6 +13,7 @@ import { executionStopped, providerVerification, type ElectronicSaleEvidence, ty
 import { SquareSubmissionBlocked, type SquareSandbox } from "./square-sandbox";
 import type { PayPalProvider } from "./paypal-provider";
 import { RefundNotSubmitted, RefundSubmissionRejected } from "./paypal-contracts";
+import { DemoShift, demoEscalationMs, demoReferencePrefix } from "./demo-shift";
 
 type ImportRow = ImportSummary & { rejections: string };
 type FindingRow = { id: string; importId: string; evidence: string; caseId: string | null };
@@ -41,8 +42,9 @@ export class TeamStore {
   private readonly db: DatabaseSync;
   readonly refundRequests: RefundRequestStore;
   readonly alerts: RefundAlertStore;
+  readonly demo?: DemoShift;
 
-  constructor(path: string, private readonly now = () => new Date().toISOString()) {
+  constructor(path: string, private readonly now = () => new Date().toISOString(), demo = false) {
     this.db = new DatabaseSync(path, { enableForeignKeyConstraints: true });
     try {
       this.db.exec(`
@@ -112,8 +114,9 @@ export class TeamStore {
           replacement_hash TEXT NOT NULL
         );
       `);
-      this.refundRequests = new RefundRequestStore(this.db, this.now);
+      this.refundRequests = new RefundRequestStore(this.db, this.now, demo);
       this.alerts = new RefundAlertStore(this.db);
+      if (demo) this.demo = new DemoShift(this.db);
     } catch (error) {
       this.db.close();
       throw error;
@@ -126,13 +129,36 @@ export class TeamStore {
 
   lookupRefundSale(employee: Employee, token: string, reference: string, evidence?: ElectronicSaleEvidence) {
     this.requireActiveSession(employee, token);
-    return this.refundRequests.lookup(employee, reference, evidence);
+    const sale = this.demo?.find(employee, reference);
+    return this.refundRequests.lookup(employee, reference, sale ? { sale, countedRefunds: [] } : evidence);
   }
 
-  createRefundRequest(employee: Employee, token: string, submissionId: string, terms: RefundTerms, evidence?: ElectronicSaleEvidence) {
+  createRefundRequest(employee: Employee, token: string, submissionId: string, terms: RefundTerms, evidence?: ElectronicSaleEvidence, demoRun?: string) {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
+      if (demoRun || (this.demo && terms.reference.startsWith(demoReferencePrefix))) {
+        if (!this.demo) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
+        const input = this.demo.submission(employee, demoRun, terms);
+        return this.refundRequests.create(employee, input.submissionId, terms, this.alerts, undefined, {
+          sale: input.sale, occurredAt: input.occurredAt, escalationMs: demoEscalationMs,
+        });
+      }
       return this.refundRequests.create(employee, submissionId, terms, this.alerts, evidence);
+    });
+  }
+
+  demoShift(employee: Employee, token: string,
+    command: Extract<TeamCommand, { action: "demoShift" | "startDemoShift" | "nextDemoEvent" | "replayDemoShift" }>) {
+    const demo = this.demo;
+    if (!demo?.includes(employee)) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      if (command.action !== "demoShift" && employee.role !== "cashier") throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
+      const state = command.action === "startDemoShift" ? demo.start(command.seed) :
+        command.action === "nextDemoEvent" ? demo.next(command.runId, command.step) :
+        command.action === "replayDemoShift" ? demo.replay(command.runId) : demo.state();
+      const duty = employee.username === "jordan" ? "primary" : employee.username === "pay-backup" ? "backup" : undefined;
+      return { state, inbox: state && duty ? this.alerts.demoInbox(employee, { duty }, Date.parse(state.event.at)) : [] };
     });
   }
 
@@ -301,7 +327,9 @@ export class TeamStore {
   decideRefundRequest(employee: Employee, token: string, id: string, decision: RefundDecision) {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
-      return this.refundRequests.decide(employee, id, decision);
+      const request = this.refundRequests.open(employee, id);
+      const demoTime = request.sale?.shift === "Demo shift" && this.demo ? this.demo.state()?.event.at : undefined;
+      return this.refundRequests.decide(employee, id, decision, demoTime);
     });
   }
 
