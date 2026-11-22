@@ -201,7 +201,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   const status=requestStatus(record), current=currentStep(record);
   const outcome=verified ? "Square Sandbox refund verified · No real money moved"
     : failed ? "Square Sandbox reports the refund failed"
-    : attempt ? "Square Sandbox outcome unconfirmed"
+    : attempt && !stopped ? "Square Sandbox outcome unconfirmed"
     : reported ? "Test cash payout reported" : "No payout recorded";
   const next=status==="Needs manager decision" ? "A different supervisor must approve or reject this request."
     : check.route==="over-balance" ? "Cashier: check the balance and start a new request for an eligible amount."
@@ -298,7 +298,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
         <h3>Execution</h3>
         {response ? <><p>Square response · {response.refund.status} · {response.refund.id}</p>
           <Link href={url(record.id,"receipt")}>Open receipt</Link></>:
-          square&&(status==="Ready for Square Sandbox refund"||attempt)?<>
+          square&&!stopped&&(status==="Ready for Square Sandbox refund"||attempt)?<>
             <p>{attempt?"Square’s response is unavailable. Retrying uses the original attempt.":"Submit this refund to Square Sandbox."}</p>
             <button className={styles.primary} disabled={busy} onClick={()=>void run(async()=>{
               const result=await api<RefundRequest>({action:"executeSquareRefund",id:record.id});
@@ -317,7 +317,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       </>}
       {step==="receipt"&&<>
         <h3>Receipt and verification</h3>
-        {square?<><p>{response ? "Square returned "+response.refund.status : attempt ? "Square response unavailable." : "No Square submission recorded."}</p>
+        {square?<><p>{response ? "Square returned "+response.refund.status : attempt && !stopped ? "Square response unavailable." : "No Square refund recorded."}</p>
           {stopped&&<p>{stopped.reason}</p>}
           {review&&<p>{review.decision} by {review.actor} · {time(review.occurredAt)}</p>}
           <p><strong>{verification?.result??"Independent lookup not run"}</strong>{verification?.occurredAt&&" · "+time(verification.occurredAt)}</p>

@@ -12,6 +12,7 @@ import { RefundRequestStore } from "./refund-request-store";
 import type { RefundDecision, RefundTerms } from "./refund-requests";
 import { executionStopped, squareVerification } from "./refund-requests";
 import type { SquareSandbox, SquareSaleEvidence } from "./square-sandbox";
+import { SquareSubmissionBlocked } from "./square-sandbox";
 
 type ImportRow = ImportSummary & { rejections: string };
 type FindingRow = { id: string; importId: string; evidence: string; caseId: string | null };
@@ -152,21 +153,25 @@ export class TeamStore {
           });
         }
       }
-      const { attempt, response: saved } = this.atomic(() => {
+      const { attempt, response: saved, started, request } = this.atomic(() => {
         this.requireActiveSession(employee, token);
         return this.refundRequests.startSquare(employee, id, this.alerts, evidence);
       });
       response = saved;
       if (!response) {
-        if (!attempt || this.squareInFlight.has(id)) return this.refundRequests.open(employee, id);
+        if (!attempt || executionStopped(request) || this.squareInFlight.has(id)) return this.refundRequests.open(employee, id);
         // The local retry window includes the instant exactly 15 minutes after the original attempt.
         if (Date.parse(this.now()) - Date.parse(attempt.startedAt) > 15 * 60_000) {
           throw new TeamError("SQUARE_RECONCILIATION_REQUIRED", 409);
         }
         this.squareInFlight.add(id);
         try {
-          const result = await square.submit(attempt.terms).catch(() => null);
-          response = this.atomic(() => this.refundRequests.recordSquareResponse(employee, id, result)) ?? undefined;
+          const result = await square.submit(attempt.terms).catch((error: unknown) => error instanceof SquareSubmissionBlocked ? error : null);
+          if (started && result instanceof SquareSubmissionBlocked) {
+            return this.atomic(() => this.refundRequests.stopSquare(employee, id, result.reason, true));
+          }
+          response = this.atomic(() => this.refundRequests.recordSquareResponse(employee, id,
+            result instanceof SquareSubmissionBlocked ? null : result)) ?? undefined;
         } finally {
           this.squareInFlight.delete(id);
         }

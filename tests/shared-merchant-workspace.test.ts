@@ -86,20 +86,26 @@ describe("Square Sandbox refunds", () => {
     const ledger = new Map<string, typeof refund>();
     const settings = { merchant: config.merchantId, location: config.locationId, status: "COMPLETED", currency: "USD",
       loseResponse: false, visible: true, readback: refund, total: 12000, waitForPost: Promise.resolve(),
-      createdAt: new Date().toISOString(), refundIds: [] as string[], priorRefundStatus: "FAILED" };
+      createdAt: new Date().toISOString(), refundIds: [] as string[], priorRefundStatus: "FAILED",
+      failMerchantRead: 0, denyRefund: false };
+    let merchantReads = 0;
     const transport: typeof fetch = async (input, init) => {
       const url = new URL(String(input));
       expect(url.origin).toBe("https://connect.squareupsandbox.com");
-      if (url.pathname === "/v2/merchants/me") return Response.json({ merchant: { id: settings.merchant } });
+      if (url.pathname === "/v2/merchants/me") {
+        return ++merchantReads === settings.failMerchantRead ? new Response(null, { status: 503 }) :
+          Response.json({ merchant: { id: settings.merchant } });
+      }
       if (url.pathname === "/v2/payments/" + terms.reference) {
         return Response.json({ payment: { id: terms.reference, location_id: settings.location, status: settings.status,
           source_type: "CARD", created_at: settings.createdAt, total_money: { amount: settings.total, currency: settings.currency },
           refund_ids: [...settings.refundIds, ...[...ledger.values()].map(row => row.id)],
-          refunded_money: { amount: ledger.size * 5000, currency: "USD" } } });
+          refunded_money: { amount: settings.readback.status === "COMPLETED" ? ledger.size * 5000 : 0, currency: "USD" } } });
       }
       if (url.pathname === "/v2/refunds" && typeof init?.body === "string") {
         const body = JSON.parse(init.body) as { idempotency_key: string };
         posts.push(body);
+        if (settings.denyRefund) return Response.json({ errors: [{ code: "INSUFFICIENT_PERMISSIONS_FOR_REFUND" }] }, { status: 400 });
         await settings.waitForPost;
         ledger.set(body.idempotency_key, refund);
         if (settings.loseResponse) throw new Error("lost provider response");
@@ -145,6 +151,8 @@ describe("Square Sandbox refunds", () => {
     const operator = await signIn(restarted, "maya");
     const completed = await operator.send<RefundRequest>(execute);
     expect(mock.posts).toHaveLength(2);
+    expect(mock.posts[0]).toEqual({ idempotency_key: expect.stringMatching(/^[a-f0-9-]{36}$/),
+      payment_id: terms.reference, amount_money: { amount: 5000, currency: "USD" } });
     expect(mock.posts[0]).toEqual(mock.posts[1]);
     expect(mock.ledger.size).toBe(1);
     const receipt = requestReceipt(completed);
@@ -159,6 +167,68 @@ describe("Square Sandbox refunds", () => {
     expect(mock.posts).toHaveLength(2);
     expect(await operator.send({ action: "lookupOriginalSale", source: "square", reference: terms.reference }))
       .toMatchObject({ balanceCents: 7000, reservedCents: 0 });
+  });
+
+  it.each([{ denyRefund: false, failMerchantRead: 3, posts: 0 }, { denyRefund: true, failMerchantRead: 0, posts: 1 }])(
+    "stops a definite first Square failure and releases the reservation ($posts POSTs)", async (failure) => {
+      const mock = provider();
+      Object.assign(mock.settings, failure);
+      const server = app(undefined, users, undefined, mock.square);
+      const cashier = await signIn(server, "maya");
+      const manager = await signIn(server, "jordan");
+      const request = await cashier.send<RefundRequest>(submit());
+      await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+      const execute = { action: "executeSquareRefund", id: request.id };
+      const stopped = await cashier.send<RefundRequest>(execute);
+      expect(stopped.events.at(-1)).toMatchObject({ kind: "Execution stopped" });
+      expect(requestReceipt(stopped).execution.status).toBe("Not submitted");
+      expect(mock.posts).toHaveLength(failure.posts);
+      expect(mock.ledger.size).toBe(0);
+      expect(await cashier.send({ action: "lookupOriginalSale", source: "square", reference: terms.reference }))
+        .toMatchObject({ balanceCents: 12000, reservedCents: 0 });
+      expect(await cashier.send(execute)).toEqual(stopped);
+      expect(mock.posts).toHaveLength(failure.posts);
+    });
+
+  it("keeps an earlier uncertain Square attempt held if a later retry is denied permission", async () => {
+    const mock = provider();
+    const server = app(undefined, users, undefined, mock.square);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit());
+    await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    const execute = { action: "executeSquareRefund", id: request.id };
+    mock.settings.loseResponse = true;
+    await cashier.send(execute);
+    mock.settings.denyRefund = true;
+    const stillHeld = await cashier.send<RefundRequest>(execute);
+    expect(requestReceipt(stillHeld).execution.status).toBe("Outcome unconfirmed");
+    expect(mock.posts).toHaveLength(2);
+    expect(mock.posts[0]).toEqual(mock.posts[1]);
+    expect(mock.ledger.size).toBe(1);
+    expect(await cashier.send({ action: "lookupOriginalSale", source: "square", reference: terms.reference }))
+      .toMatchObject({ reservedCents: 5000 });
+  });
+
+  it("subtracts external and locally recorded pending Square refunds exactly once", async () => {
+    const mock = provider();
+    mock.settings.refundIds = ["earlier-refund"];
+    mock.settings.priorRefundStatus = "PENDING";
+    mock.settings.readback = { ...refund, status: "PENDING" };
+    const server = app(undefined, users, undefined, mock.square);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    const lookup = { action: "lookupOriginalSale", source: "square", reference: terms.reference };
+    expect(await cashier.send(lookup)).toMatchObject({ balanceCents: 7000, reservedCents: 0 });
+    const request = await cashier.send<RefundRequest>(submit());
+    await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    const submitted = await cashier.send<RefundRequest>({ action: "executeSquareRefund", id: request.id });
+    expect(requestReceipt(submitted).verification.status).toBe("Pending");
+    expect(await cashier.send(lookup)).toMatchObject({ balanceCents: 2000, reservedCents: 0 });
+    const above = await cashier.send<RefundRequest>(submit({ amount: "20.01" }));
+    expect(requestStatus(above)).toBe("Blocked · Over refundable balance");
+    expect((await cashier.request({ action: "executeSquareRefund", id: above.id })).status).toBe(409);
+    expect(mock.posts).toHaveLength(1);
   });
 
   it("requires supervisor review if the store threshold changes before the first submission", async () => {

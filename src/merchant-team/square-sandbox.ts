@@ -10,6 +10,12 @@ const payment = z.object({ id: identifier, location_id: identifier, status: z.st
   refund_ids: z.array(identifier).max(20).optional() });
 const refund = z.object({ id: identifier, payment_id: identifier, location_id: identifier,
   amount_money: money, status: z.enum(["PENDING", "COMPLETED", "FAILED", "REJECTED"]) });
+const refundErrors = z.object({ errors: z.array(z.object({ code: z.string() })).min(1) });
+export class SquareSubmissionBlocked extends TeamError {
+  constructor(readonly reason: string) {
+    super("SQUARE_SUBMISSION_BLOCKED", 409);
+  }
+}
 const config = z.object({ accessToken: z.string().regex(/^\S+$/), teamMerchantId: z.string().min(1),
   merchantId: identifier, locationId: identifier });
 export type SquareConfig = z.infer<typeof config>;
@@ -46,6 +52,13 @@ export class SquareSandbox {
         cache: "no-store", redirect: "error", signal: AbortSignal.timeout(8000),
       });
       if (response.status === 404 && path.startsWith("/payments/")) throw new TeamError("SQUARE_SALE_UNAVAILABLE", 422);
+      if (body && path === "/refunds" && (response.status === 400 || response.status === 403)) {
+        const denial = refundErrors.safeParse(await response.json());
+        const code = response.status === 400 ? "INSUFFICIENT_PERMISSIONS_FOR_REFUND" : "INSUFFICIENT_SCOPES";
+        if (denial.success && denial.data.errors.every(error => error.code === code)) {
+          throw new SquareSubmissionBlocked("Square refused permission for this refund. No refund was created.");
+        }
+      }
       if (!response.ok) throw new Error("Square request failed");
       return schema.parse(await response.json());
     } catch (error) {
@@ -94,7 +107,11 @@ export class SquareSandbox {
   }
 
   async submit(terms: SquareAttemptTerms) {
-    await this.verifyMerchant();
+    try {
+      await this.verifyMerchant();
+    } catch {
+      throw new SquareSubmissionBlocked("ChangeGate could not confirm the Square merchant before submission. No refund was sent.");
+    }
     const { refund: result } = await this.call("/refunds", z.object({ refund }), {
       idempotency_key: terms.key, payment_id: terms.paymentId,
       amount_money: { amount: terms.amountCents, currency: terms.currency },

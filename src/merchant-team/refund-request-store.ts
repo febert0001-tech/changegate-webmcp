@@ -184,8 +184,7 @@ export class RefundRequestStore {
 
   startSquare(employee: Employee, id: string, alerts: RefundAlertStore, evidence?: SquareSaleEvidence) {
     const state = this.squareExecution(employee, id);
-    if (state.attempt) return { ...state, attempt: state.attempt };
-    if (executionStopped(state.request)) return state;
+    if (state.attempt || executionStopped(state.request)) return { ...state, started: false };
     const { request } = state;
     const amountCents = cents(request.terms.amount);
     const sale = request.sale!;
@@ -196,20 +195,20 @@ export class RefundRequestStore {
     const { balanceCents } = this.saleUsage(employee, evidence.sale, evidence.countedRefundIds, id);
     if (amountCents > balanceCents) {
       this.stopSquare(employee, id, "The refundable balance dropped below the approved amount.");
-      return state;
+      return { ...state, started: false };
     }
-    if (this.holdForCurrentThreshold(employee, request, evidence.sale, balanceCents, alerts)) return state;
+    if (this.holdForCurrentThreshold(employee, request, evidence.sale, balanceCents, alerts)) return { ...state, started: false };
     const terms: SquareAttemptTerms = { key: randomUUID(), paymentId: sale.reference,
       locationId: sale.square!.locationId, merchantId: sale.square!.merchantId, amountCents, currency: "USD" };
     const startedAt = this.now();
     this.db.prepare("INSERT INTO team_square_attempts VALUES (?,?,?,?)").run(employee.merchantId,id,JSON.stringify(terms),startedAt);
     this.add(employee,id,{kind:"Square attempt recorded",actor:employee.name,occurredAt:startedAt});
-    return { ...state, attempt: { terms, startedAt } };
+    return { ...state, attempt: { terms, startedAt }, started: true };
   }
 
-  stopSquare(employee: Employee, id: string, reason: string) {
-    const { request, attempt } = this.squareExecution(employee, id);
-    if (!attempt && !executionStopped(request)) {
+  stopSquare(employee: Employee, id: string, reason: string, definitelyNoRefund = false) {
+    const { request, attempt, response } = this.squareExecution(employee, id);
+    if ((!attempt || definitelyNoRefund) && !response && !executionStopped(request)) {
       this.add(employee,id,{kind:"Execution stopped",actor:"ChangeGate",occurredAt:this.now(),reason});
     }
     return this.open(employee,id);
