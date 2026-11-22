@@ -1,6 +1,18 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { TeamError, type CaseHistory, type Employee, type HistoryKind, type TeamCase, type TeamCaseDetail, type TeamCommand } from "./contracts";
+
+import type { CaseEvidence, ImportSummary, RefundFinding, RefundImport, RefundImportResult, Rejection, SavedFinding } from "./refund-csv";
+
+type ImportRow = ImportSummary & { rejections: string };
+type FindingRow = { id: string; importId: string; evidence: string; caseId: string | null };
+const importColumns = `id, imported_at AS importedAt, accepted_count AS acceptedCount,
+  rejected_count AS rejectedCount, finding_count AS findingCount`;
+const findingColumns = "id, import_id AS importId, evidence, case_id AS caseId";
+const nextAction = "Review the source rows and verify the refund with the processor.";
+const projectFinding = (row: FindingRow): SavedFinding => ({
+  ...JSON.parse(row.evidence) as RefundFinding, id: row.id, caseId: row.caseId,
+});
 
 type Change = Extract<TeamCommand, { action: "record" | "assign" | "note" | "resolve" }>;
 interface SessionRow { username: string; merchantId: string; passwordVersion: string }
@@ -27,6 +39,18 @@ export class TeamStore {
           PRIMARY KEY (merchant_id, id)
         );
         CREATE INDEX IF NOT EXISTS team_case_queue ON team_cases(merchant_id, updated_at DESC);
+        CREATE TABLE IF NOT EXISTS team_refund_imports (
+          merchant_id TEXT NOT NULL, id TEXT NOT NULL, fingerprint TEXT NOT NULL, imported_at TEXT NOT NULL,
+          accepted_count INTEGER NOT NULL, rejected_count INTEGER NOT NULL, finding_count INTEGER NOT NULL,
+          rejections TEXT NOT NULL, PRIMARY KEY (merchant_id, id), UNIQUE (merchant_id, fingerprint)
+        );
+        CREATE TABLE IF NOT EXISTS team_refund_findings (
+          merchant_id TEXT NOT NULL, id TEXT NOT NULL, import_id TEXT NOT NULL, evidence TEXT NOT NULL, case_id TEXT,
+          PRIMARY KEY (merchant_id, id), UNIQUE (merchant_id, case_id),
+          FOREIGN KEY (merchant_id, import_id) REFERENCES team_refund_imports(merchant_id, id),
+          FOREIGN KEY (merchant_id, case_id) REFERENCES team_cases(merchant_id, id)
+        );
+        CREATE INDEX IF NOT EXISTS team_findings_import ON team_refund_findings(merchant_id, import_id);
         CREATE TABLE IF NOT EXISTS team_history (
           sequence INTEGER PRIMARY KEY, merchant_id TEXT NOT NULL, case_id TEXT NOT NULL,
           actor TEXT NOT NULL, username TEXT NOT NULL, kind TEXT NOT NULL,
@@ -167,7 +191,70 @@ export class TeamStore {
       .get(employee.merchantId, id) as (TeamCase & { history: string }) | undefined;
     if (!row) throw new TeamError("CASE_NOT_FOUND", 404);
     const { history, ...item } = row;
-    return { case: item, history: JSON.parse(history) as CaseHistory[] };
+    const linked = this.db.prepare(`SELECT ${findingColumns} FROM team_refund_findings
+      WHERE merchant_id=? AND case_id=?`).get(employee.merchantId, id) as FindingRow | undefined;
+    const evidence: CaseEvidence | undefined = linked
+      ? { importId: linked.importId, finding: projectFinding(linked) } : undefined;
+    return { case: item, history: JSON.parse(history) as CaseHistory[], ...(evidence && { evidence }) };
+  }
+
+  listImports(employee: Employee): ImportSummary[] {
+    return this.db.prepare(`SELECT ${importColumns} FROM team_refund_imports
+      WHERE merchant_id=? ORDER BY imported_at DESC, id`).all(employee.merchantId) as unknown as ImportSummary[];
+  }
+
+  openImport(employee: Employee, id: string): RefundImport {
+    const row = this.db.prepare(`SELECT ${importColumns}, rejections FROM team_refund_imports WHERE merchant_id=? AND id=?`)
+      .get(employee.merchantId, id) as ImportRow | undefined;
+    if (!row) throw new TeamError("IMPORT_NOT_FOUND", 404);
+    const { rejections, ...summary } = row;
+    const findings = this.db.prepare(`SELECT ${findingColumns} FROM team_refund_findings
+      WHERE merchant_id=? AND import_id=? ORDER BY rowid`).all(employee.merchantId, id) as unknown as FindingRow[];
+    return { summary, findings: findings.map(projectFinding), rejections: JSON.parse(rejections) as Rejection[] };
+  }
+
+  importRefunds(employee: Employee, token: string, raw: string,
+    review: () => { accepted: unknown[]; findings: RefundFinding[]; rejections: Rejection[] }): RefundImportResult {
+    const fingerprint = createHash("sha256").update(raw).digest("hex");
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      const saved = this.db.prepare("SELECT id FROM team_refund_imports WHERE merchant_id=? AND fingerprint=?")
+        .get(employee.merchantId, fingerprint)?.id;
+      if (typeof saved === "string") return { batch: this.openImport(employee, saved), existing: true };
+      const { accepted, findings, rejections } = review();
+      if (!accepted.length) throw new TeamError("CSV_NO_ACCEPTED_ROWS", 422);
+      const id = randomUUID();
+      this.db.prepare(`INSERT INTO team_refund_imports VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(employee.merchantId, id, fingerprint, this.now(), accepted.length, rejections.length,
+          findings.length, JSON.stringify(rejections));
+      const insert = this.db.prepare("INSERT INTO team_refund_findings VALUES (?, ?, ?, ?, NULL)");
+      for (const finding of findings) insert.run(employee.merchantId, randomUUID(), id, JSON.stringify(finding));
+      return { batch: this.openImport(employee, id), existing: false };
+    });
+  }
+
+  assignFinding(employee: Employee, token: string, id: string, assignee: Employee) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      const row = this.db.prepare(`SELECT ${findingColumns} FROM team_refund_findings WHERE merchant_id=? AND id=?`)
+        .get(employee.merchantId, id) as FindingRow | undefined;
+      if (!row) throw new TeamError("FINDING_NOT_FOUND", 404);
+      if (row.caseId) return this.open(employee, row.caseId);
+      if (assignee.merchantId !== employee.merchantId) throw new TeamError("ASSIGNEE_UNAVAILABLE", 422);
+      const finding = projectFinding(row);
+      const caseId = randomUUID();
+      const now = this.now();
+      this.db.prepare(`INSERT INTO team_cases VALUES (?, ?, ?, 1, ?, ?, 'Awaiting evidence', ?, ?, ?)`)
+        .run(employee.merchantId, caseId, finding.rows[0]!.reference, assignee.username, assignee.name,
+          finding.explanation, nextAction, now);
+      this.db.prepare("UPDATE team_refund_findings SET case_id=? WHERE merchant_id=? AND id=?")
+        .run(caseId, employee.merchantId, id);
+      this.addEvent(employee, caseId, "Opened", "Case opened from a refund import.", now);
+      this.addEvent(employee, caseId, "Imported evidence", finding.kind + " · Source lines " +
+        finding.rows.map(({ line }) => line).join(", "), now);
+      this.addEvent(employee, caseId, "Assigned", assignee.name, now);
+      return this.open(employee, caseId);
+    });
   }
 
   private addEvent(employee: Employee, id: string, kind: HistoryKind, detail: string, time: string) {

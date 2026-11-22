@@ -49,3 +49,11 @@
 .visuallyHidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 @media (max-width: 740px) { .grid { grid-template-columns: minmax(0, 1fr); } .shell { padding: 24px 14px 40px; } .card { padding: 18px; } }
 @media (max-width: 460px) { .header, .caseHeader { flex-wrap: wrap; } }
+.importSection { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 18px; display: grid; gap: 12px; }
+.importSection summary { cursor: pointer; font-weight: 650; }
+.importMapping { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 12px; }
+.importFinding { border: 1px solid var(--line); border-radius: 9px; padding: 14px; display: grid; gap: 10px; }
+.tableWrap { overflow-x: auto; }
+.evidenceTable { width: 100%; border-collapse: collapse; text-align: left; font-size: .9rem; }
+.evidenceTable th, .evidenceTable td { border-bottom: 1px solid var(--line); padding: 8px; overflow-wrap: anywhere; }
+.rejections { padding: 8px 0 0 18px; }

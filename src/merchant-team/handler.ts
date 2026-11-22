@@ -3,6 +3,7 @@ import { isIP } from "node:net";
 import { promisify } from "node:util";
 import { TeamError, teamCommand, type Employee, type TeamSession } from "./contracts";
 import type { TeamStore } from "./store";
+import { csvLimit, inspectRefundCsv, reviewRefundCsv } from "./refund-csv";
 
 const hash = promisify(scrypt);
 const sessionSeconds = 8 * 60 * 60;
@@ -23,7 +24,7 @@ async function readCommand(request: Request): Promise<unknown> {
     const part = await reader.read();
     if (part.done) break;
     size += part.value.byteLength;
-    if (size > 16_384) {
+    if (size > 6 * csvLimit + 1024) {
       void reader.cancel().catch(() => {});
       throw new TeamError("REQUEST_TOO_LARGE", 413);
     }
@@ -127,6 +128,19 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
               store.revokeSession(token);
               return json(null, 200, cookie("", 0));
             case "create": return json(store.create(employee, command.reference, token), 201);
+            case "inspectCsv": return json(inspectRefundCsv(command.text));
+            case "previewCsv": return json(reviewRefundCsv(command.text, command.mapping));
+            case "importCsv": return json(store.importRefunds(employee, token, command.text,
+              () => reviewRefundCsv(command.text, command.mapping)));
+            case "listImports": return json(store.listImports(employee));
+            case "openImport": return json(store.openImport(employee, command.id));
+            case "assignFinding": {
+              const assignee = employees.get(command.assignee);
+              if (!assignee || assignee.merchantId !== employee.merchantId) {
+                return json({ error: "ASSIGNEE_UNAVAILABLE" }, 422);
+              }
+              return json(store.assignFinding(employee, token, command.id, assignee));
+            }
             default: return json(store.change(employee, command, roster, token));
           }
       }
@@ -138,6 +152,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
 
   return {
     handle,
+    openImport: (employee: Employee, id: string) => store.openImport(employee, id),
     employeeFor: (headers: Pick<Headers, "get">) => authenticate(headers)?.employee,
     open: (employee: Employee, id: string) => store.open(employee, id),
   };
