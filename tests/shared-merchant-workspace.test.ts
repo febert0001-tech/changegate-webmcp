@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { Employee, TeamCase, TeamCaseDetail, TeamSession } from "../src/merchant-team/contracts";
+import type { Employee, TeamCase, TeamCaseDetail, TeamSession, TeamWorkspaceView } from "../src/merchant-team/contracts";
 import { createTeamWorkspace } from "../src/merchant-team/handler";
 import { TeamStore } from "../src/merchant-team/store";
 
@@ -33,9 +33,12 @@ function app(path?: string, users = roster) {
   return {
     path,
     stop() { store.close(); stores.delete(store); },
-    request(command: unknown, cookie = "", requestOrigin = origin, host = new URL(origin).host) {
+    request(command: unknown, cookie = "", { requestOrigin = origin, host = new URL(origin).host, sessionVersion = "" } = {}) {
       return workspace.handle(new Request(origin + "/api/merchant", {
-        method: "POST", headers: { Host: host, Origin: requestOrigin, Cookie: cookie, "Content-Type": "application/json" },
+        method: "POST", headers: {
+          Host: host, Origin: requestOrigin, Cookie: cookie, "Content-Type": "application/json",
+          "X-ChangeGate-Session": sessionVersion,
+        },
         body: JSON.stringify(command),
       }));
     },
@@ -54,10 +57,12 @@ async function signIn(server: ReturnType<typeof app>, username: string) {
   expect(cookie).toMatch(/; HttpOnly; SameSite=Strict;/);
   const key = cookie?.split(";")[0];
   if (!key) throw Error("Signed-in response had no cookie");
+  const user = await response.json() as TeamSession;
   return {
-    key, user: await response.json() as TeamSession,
+    key, user,
+    request: (command: unknown) => server.request(command, key, { sessionVersion: user.sessionVersion }),
     async send<T>(command: unknown) {
-      const result = await server.request(command, key);
+      const result = await server.request(command, key, { sessionVersion: user.sessionVersion });
       expect(result.ok).toBe(true);
       return result.json() as Promise<T>;
     },
@@ -107,11 +112,11 @@ describe("shared merchant workspace", () => {
       { action: "note", ...ref, note: "Wrong merchant" }, { action: "resolve", ...ref },
       { action: "record", ...ref, finding: "Wrong merchant", nextAction: "Wrong merchant", status: "Investigating" },
     ]) {
-      const response = await server.request(command, alex.key);
+      const response = await alex.request(command);
       expect(response.status).toBe(404);
       expect(await response.json()).toEqual({ error: "CASE_NOT_FOUND" });
     }
-    expect((await server.request({ action: "assign", ...ref, assignee: "alex" }, maya.key)).status).toBe(422);
+    expect((await maya.request({ action: "assign", ...ref, assignee: "alex" })).status).toBe(422);
     expect((await server.request({ action: "list", merchantId: "harbor" }, alex.key)).status).toBe(400);
     expect(await maya.send<TeamCaseDetail>({ action: "open", id: item.id })).toMatchObject({ case: { revision: 1 } });
   });
@@ -122,14 +127,42 @@ describe("shared merchant workspace", () => {
     expect((await server.request({ action: "list" }, "changegate_team_session=" + "0".repeat(64))).status).toBe(401);
     expect((await server.request({ action: "signIn", username: "maya", password: "wrong" })).status).toBe(401);
     const maya = await signIn(server, "maya");
-    expect((await server.request({ action: "list" }, maya.key, "https://external.example")).status).toBe(403);
-    expect((await server.request({ action: "list" }, maya.key, origin, "external.example")).status).toBe(403);
-    expect((await server.request({ action: "signOut" }, maya.key)).status).toBe(200);
+    expect((await server.request({ action: "list" }, maya.key, { requestOrigin: "https://external.example" })).status).toBe(403);
+    expect((await server.request({ action: "list" }, maya.key, { host: "external.example" })).status).toBe(403);
+    expect((await maya.request({ action: "signOut" })).status).toBe(200);
     expect((await server.request({ action: "list" }, maya.key)).status).toBe(401);
     const jordan = await signIn(server, "jordan");
     server.stop();
     const restarted = app(server.path, roster.filter(({ username }) => username !== "jordan"));
     expect((await restarted.request({ action: "session" }, jordan.key)).status).toBe(401);
+  });
+
+  it("refreshes identity, queue, and case together and denies writes from a stale view", async () => {
+    const server = app();
+    const maya = await signIn(server, "maya");
+    const alex = await signIn(server, "alex");
+    const { case: privateCase } = await maya.send<TeamCaseDetail>({ action: "create", reference: "HARBOR-PRIVATE" });
+    const { case: ownCase } = await alex.send<TeamCaseDetail>({ action: "create", reference: "RIDGE-PRIVATE" });
+
+    const before = await maya.send<TeamWorkspaceView>({ action: "workspace", id: privateCase.id });
+    expect(before).toMatchObject({ session: { username: "maya" }, cases: [{ id: privateCase.id }],
+      detail: { case: { id: privateCase.id } } });
+    const after = await alex.send<TeamWorkspaceView>({ action: "workspace", id: privateCase.id });
+    expect(after).toMatchObject({ session: { username: "alex" }, cases: [{ id: ownCase.id }], detail: null });
+    expect(JSON.stringify(after)).not.toContain(privateCase.reference);
+
+    const staleBinding = { sessionVersion: before.session.sessionVersion };
+    const staleCreate = await server.request({ action: "create", reference: "HARBOR-SECRET" }, alex.key, staleBinding);
+    expect(staleCreate.status).toBe(409);
+    expect(await staleCreate.json()).toEqual({ error: "SESSION_CHANGED" });
+    expect((await server.request({ action: "signOut" }, alex.key, staleBinding)).status).toBe(409);
+    expect((await server.request({ action: "create", reference: "MISSING-BINDING" }, alex.key)).status).toBe(409);
+    expect(await alex.send<TeamCase[]>({ action: "list" })).toMatchObject([{ id: ownCase.id }]);
+
+    await alex.request({ action: "signOut" });
+    const expired = await alex.request({ action: "workspace", id: ownCase.id });
+    expect(expired.status).toBe(401);
+    expect(await expired.json()).toEqual({ error: "SIGN_IN_REQUIRED" });
   });
 
   it("rejects a stale edit without adding an extra audit entry", async () => {
@@ -138,7 +171,7 @@ describe("shared merchant workspace", () => {
     const jordan = await signIn(server, "jordan");
     const { case: item } = await maya.send<TeamCaseDetail>({ action: "create", reference: "REF-015" });
     await maya.send<TeamCaseDetail>({ action: "note", id: item.id, revision: 1, note: "First note." });
-    const stale = await server.request({ action: "note", id: item.id, revision: 1, note: "Stale note." }, jordan.key);
+    const stale = await jordan.request({ action: "note", id: item.id, revision: 1, note: "Stale note." });
     expect(stale.status).toBe(409);
     const detail = await maya.send<TeamCaseDetail>({ action: "open", id: item.id });
     expect(detail.case.revision).toBe(2);

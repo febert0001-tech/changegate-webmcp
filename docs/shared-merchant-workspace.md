@@ -6,7 +6,7 @@ Provide an absolute path in each of `CHANGEGATE_TEAM_USERS_FILE` and `CHANGEGATE
 
 ```powershell
 $caseWorkspacePassword = Read-Host 'Employee password' -MaskInput
-$caseWorkspacePassword | node -e "const c=require('node:crypto'); const p=require('node:fs').readFileSync(0,'utf8').replace(/\\r?\\n$/,''); const s=c.randomBytes(16); console.log(JSON.stringify({salt:s.toString('hex'),passwordHash:c.scryptSync(p,s,32).toString('hex')}))"
+$caseWorkspacePassword | node -e "const c=require('node:crypto'); const p=require('node:fs').readFileSync(0,'utf8').replace(/\r?\n$/,''); const s=c.randomBytes(16); console.log(JSON.stringify({salt:s.toString('hex'),passwordHash:c.scryptSync(p,s,32).toString('hex')}))"
 Remove-Variable caseWorkspacePassword
 ```
 

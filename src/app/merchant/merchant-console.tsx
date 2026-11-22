@@ -3,12 +3,13 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
-import { activeStatuses, type TeamCase, type TeamCaseDetail, type TeamCommand, type TeamSession } from "../../merchant-team/contracts";
+import { activeStatuses, type TeamCaseDetail, type TeamCommand, type TeamSession, type TeamWorkspaceView } from "../../merchant-team/contracts";
 import styles from "./merchant.module.css";
 
 const errors: Record<string, string> = {
   SIGN_IN_FAILED: "Check your username and password.",
   SIGN_IN_REQUIRED: "Your session has ended. Sign in again.",
+  SESSION_CHANGED: "The signed-in employee changed. Reload this page before making updates.",
   CASE_NOT_FOUND: "This case could not be opened in your workspace.",
   CASE_CHANGED: "Someone updated this case. Reload to see the latest version before saving.",
   CASE_RESOLVED: "This case is already resolved. Reload to see its history.",
@@ -19,17 +20,18 @@ const errors: Record<string, string> = {
 };
 
 class RequestError extends Error {
-  constructor(readonly status: number, message: string) { super(message); }
+  constructor(readonly status: number, readonly code: string, message: string) { super(message); }
 }
 
-async function send<T>(command: TeamCommand, signal?: AbortSignal): Promise<T> {
+async function send<T>(command: TeamCommand, { signal, sessionVersion }: { signal?: AbortSignal; sessionVersion?: string } = {}): Promise<T> {
   const response = await fetch("/api/merchant", {
     method: "POST", credentials: "same-origin", cache: "no-store",
-    headers: { "Content-Type": "application/json" }, body: JSON.stringify(command), signal: signal ?? null,
+    headers: { "Content-Type": "application/json", ...(sessionVersion && { "X-ChangeGate-Session": sessionVersion }) },
+    body: JSON.stringify(command), signal: signal ?? null,
   });
   if (!response.ok) {
     const { error } = await response.json() as { error: string };
-    throw new RequestError(response.status, errors[error] ?? "The workspace is temporarily unavailable.");
+    throw new RequestError(response.status, error, errors[error] ?? "The workspace is temporarily unavailable.");
   }
   return response.json() as Promise<T>;
 }
@@ -41,36 +43,44 @@ function formValues(event: FormEvent<HTMLFormElement>) {
 const field = (data: FormData, key: string) => String(data.get(key) ?? "");
 const errorText = (error: unknown) => error instanceof RequestError ? error.message : "Could not connect to the workspace.";
 const timeText = (time: string) => time.replace("T", " ").slice(0, 19) + " UTC";
+const sessionChannel = "changegate-merchant-session";
+
+function notifySessionChange() {
+  if (typeof BroadcastChannel === "undefined") return;
+  const channel = new BroadcastChannel(sessionChannel);
+  channel.postMessage("changed");
+  channel.close();
+}
 
 export function MerchantConsole({ caseId }: { caseId?: string }) {
   const router = useRouter();
   const [ready, setReady] = useState(false);
-  const [session, setSession] = useState<TeamSession | null>(null);
-  const [cases, setCases] = useState<TeamCase[]>([]);
-  const [detail, setDetail] = useState<TeamCaseDetail | null>(null);
+  const [workspace, setWorkspace] = useState<TeamWorkspaceView | null>(null);
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [assignedOnly, setAssignedOnly] = useState(true);
+  const session = workspace?.session;
+  const cases = workspace?.cases ?? [];
+  const detail = workspace?.detail;
   const item = detail?.case;
+
+  useEffect(() => {
+    if (typeof BroadcastChannel === "undefined") return;
+    const channel = new BroadcastChannel(sessionChannel);
+    channel.onmessage = () => window.location.reload();
+    return () => channel.close();
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
     async function load() {
       try {
-        const user = await send<TeamSession>({ action: "session" }, controller.signal);
-        if (controller.signal.aborted) return;
-        setSession(user);
-        const rows = await send<TeamCase[]>({ action: "list" }, controller.signal);
-        if (controller.signal.aborted) return;
-        setCases(rows);
-        if (caseId) {
-          const saved = await send<TeamCaseDetail>({ action: "open", id: caseId }, controller.signal);
-          if (!controller.signal.aborted) setDetail(saved);
-        }
+        const view = await send<TeamWorkspaceView>({ action: "workspace", id: caseId }, { signal: controller.signal });
+        if (!controller.signal.aborted) setWorkspace(view);
       } catch (error) {
-        if (!controller.signal.aborted && !(error instanceof RequestError && error.status === 401)) {
-          setNotice(errorText(error));
-        }
+        if (controller.signal.aborted) return;
+        setWorkspace(null);
+        if (!(error instanceof RequestError && error.status === 401)) setNotice(errorText(error));
       } finally {
         if (!controller.signal.aborted) setReady(true);
       }
@@ -85,10 +95,8 @@ export function MerchantConsole({ caseId }: { caseId?: string }) {
     try {
       await operation();
     } catch (error) {
-      if (error instanceof RequestError && error.status === 401) {
-        setDetail(null);
-        setCases([]);
-        setSession(null);
+      if (error instanceof RequestError && (error.status === 401 || error.code === "SESSION_CHANGED")) {
+        setWorkspace(null);
       }
       setNotice(errorText(error));
     } finally {
@@ -97,10 +105,15 @@ export function MerchantConsole({ caseId }: { caseId?: string }) {
   }
 
   function change(command: Extract<TeamCommand, { action: "record" | "assign" | "note" | "resolve" }>, message: string) {
+    if (!session) return;
+    const { sessionVersion } = session;
     void run(async () => {
-      const saved = await send<TeamCaseDetail>(command);
-      setDetail(saved);
-      setCases((existing) => [saved.case, ...existing.filter(({ id }) => id !== saved.case.id)]);
+      const saved = await send<TeamCaseDetail>(command, { sessionVersion });
+      setWorkspace((current) => current?.session.sessionVersion === sessionVersion ? {
+        ...current,
+        detail: saved,
+        cases: [saved.case, ...current.cases.filter(({ id }) => id !== saved.case.id)],
+      } : current);
       setNotice(message);
     });
   }
@@ -116,23 +129,23 @@ export function MerchantConsole({ caseId }: { caseId?: string }) {
       {session && <div className={styles.profile}>
         <span>{session.name}</span>
         <button type="button" disabled={busy} onClick={() => void run(async () => {
-          await send<null>({ action: "signOut" });
-          setSession(null);
-          setCases([]);
-          setDetail(null);
+          await send<null>({ action: "signOut" }, { sessionVersion: session.sessionVersion });
+          setWorkspace(null);
+          notifySessionChange();
           router.replace("/merchant");
           router.refresh();
         })}>Sign out</button>
       </div>}
     </header>
     <p className={styles.notice} role="status">{notice || (busy ? "Working…" : "")}</p>
-    {!ready ? <p>Loading workspace…</p> : !session ? (
-      <form className={styles.signIn} onSubmit={(event) => {
+    {!ready || (busy && !session) ? <p>Loading workspace…</p> : !session ? (
+      <form className={styles.signIn} method="post" onSubmit={(event) => {
         const data = formValues(event);
         event.currentTarget.reset();
         void run(async () => {
           await send<TeamSession>({ action: "signIn", username: field(data, "username").trim().toLowerCase(),
             password: field(data, "password") });
+          notifySessionChange();
           window.location.reload();
         });
       }}>
@@ -147,8 +160,8 @@ export function MerchantConsole({ caseId }: { caseId?: string }) {
           <div className={styles.queueHeader}>
             <h2>{assignedOnly ? "Assigned to me" : "All cases"}</h2>
             <button type="button" disabled={busy} onClick={() => void run(async () => {
-              setCases(await send<TeamCase[]>({ action: "list" }));
-              if (caseId && item) setDetail(await send<TeamCaseDetail>({ action: "open", id: caseId }));
+              setWorkspace(null);
+              setWorkspace(await send<TeamWorkspaceView>({ action: "workspace", id: caseId }));
             })}>Refresh</button>
           </div>
           <div className={styles.filters} aria-label="Queue filter">
@@ -164,7 +177,8 @@ export function MerchantConsole({ caseId }: { caseId?: string }) {
           <form className={styles.newCase} onSubmit={(event) => {
             const data = formValues(event);
             void run(async () => {
-              const saved = await send<TeamCaseDetail>({ action: "create", reference: field(data, "reference") });
+              const saved = await send<TeamCaseDetail>({ action: "create", reference: field(data, "reference") },
+                { sessionVersion: session.sessionVersion });
               router.push(`/merchant/${saved.case.id}`);
             });
           }}>

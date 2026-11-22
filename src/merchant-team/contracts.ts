@@ -32,6 +32,7 @@ export const teamCommand = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("signIn"), username: slug, password: z.string().min(1).max(160) }),
   z.strictObject({ action: z.literal("signOut") }),
   z.strictObject({ action: z.literal("session") }),
+  z.strictObject({ action: z.literal("workspace"), id: id.optional() }),
   z.strictObject({ action: z.literal("list") }),
   z.strictObject({ action: z.literal("open"), id }),
   z.strictObject({ action: z.literal("create"), reference: text(160) }),
@@ -68,10 +69,17 @@ export interface TeamCaseDetail {
   history: CaseHistory[];
 }
 export interface TeamSession {
+  sessionVersion: string;
   username: string;
   name: string;
   merchantName: string;
   coworkers: { username: string; name: string }[];
+}
+
+export interface TeamWorkspaceView {
+  session: TeamSession;
+  cases: TeamCase[];
+  detail: TeamCaseDetail | null;
 }
 
 export class TeamError extends Error {

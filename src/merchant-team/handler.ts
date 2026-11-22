@@ -49,18 +49,20 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
     return token && /^[0-9a-f]{64}$/.test(token) ? digest(token) : undefined;
   }
 
-  function employeeFor(headers: Pick<Headers, "get">) {
+  function authenticate(headers: Pick<Headers, "get">) {
     if (headers.get("host") !== expectedHost) return undefined;
     const token = tokenDigest(headers);
     if (!token) return undefined;
     const session = store.getSession(token);
     const employee = session && employees.get(session.username);
-    return employee && employee.merchantId === session.merchantId &&
-      digest(employee.passwordHash) === session.passwordVersion ? employee : undefined;
+    if (!employee || employee.merchantId !== session.merchantId ||
+        digest(employee.passwordHash) !== session.passwordVersion) return undefined;
+    return { employee, token, version: digest(token) };
   }
 
-  function projectSession(employee: Employee): TeamSession {
+  function projectSession(employee: Employee, version: string): TeamSession {
     return {
+      sessionVersion: version,
       username: employee.username, name: employee.name, merchantName: employee.merchantName,
       coworkers: roster.filter((member) => member.merchantId === employee.merchantId)
         .map(({ username, name }) => ({ username, name })),
@@ -84,22 +86,34 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
         const token = randomBytes(32).toString("hex");
         const oldToken = tokenDigest(request.headers);
         if (oldToken) store.deleteSession(oldToken);
-        store.saveSession(digest(token), candidate, digest(candidate.passwordHash), Date.now() + sessionSeconds * 1000);
-        return json(projectSession(candidate), 200, cookie(token, sessionSeconds));
+        const tokenHash = digest(token);
+        store.saveSession(tokenHash, candidate, digest(candidate.passwordHash), Date.now() + sessionSeconds * 1000);
+        return json(projectSession(candidate, digest(tokenHash)), 200, cookie(token, sessionSeconds));
       }
-      if (command.action === "signOut") {
-        const token = tokenDigest(request.headers);
-        if (token) store.deleteSession(token);
-        return json(null, 200, cookie("", 0));
-      }
-      const employee = employeeFor(request.headers);
-      if (!employee) return json({ error: "SIGN_IN_REQUIRED" }, 401);
+      const identity = authenticate(request.headers);
+      if (!identity) return json({ error: "SIGN_IN_REQUIRED" }, 401);
+      const { employee, token, version } = identity;
       switch (command.action) {
-        case "session": return json(projectSession(employee));
+        case "session": return json(projectSession(employee, version));
+        case "workspace": {
+          const cases = store.list(employee);
+          const detail = command.id && cases.some(({ id }) => id === command.id)
+            ? store.open(employee, command.id) : null;
+          return json({ session: projectSession(employee, version), cases, detail });
+        }
         case "list": return json(store.list(employee));
         case "open": return json(store.open(employee, command.id));
-        case "create": return json(store.create(employee, command.reference), 201);
-        default: return json(store.change(employee, command, roster));
+        default:
+          if (request.headers.get("x-changegate-session") !== version) {
+            return json({ error: "SESSION_CHANGED" }, 409);
+          }
+          switch (command.action) {
+            case "signOut":
+              store.deleteSession(token);
+              return json(null, 200, cookie("", 0));
+            case "create": return json(store.create(employee, command.reference), 201);
+            default: return json(store.change(employee, command, roster));
+          }
       }
     } catch (error) {
       return error instanceof TeamError ? json({ error: error.code }, error.status)
@@ -107,5 +121,9 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
     }
   }
 
-  return { handle, employeeFor, open: (employee: Employee, id: string) => store.open(employee, id) };
+  return {
+    handle,
+    employeeFor: (headers: Pick<Headers, "get">) => authenticate(headers)?.employee,
+    open: (employee: Employee, id: string) => store.open(employee, id),
+  };
 }
