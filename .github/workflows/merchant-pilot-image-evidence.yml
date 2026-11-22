@@ -33,13 +33,20 @@ jobs:
             --build-context "node:24-bookworm-slim=docker-image://$BASE_REF" \
             --metadata-file "$out/build-metadata.json" --tag "$IMAGE_TAG" .
           manifest="$(jq -er '."containerimage.digest"' "$out/build-metadata.json")"
-          config="$(docker image inspect --format '{{.Id}}' "$IMAGE_TAG")"
-          test "$config" = "$(jq -er '."containerimage.config.digest"' "$out/build-metadata.json")"
+          config="$(jq -er '."containerimage.config.digest"' "$out/build-metadata.json")"
+          docker image inspect --format 'Docker image record ID: {{.Id}}' "$IMAGE_TAG"
+          printf 'BuildKit manifest=%s config=%s\n' "$manifest" "$config"
           archive="changegate-${manifest#sha256:}.tar"
           docker image save --output "$out/$archive" "$IMAGE_TAG"
           layer_config="$(tar -xOf "$out/$archive" manifest.json | jq -er '.[0].Config')"
           archived_config="$(tar -xOf "$out/$archive" "$layer_config" | sha256sum | cut -d' ' -f1)"
           test "sha256:$archived_config" = "$config"
+          manifest_entry="blobs/sha256/${manifest#sha256:}"
+          if tar -tf "$out/$archive" "$manifest_entry" >/dev/null 2>&1; then
+            archived_manifest="$(tar -xOf "$out/$archive" "$manifest_entry" | sha256sum | cut -d' ' -f1)"
+            test "sha256:$archived_manifest" = "$manifest"
+            echo "Verified archived manifest matches BuildKit manifest"
+          fi
           {
             printf 'source=%s\nbase=%s\nmanifest=%s\nconfig=%s\narchive=%s\n' "$PILOT_SHA" "$BASE_REF" "$manifest" "$config" "$archive"
             (cd "$out" && sha256sum "$archive" > archive.sha256 && cat archive.sha256)
@@ -80,7 +87,7 @@ jobs:
           "$RUNNER_TEMP/trivy" --version
           "$RUNNER_TEMP/trivy" image --input "$out/$PILOT_ARCHIVE" \
             --scanners vuln --pkg-types os,library --format json --output "$out/trivy.json"
-          jq -e --arg id "$(docker image inspect --format '{{.Id}}' "$IMAGE_TAG")" \
+          jq -e --arg id "$(jq -er '."containerimage.config.digest"' "$out/build-metadata.json")" \
             '.Metadata.ImageID == $id' "$out/trivy.json"
           jq '{
             image_id: .Metadata.ImageID,
