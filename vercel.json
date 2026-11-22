@@ -5,6 +5,7 @@
       "feat/decision-receipt": false,
       "feat/receipt-viewer": false,
       "feat/receipt-consistency": false,
+      "feat/shared-merchant-workspace": false,
       "main": false
     }
   }

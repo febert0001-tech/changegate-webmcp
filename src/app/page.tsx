@@ -1,3 +1,4 @@
+import Link from "next/link";
 import styles from "./page.module.css";
 import { ChangeGateWebMcp } from "./changegate-webmcp";
 
@@ -9,6 +10,7 @@ export default function Home() {
       <footer className={styles.footer}>
         <span>ChangeGate / 2026 WebMCP Challenge</span>
         <span>Synthetic ledger only · No real payments</span>
+        <Link href="/merchant">Merchant workspace</Link>
       </footer>
     </div>
   );
