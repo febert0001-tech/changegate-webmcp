@@ -177,6 +177,14 @@ describe("authenticated synthetic shift", () => {
       return { events, routes, ids };
     }
     const first = await play(true);
+    const overview = await jordan!.send<import("../src/merchant-team/shift-overview").ShiftOverview>({ action: "shiftOverview" });
+    expect(overview.sales).toHaveLength(2);
+    expect(overview.sales.filter(sale => sale.discountCents > 0)).toHaveLength(1);
+    expect(overview.refunds).toHaveLength(5);
+    expect(overview.refunds.filter(row => row.awaitingApproval).map(row => row.id)).toEqual([first.ids[4]]);
+    expect(overview.refunds.filter(row => row.awaitingSubmission).map(row => row.id)).toEqual([first.ids[0]]);
+    expect(overview.refunds.every(row => row.confirmedPayoutCents === null)).toBe(true);
+    expect((await alex!.request({ action: "shiftOverview" })).status).toBe(404);
     expect(first.events).toEqual(generateDemoEvents(seed));
     expect(first.routes).toEqual(["manager", "routine", "routine", "routine", "manager"]);
     const reviewer = users[2]!;
@@ -211,6 +219,9 @@ describe("authenticated synthetic shift", () => {
     const lastRun = state.runId;
     ({ state } = await maya!.send<View>({ action: "replayDemoShift", runId: lastRun }));
     expect(state.runId).not.toBe(lastRun);
+    const resetOverview = await jordan!.send<import("../src/merchant-team/shift-overview").ShiftOverview>({ action: "shiftOverview" });
+    expect(resetOverview.sales).toHaveLength(1);
+    expect(resetOverview.refunds).toEqual([]);
     expect(await maya!.send<RefundRequest[]>({ action: "listRefundRequests" })).toEqual([sameMerchant]);
     expect(await alex!.send<RefundRequest[]>({ action: "listRefundRequests" })).toEqual([other]);
     const second = await play(false);

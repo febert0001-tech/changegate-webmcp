@@ -46,7 +46,7 @@ async function readCommand(request: Request): Promise<unknown> {
 }
 
 const hostedDemoActions = new Set([
-  "signIn", "signOut", "session", "workspace", "demoShift", "startDemoShift", "nextDemoEvent", "replayDemoShift",
+  "signIn", "signOut", "session", "workspace", "demoShift", "shiftOverview", "startDemoShift", "nextDemoEvent", "replayDemoShift",
   "refundAlertStatus", "listRefundRequests", "openRefundRequest", "createRefundRequest", "decideRefundRequest",
 ]);
 
@@ -204,6 +204,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "setRefundPolicy": return json(store.setRefundPolicy(employee,token,command.thresholdCents));
             case "reportCashPayout": return json(store.reportCashPayout(employee,token,command.id));
             case "listRefundRequests": return json(store.refundRequests.list(employee));
+            case "shiftOverview": return json(store.shiftOverview(employee,token));
             case "demoShift":
             case "startDemoShift":
             case "nextDemoEvent":

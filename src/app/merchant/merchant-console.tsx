@@ -7,6 +7,7 @@ import { activeStatuses, type TeamCaseDetail, type TeamCommand, type TeamSession
 import styles from "./merchant.module.css";
 import { StoreEntry } from "./store-entry";
 import { TransactionWorkspace } from "../transactions/transaction-workspace";
+import { ShiftOverviewPanel } from "./shift-overview-panel";
 import type { TransactionStep } from "../../merchant-team/refund-requests";
 import { ReviewSummaryPanel } from "./review-summary-panel";
 import { RefundImportPanel } from "./refund-import-panel";
@@ -99,8 +100,8 @@ function notifySessionChange() {
   channel.close();
 }
 
-export function MerchantConsole({ caseId, imports, importId, reviewSummary, transaction }: {
-  caseId?: string; imports?: boolean; importId?: string; reviewSummary?: boolean;
+export function MerchantConsole({ caseId, imports, importId, reviewSummary, transaction, overview }: {
+  caseId?: string; imports?: boolean; importId?: string; reviewSummary?: boolean; overview?: boolean;
   transaction?: { id: string; step: TransactionStep } | "list";
 }) {
   const router = useRouter();
@@ -209,6 +210,7 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
         <h1>{session?.merchantName ?? "Merchant workspace"}</h1>
       </div>
       {session && <div className={styles.profile}>
+        {session.demoShift && <Link href="/shift-overview" prefetch={false} aria-current={overview ? "page" : undefined}>Shift Overview</Link>}
         <Link href="/transactions" prefetch={false}>Transactions</Link>
         {transaction && <Link href="/merchant" prefetch={false}>Reconciliation</Link>}
         {(imports || caseId) && <Link href="/merchant" prefetch={false}>Work queue</Link>}
@@ -217,13 +219,15 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
           await send<null>({ action: "signOut" }, { sessionVersion: session.sessionVersion });
           setWorkspace(null);
           notifySessionChange();
-          router.replace(transaction ? "/transactions" : "/merchant");
+          router.replace(overview ? "/shift-overview" : transaction ? "/transactions" : "/merchant");
           router.refresh();
         })}>Sign out</button>
       </div>}
     </header>
     {(notice || busy) && <p className={styles.inlineNotice} role="status">{notice || "Working…"}</p>}
-    {transaction ? (
+    {overview ? (
+      <ShiftOverviewPanel key={session.sessionVersion} session={session} send={send} onSessionError={clearOnSessionError} />
+    ) : transaction ? (
       <TransactionWorkspace key={versionKey(session.sessionVersion, transaction === "list" ? undefined : transaction.id)}
         destination={transaction} session={session} send={send} onSessionError={clearOnSessionError} />
     ) : reviewSummary && importId ? (

@@ -14,6 +14,7 @@ import { SquareSubmissionBlocked, type SquareSandbox } from "./square-sandbox";
 import type { PayPalProvider } from "./paypal-provider";
 import { RefundNotSubmitted, RefundSubmissionRejected } from "./paypal-contracts";
 import { DemoShift, demoEscalationMs, demoReferencePrefix } from "./demo-shift";
+import { summarizeShift } from "./shift-overview";
 
 type ImportRow = ImportSummary & { rejections: string };
 type FindingRow = { id: string; importId: string; evidence: string; caseId: string | null };
@@ -144,6 +145,18 @@ export class TeamStore {
         });
       }
       return this.refundRequests.create(employee, submissionId, terms, this.alerts, evidence);
+    });
+  }
+
+  shiftOverview(employee: Employee, token: string) {
+    const demo = this.demo;
+    if (!demo?.includes(employee)) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      const records = demo.overviewRecords();
+      if (!records) return null;
+      const { refundIds, ...shift } = records;
+      return summarizeShift(shift, refundIds.map(id => this.refundRequests.open(employee,id)));
     });
   }
 

@@ -43,12 +43,25 @@ export function generateDemoEvents(seed: string): DemoEvent[] {
 }
 
 type Run = { runId: string; seed: string; step: number };
+export type ShiftSale = { reference: string; location: string; register: string; at: string;
+  netCents: number; discountCents: number };
 
 export class DemoShift {
   constructor(private readonly db: DatabaseSync) {
     db.exec(`CREATE TABLE IF NOT EXISTS team_demo_shift (
       merchant_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, seed TEXT NOT NULL, step INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS team_demo_shift_sales (
+      merchant_id TEXT NOT NULL, run_id TEXT NOT NULL, step INTEGER NOT NULL, payload TEXT NOT NULL,
+      PRIMARY KEY (merchant_id, run_id, step),
+      FOREIGN KEY (merchant_id) REFERENCES team_demo_shift(merchant_id) ON DELETE CASCADE
     )`);
+    // Earlier builds recorded only the seed and cursor. Backfill the sales already reached by that run.
+    const previous = this.run();
+    if (previous) {
+      generateDemoEvents(previous.seed).slice(0, previous.step + 1)
+        .forEach((event, step) => this.recordSale(previous.runId, step, event));
+    }
   }
 
   includes(employee: Employee) { return employee.merchantId === demoMerchant; }
@@ -63,6 +76,29 @@ export class DemoShift {
       .get(demoMerchant, reference)?.id as string | undefined;
   }
 
+  private recordSale(runId: string, step: number, event: DemoEvent) {
+    if (!event.sale || event.refund) return;
+    const { reference, location, register, originalCents } = event.sale;
+    const record: ShiftSale = { reference, location, register, at: event.at, netCents: originalCents,
+      discountCents: event.discountCents ?? 0 };
+    this.db.prepare("INSERT OR IGNORE INTO team_demo_shift_sales VALUES (?,?,?,?)")
+      .run(demoMerchant, runId, step, JSON.stringify(record));
+  }
+
+  overviewRecords() {
+    const run = this.run();
+    if (!run) return null;
+    const reached = generateDemoEvents(run.seed).slice(0, run.step + 1);
+    const refundIds = reached.flatMap(event => {
+      const id = event.sale && event.refund ? this.request(event.sale.reference) : undefined;
+      return id ? [id] : [];
+    });
+    const rows = this.db.prepare("SELECT payload FROM team_demo_shift_sales WHERE merchant_id=? AND run_id=? ORDER BY step")
+      .all(demoMerchant, run.runId);
+    return { seed: run.seed, locations: [fuel.location, bar.location],
+      sales: rows.map(row => JSON.parse(row.payload as string) as ShiftSale), refundIds };
+  }
+
   state(): DemoState | null {
     const run = this.run();
     if (!run) return null;
@@ -75,7 +111,9 @@ export class DemoShift {
   start(seed: string) {
     if (this.run()) throw new TeamError("DEMO_SHIFT_STARTED", 409);
     this.db.prepare("INSERT INTO team_demo_shift VALUES (?,?,?,0)").run(demoMerchant, randomUUID(), seed);
-    return this.state()!;
+    const state = this.state()!;
+    this.recordSale(state.runId, state.step, state.event);
+    return state;
   }
 
   next(runId: string, step: number) {
@@ -83,7 +121,9 @@ export class DemoShift {
     if (!state || state.runId !== runId || state.step !== step || state.finished) throw new TeamError("DEMO_SHIFT_CHANGED", 409);
     if (state.event.refund && !state.requestId) throw new TeamError("DEMO_REFUND_REQUIRED", 409);
     this.db.prepare("UPDATE team_demo_shift SET step=step+1 WHERE merchant_id=?").run(demoMerchant);
-    return this.state()!;
+    const next = this.state()!;
+    this.recordSale(next.runId, next.step, next.event);
+    return next;
   }
 
   replay(runId: string) {
