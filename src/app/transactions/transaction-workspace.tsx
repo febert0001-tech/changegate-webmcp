@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { TeamCommand, TeamSession } from "../../merchant-team/contracts";
 import { canReview, cents, checks, currentStep, money, payout, requestDecision, requestReceipt,
   requestStatus, submitted, transactionTabs, type RefundRequest, type TestSale, type TransactionStep } from "../../merchant-team/refund-requests";
+import { PhoneAlerts } from "./phone-alerts";
 import { useTransactionTools } from "./use-transaction-tools";
 import styles from "../merchant/merchant.module.css";
 
@@ -31,6 +32,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   const router=useRouter();
   const [rows,setRows]=useState<RefundRequest[]>([]);
   const [record,setRecord]=useState<RefundRequest>();
+  const [alertStatus,setAlertStatus]=useState<{phase:number;status:string;advisory:string|null}[]>([]);
   const [threshold,setThreshold]=useState<number>();
   const [query,setQuery]=useState("");
   const [location,setLocation]=useState("");
@@ -60,8 +62,11 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       running=true;
       try {
         if(id){
-          const result=await send<RefundRequest>({action:"openRefundRequest",id},options);
-          if(!controller.signal.aborted)setRecord(result);
+          const [result,alerts]=await Promise.all([
+            send<RefundRequest>({action:"openRefundRequest",id},options),
+            send<{phase:number;status:string;advisory:string|null}[]>({action:"refundAlertStatus",id},options),
+          ]);
+          if(!controller.signal.aborted){setRecord(result);setAlertStatus(alerts);}
         }else{
           const result=await send<RefundRequest[]>({action:"listRefundRequests"},options);
           if(!controller.signal.aborted)setRows(result);
@@ -77,7 +82,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
     if(!id&&session.role==="owner")void send<{thresholdCents:number}>({action:"refundPolicy"},options)
       .then(result=>{if(!controller.signal.aborted)setThreshold(result.thresholdCents);})
       .catch(e=>{if(!controller.signal.aborted&&!onSessionError(e))setError("Could not load the refund policy.");});
-    const timer=!id&&manager ? window.setInterval(()=>{if(document.visibilityState==="visible")void load();},5000):undefined;
+    const timer=id||manager ? window.setInterval(()=>{if(document.visibilityState==="visible")void load();},5000):undefined;
     return()=>{controller.abort();if(timer!==undefined)window.clearInterval(timer);};
   },[id,manager,onSessionError,send,session.role,version]);
 
@@ -106,6 +111,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
         <button className={styles.primary} type="button" onClick={()=>{
           setNewForm(true);setReference("");setLookup(undefined);setFormId(crypto.randomUUID());setError("");
         }}>New refund</button></div>
+      {session.reviewerConfigured===false&&<p className={styles.formError}>No supervisor is configured for this store. Ask your store administrator to assign a manager or owner.</p>}
       <p className={styles.fieldHint}>Test sales only · No POS or payment processor connected</p>
       {noticeBlock}
       {newForm&&<section className={styles.importSection} aria-label="New refund">
@@ -118,7 +124,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
             onChange={e=>{setReference(e.target.value);setLookup(undefined);}} /></label>
           <button type="submit" disabled={busy}>Find sale</button>
         </form>
-        <p className={styles.fieldHint}>Test references: TEST-SALE-CASH, TEST-SALE-BALANCE, TEST-SALE-PARTIAL, TEST-SALE-ELECTRONIC</p>
+        <p className={styles.fieldHint}>Test references: TEST-SALE-CASH, TEST-SALE-BALANCE, TEST-SALE-PARTIAL, TEST-SALE-ELECTRONIC, TEST-MONITOR-1 through 6</p>
         {lookup!==undefined&&<>
           {lookup ? <><SaleFacts sale={lookup.sale} /><p><strong>{money(lookup.balanceCents)} remaining refundable</strong>
             {" · "+money(lookup.paidCents)+" reported here · "+money(lookup.reservedCents)+" reserved"}</p></>:
@@ -143,7 +149,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       </section>}
       {manager&&<section className={styles.importSection} aria-labelledby="manager-queue">
         <h3 id="manager-queue">Manager queue</h3>
-        <p role="status">{pending.length} {pending.length===1?"request needs":"requests need"} a decision</p>
+        <PhoneAlerts api={api}/><p role="status">{pending.length} {pending.length===1?"request needs":"requests need"} a decision</p>
         {!!pending.length&&list(pending)}
         {!!overBalance.length&&<details><summary>{overBalance.length} over-balance {overBalance.length===1?"request":"requests"} blocked</summary>
           {list(overBalance.slice(0,10))}</details>}
@@ -205,12 +211,30 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
           <li>Store approval threshold {money(check.thresholdCents)}</li>
           {check.cumulativeCents!==null&&<li>Cumulative requested amount {money(check.cumulativeCents)}</li>}
         </ul>
+        {check.monitoring&&<>
+          <p>Rule version {check.monitoring.ruleVersion}</p>
+          {check.monitoring.z!==null&&<p>Relative-size score {check.monitoring.z.toFixed(2)} (test baseline)</p>}
+          {check.monitoring.watch&&<p>Unusual refunds in 15 minutes · Cashier {check.monitoring.cashierWatchCount} · Register {check.monitoring.registerWatchCount}</p>}
+          {!!check.monitoring.reasons.length&&<ul className={styles.rejections}>{check.monitoring.reasons.map(reason=><li key={reason}>{reason}</li>)}</ul>}
+          {!!check.monitoring.related.length&&<details><summary>Earlier watch signals</summary><ul>{check.monitoring.related.map(id=><li key={id}><Link href={url(id,"checks")}>Open {id}</Link></li>)}</ul></details>}
+          {check.monitoring.drift?<details><summary>Register drift · Synthetic observation only</summary>
+            <p>These completed test windows do not change the refund decision.</p>
+            <ul className={styles.rejections}>{check.monitoring.drift.windows.map(window=><li key={window.endedAt}>
+              {window.endedAt} · {window.refunds} refunds in {window.salesAndRefunds} transactions · Smoothed share {(window.ewma*100).toFixed(2)}%
+              {" · Threshold "+(window.percentile*100).toFixed(2)+"%"+(window.elevated?" · Elevated":"")}
+            </li>)}</ul>
+          </details>:<p className={styles.fieldHint}>Register drift is unavailable until comparable POS sales and refund totals are connected.</p>}
+        </>}
         {check.route==="over-balance"&&<Link className={styles.primary} href="/transactions">Return to transactions</Link>}
       </>}
       {step==="approval"&&<>
         <h3>Supervisor decision</h3>
         <p>{record.terms.reference} · {money(cents(record.terms.amount))} · {submitted(record).actor}</p>
         <p>{record.terms.reason}</p><p>{check.explanation}</p>
+        {alertStatus.map(alert=><div key={alert.phase}>
+          <p>{alert.phase===0?"Primary":"Backup"} alert · {alert.status}</p>
+          {alert.advisory&&<p>AI advisory: {alert.advisory}</p>}
+        </div>)}
         {review?<p><strong>{review.decision}</strong> by {review.actor} · {time(review.occurredAt)}</p>:
           status==="Needs manager decision"&&manager ? <form onSubmit={event=>{
             event.preventDefault();

@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { assessSize, observeRefundShare } from "../src/merchant-team/refund-monitor-rules";
 import { requestStatus, requestReceipt, type RefundRequest } from "../src/merchant-team/refund-requests";
 import type { Employee, TeamCase, TeamCaseDetail, TeamSession, TeamWorkspaceView } from "../src/merchant-team/contracts";
 import { createTeamWorkspace } from "../src/merchant-team/handler";
@@ -24,13 +25,13 @@ const roster = [
 const folders: string[] = [];
 const stores = new Set<TeamStore>();
 
-function app(path?: string, users = roster) {
+function app(path?: string, users = roster, clock?: () => string) {
   if (!path) {
     const folder = mkdtempSync(join(tmpdir(), "changegate-team-"));
     folders.push(folder);
     path = join(folder, "merchant.sqlite");
   }
-  const store = new TeamStore(path);
+  const store = new TeamStore(path, clock);
   stores.add(store);
   const workspace = createTeamWorkspace(store, users, origin);
   return {
@@ -527,7 +528,7 @@ describe("shared merchant workspace", () => {
     expect(await cashier.send(cash)).toEqual(paid);
     const second = await cashier.send<RefundRequest>(command("TEST-SALE-PARTIAL", "8.00"));
     expect(requestStatus(second)).toBe("Needs manager decision");
-    expect(JSON.stringify(second)).toContain("bring refunds on this sale to $55.00");
+    expect(JSON.stringify(second)).toContain("Cumulative refunds would reach $55.00");
     expect((await cashier.request({ action: "reportCashPayout", id: second.id })).status).toBe(409);
     const approve = { action: "decideRefundRequest", id: second.id, decision: "Approved", password };
     expect((await cashier.request(approve)).status).toBe(403);
@@ -546,10 +547,79 @@ describe("shared merchant workspace", () => {
     expect(requestReceipt(approvedElectronic)).toMatchObject({ execution: { status: "Not submitted", attempt: null },
       verification: { status: "Not run", independentReadback: null } });
     const fourth = await cashier.send<RefundRequest>(command("TEST-SALE-CASH", "2.00"));
-    expect(requestStatus(fourth)).toBe("Needs manager decision");
-    expect(JSON.stringify(fourth)).toContain("fourth or later");
+    expect(requestStatus(fourth)).toBe("Ready for cash payout");
     server.stop();
     const restored = app(server.path, roles);
     expect(await (await signIn(restored, "maya")).send({ action: "openRefundRequest", id: second.id })).toEqual(approved);
+  });
+
+  it("holds at the exact cumulative threshold and queues a backup without releasing the hold", async () => {
+    const server=app();
+    const cashier=await signIn(server,"maya");
+    const request=(reference:string, amount:string)=>cashier.send<RefundRequest>({action:"createRefundRequest",
+      submissionId:randomUUID(),terms:{reference,amount,currency:"USD",reason:"Synthetic boundary test"}});
+    for(const [reference,amount,present] of [["TEST-MONITOR-1","49.99",false],["TEST-MONITOR-2","50.00",true],
+      ["TEST-MONITOR-3","50.01",true]] as const) {
+      const record=await request(reference,amount);
+      const validation=record.events.find(event=>event.kind==="Checks recorded");
+      expect(validation?.check.monitoring?.reasons.some(reason=>reason.includes("store threshold"))).toBe(present);
+      if(!present)continue;
+      expect(requestStatus(record)).toBe("Needs manager decision");
+      expect((await cashier.request({action:"reportCashPayout",id:record.id})).status).toBe(409);
+      expect(await cashier.send({action:"refundAlertStatus",id:record.id})).toMatchObject([
+        {phase:0,status:"pending"},{phase:1,status:"pending"}]);
+    }
+  });
+
+  it("counts unique watch transactions by register and cashier, ignoring regular requests and retries", async () => {
+    const sam={...roster[0]!,username:"sam",name:"Sam"};
+    const server=app(undefined,[...roster,sam]);
+    const maya=await signIn(server,"maya"), jordan=await signIn(server,"jordan"), third=await signIn(server,"sam");
+    const command=(n:number,amount="34.00")=>({action:"createRefundRequest",submissionId:randomUUID(),
+      terms:{reference:"TEST-MONITOR-"+n,amount,currency:"USD",reason:"Synthetic watch test"}});
+    const first=command(1);
+    const watch=await maya.send<RefundRequest>(first);
+    expect(await maya.send(first)).toEqual(watch);
+    expect(requestStatus(watch)).toBe("Blocked · Processor not connected");
+    const normal=await maya.send<RefundRequest>(command(4,"2.00"));
+    expect(normal.events[1]).toMatchObject({check:{monitoring:{watch:false,cashierWatchCount:0}}});
+    const second=await jordan.send<RefundRequest>(command(2));
+    expect(second.events[1]).toMatchObject({check:{monitoring:{cashierWatchCount:1,registerWatchCount:2}}});
+    const atRegister=await third.send<RefundRequest>(command(3));
+    expect(atRegister.events[1]).toMatchObject({check:{route:"manager",monitoring:{cashierWatchCount:1,registerWatchCount:3}}});
+    await maya.send<RefundRequest>(command(5));
+    const acrossRegisters=await maya.send<RefundRequest>(command(6));
+    expect(acrossRegisters.events[1]).toMatchObject({check:{route:"manager",monitoring:{cashierWatchCount:3,registerWatchCount:1}}});
+  });
+
+  it("excludes watches exactly 15 minutes old and holds a simultaneous refund at the cumulative boundary", async () => {
+    let instant=Date.parse("2026-11-21T15:00:00Z");
+    const server=app(undefined,roster,()=>new Date(instant).toISOString());
+    const employee=await signIn(server,"maya");
+    const command=(reference:string,amount:string)=>({action:"createRefundRequest",submissionId:randomUUID(),
+      terms:{reference,amount,currency:"USD",reason:"Synthetic window and concurrency"}});
+    await employee.send(command("TEST-MONITOR-1","34.00"));
+    instant+=1000;
+    await employee.send(command("TEST-MONITOR-2","34.00"));
+    instant+=899000;
+    const latest=await employee.send<RefundRequest>(command("TEST-MONITOR-3","34.00"));
+    expect(latest.events[1]).toMatchObject({check:{route:"routine",monitoring:{cashierWatchCount:2,registerWatchCount:2}}});
+    const results=await Promise.all([employee.send<RefundRequest>(command("TEST-SALE-CASH","25.00")),
+      employee.send<RefundRequest>(command("TEST-SALE-CASH","25.00"))]);
+    expect(results.map(record=>requestStatus(record)).sort()).toEqual(["Needs manager decision","Ready for cash payout"]);
+    expect(JSON.stringify(results)).toContain("Cumulative refunds would reach $50.00");
+  });
+
+  it("keeps synthetic drift observation separate from routing and applies the cold-start amount floor", () => {
+    expect(assessSize(10000)).toEqual({z:null,absoluteHold:true,relativeHold:false,watch:false});
+    expect(assessSize(5200,{median:1800,mad:500,floor:500}).z).toBeCloseTo(4.5865,3);
+    expect(assessSize(3400,{median:1800,mad:0,floor:500}).z).toEqual(3.2);
+    const windows=observeRefundShare([.05,.06],.05,20,10,[
+      {endedAt:"1",salesAndRefunds:60,refunds:14},
+      {endedAt:"2",salesAndRefunds:55,refunds:13},
+      {endedAt:"3",salesAndRefunds:0,refunds:0},
+    ]);
+    expect(windows.map(window=>window.elevated)).toEqual([false,true,true]);
+    expect(windows[2]?.eligible).toBe(false);
   });
 });

@@ -26,9 +26,9 @@ function remove(...args) {
 
 const passwords = new Map();
 const accounts = [
-  { username: "maya", name: "Maya Chen", merchantId: "harbor", merchantName: "Harbor Goods" },
-  { username: "jordan", name: "Jordan Lee", merchantId: "harbor", merchantName: "Harbor Goods" },
-  { username: "alex", name: "Alex Rivera", merchantId: "ridge", merchantName: "Ridge Market" },
+  { username: "maya", name: "Maya Chen", role: "cashier", merchantId: "harbor", merchantName: "Harbor Goods" },
+  { username: "jordan", name: "Jordan Lee", role: "manager", merchantId: "harbor", merchantName: "Harbor Goods" },
+  { username: "alex", name: "Alex Rivera", role: "owner", merchantId: "ridge", merchantName: "Ridge Market" },
 ].map(employee => {
   const salt = randomBytes(16);
   const password = randomBytes(24).toString("hex");

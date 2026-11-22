@@ -2,6 +2,7 @@ import { z } from "zod";
 import { csvText, refundMapping, type CaseEvidence } from "./refund-csv";
 import { dispositionOptions } from "./review-summary";
 import { comparisonInput } from "./refund-comparison";
+import { alertEndpoint, alertEnrollment } from "./refund-alerts";
 import { refundTerms, type MerchantRole } from "./refund-requests";
 export { TeamError } from "./error";
 
@@ -56,6 +57,10 @@ export const teamCommand = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("recordDisposition"), id, findingId: id,
     expectedRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER - 1),
     disposition: z.enum(dispositionOptions), note: text(1600) }),
+  z.strictObject({ action: z.literal("refundAlertSettings") }),
+  z.strictObject({ action: z.literal("enrollRefundAlerts"), enrollment: alertEnrollment }),
+  z.strictObject({ action: z.literal("removeRefundAlerts"), endpoint: alertEndpoint }),
+  z.strictObject({ action: z.literal("refundAlertStatus"), id }),
   z.strictObject({ action: z.literal("lookupOriginalSale"), reference: text(160) }),
   z.strictObject({ action: z.literal("refundPolicy") }),
   z.strictObject({ action: z.literal("setRefundPolicy"), thresholdCents: z.number().int().min(0).max(999999999999) }),
@@ -102,6 +107,7 @@ export interface TeamSession {
   name: string;
   merchantName: string;
   role?: MerchantRole;
+  reviewerConfigured?: boolean;
   coworkers: { username: string; name: string }[];
 }
 

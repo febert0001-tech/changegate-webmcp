@@ -6,6 +6,8 @@ import type { CaseComparison, CaseEvidence, ComparisonEvidence, ImportSummary, R
 
 import { summarizeComparison, type ReviewDisposition, type ReviewFindingState } from "./review-summary";
 
+import { RefundAlertStore } from "./refund-alert-store";
+import type { AlertEnrollment } from "./refund-alerts";
 import { RefundRequestStore } from "./refund-request-store";
 import type { RefundDecision, RefundTerms } from "./refund-requests";
 
@@ -34,6 +36,7 @@ const caseColumns = `id, reference, revision, assignee, assignee_name AS assigne
 export class TeamStore {
   private readonly db: DatabaseSync;
   readonly refundRequests: RefundRequestStore;
+  readonly alerts: RefundAlertStore;
 
   constructor(path: string, private readonly now = () => new Date().toISOString()) {
     this.db = new DatabaseSync(path, { enableForeignKeyConstraints: true });
@@ -102,6 +105,7 @@ export class TeamStore {
         );
       `);
       this.refundRequests = new RefundRequestStore(this.db, this.now);
+      this.alerts = new RefundAlertStore(this.db);
     } catch (error) {
       this.db.close();
       throw error;
@@ -115,7 +119,7 @@ export class TeamStore {
   createRefundRequest(employee: Employee, token: string, submissionId: string, terms: RefundTerms) {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
-      return this.refundRequests.create(employee, submissionId, terms);
+      return this.refundRequests.create(employee, submissionId, terms, this.alerts);
     });
   }
 
@@ -130,6 +134,20 @@ export class TeamStore {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
       return this.refundRequests.setPolicy(employee, thresholdCents);
+    });
+  }
+
+  enrollRefundAlerts(employee:Employee,token:string,model:AlertEnrollment) {
+    return this.atomic(()=>{
+      this.requireActiveSession(employee,token);
+      this.alerts.enroll(employee,model);
+    });
+  }
+
+  removeRefundAlerts(employee:Employee,token:string,endpoint:string) {
+    return this.atomic(()=>{
+      this.requireActiveSession(employee,token);
+      this.alerts.remove(employee,endpoint);
     });
   }
 
