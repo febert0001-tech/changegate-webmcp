@@ -88,7 +88,7 @@ describe("Square Sandbox refunds", () => {
     const settings = { merchant: config.merchantId, location: config.locationId, status: "COMPLETED", currency: "USD",
       loseResponse: false, visible: true, readback: refund, total: 12000, waitForPost: Promise.resolve(),
       createdAt: new Date().toISOString(), refundIds: [] as string[], priorRefundStatus: "FAILED",
-      failMerchantRead: 0, denyRefund: false };
+      failMerchantRead: 0, denyRefund: false, rejectionCode: "INSUFFICIENT_PERMISSIONS_FOR_REFUND" };
     let merchantReads = 0;
     const transport: typeof fetch = async (input, init) => {
       const url = new URL(String(input));
@@ -106,7 +106,7 @@ describe("Square Sandbox refunds", () => {
       if (url.pathname === "/v2/refunds" && typeof init?.body === "string") {
         const body = JSON.parse(init.body) as { idempotency_key: string };
         posts.push(body);
-        if (settings.denyRefund) return Response.json({ errors: [{ code: "INSUFFICIENT_PERMISSIONS_FOR_REFUND" }] }, { status: 400 });
+        if (settings.denyRefund) return Response.json({ errors: [{ code: settings.rejectionCode }] }, { status: 400 });
         await settings.waitForPost;
         ledger.set(body.idempotency_key, refund);
         if (settings.loseResponse) throw new Error("lost provider response");
@@ -170,7 +170,12 @@ describe("Square Sandbox refunds", () => {
       .toMatchObject({ balanceCents: 7000, reservedCents: 0 });
   });
 
-  it.each([{ denyRefund: false, failMerchantRead: 3, posts: 0 }, { denyRefund: true, failMerchantRead: 0, posts: 1 }])(
+  it.each([
+    { denyRefund: false, failMerchantRead: 3, posts: 0 },
+    { denyRefund: true, failMerchantRead: 0, posts: 1 },
+    ...["REFUND_AMOUNT_INVALID", "PAYMENT_NOT_REFUNDABLE", "PAYMENT_NOT_REFUNDABLE_DUE_TO_DISPUTE",
+      "REFUND_ERROR_PAYMENT_NEEDS_COMPLETION"].map(rejectionCode => ({ denyRefund: true, failMerchantRead: 0, posts: 1, rejectionCode })),
+  ])(
     "stops a definite first Square failure and releases the reservation ($posts POSTs)", async (failure) => {
       const mock = provider();
       Object.assign(mock.settings, failure);

@@ -11,6 +11,8 @@ const payment = z.object({ id: identifier, location_id: identifier, status: z.st
 const refund = z.object({ id: identifier, payment_id: identifier, location_id: identifier,
   amount_money: money, status: z.enum(["PENDING", "COMPLETED", "FAILED", "REJECTED"]) });
 const refundErrors = z.object({ errors: z.array(z.object({ code: z.string() })).min(1) });
+const squareIneligibleRefundCodes = new Set(["PAYMENT_NOT_REFUNDABLE", "PAYMENT_NOT_REFUNDABLE_DUE_TO_DISPUTE",
+  "REFUND_ERROR_PAYMENT_NEEDS_COMPLETION"]);
 export class SquareSubmissionBlocked extends TeamError {
   constructor(readonly reason: string) {
     super("SQUARE_SUBMISSION_BLOCKED", 409);
@@ -54,9 +56,18 @@ export class SquareSandbox {
       if (response.status === 404 && path.startsWith("/payments/")) throw new TeamError("SQUARE_SALE_UNAVAILABLE", 422);
       if (body && path === "/refunds" && (response.status === 400 || response.status === 403)) {
         const denial = refundErrors.safeParse(await response.json());
-        const code = response.status === 400 ? "INSUFFICIENT_PERMISSIONS_FOR_REFUND" : "INSUFFICIENT_SCOPES";
-        if (denial.success && denial.data.errors.every(error => error.code === code)) {
-          throw new SquareSubmissionBlocked("Square refused permission for this refund. No refund was created.");
+        if (denial.success) {
+          const codes = denial.data.errors.map(error => error.code);
+          const permissionCode = response.status === 400 ? "INSUFFICIENT_PERMISSIONS_FOR_REFUND" : "INSUFFICIENT_SCOPES";
+          if (codes.every(code => code === permissionCode)) {
+            throw new SquareSubmissionBlocked("Square refused permission for this refund. No refund was created.");
+          }
+          if (response.status === 400 && codes.every(code => code === "REFUND_AMOUNT_INVALID")) {
+            throw new SquareSubmissionBlocked("Square rejected the amount because the refundable balance changed. No refund was created.");
+          }
+          if (response.status === 400 && codes.every(code => squareIneligibleRefundCodes.has(code))) {
+            throw new SquareSubmissionBlocked("Square reported that the payment is no longer refundable. No refund was created.");
+          }
         }
       }
       if (!response.ok) throw new Error("Square request failed");
