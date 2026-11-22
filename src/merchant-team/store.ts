@@ -19,6 +19,7 @@ type FindingRow = { id: string; importId: string; evidence: string; caseId: stri
 const importColumns = `id, imported_at AS importedAt, accepted_count AS acceptedCount,
   rejected_count AS rejectedCount, finding_count AS findingCount`;
 const findingColumns = "id, import_id AS importId, evidence, case_id AS caseId";
+const squareDispatchLeaseMs = 30_000;
 const nextAction = "Review the source rows and verify the refund with the processor.";
 const projectFinding = (row: FindingRow): SavedFinding => ({
   ...JSON.parse(row.evidence) as RefundFinding, id: row.id, caseId: row.caseId,
@@ -40,7 +41,6 @@ export class TeamStore {
   private readonly db: DatabaseSync;
   readonly refundRequests: RefundRequestStore;
   readonly alerts: RefundAlertStore;
-  private readonly squareInFlight = new Set<string>();
 
   constructor(path: string, private readonly now = () => new Date().toISOString()) {
     this.db = new DatabaseSync(path, { enableForeignKeyConstraints: true });
@@ -49,6 +49,10 @@ export class TeamStore {
         PRAGMA busy_timeout = 5000;
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous = FULL;
+        CREATE TABLE IF NOT EXISTS team_square_dispatches (
+          merchant_id TEXT NOT NULL, request_id TEXT NOT NULL, claim TEXT NOT NULL, expires_at INTEGER NOT NULL,
+          PRIMARY KEY (merchant_id, request_id)
+        );
         CREATE TABLE IF NOT EXISTS team_cases (
           merchant_id TEXT NOT NULL, id TEXT NOT NULL, reference TEXT NOT NULL,
           revision INTEGER NOT NULL CHECK (revision >= 1),
@@ -166,29 +170,36 @@ export class TeamStore {
           });
         }
       }
-      const { attempt, response: saved, started, request } = this.atomic(() => {
+      const { attempt, response: saved, started, claim } = this.atomic(() => {
         this.requireActiveSession(employee, token);
-        return this.refundRequests.startElectronic(employee, id, this.alerts, evidence);
+        const current = this.refundRequests.startElectronic(employee, id, this.alerts, evidence);
+        return { ...current, claim: current.attempt && !current.response && !executionStopped(current.request)
+          ? this.claimSquareDispatch(employee, id, current.attempt.startedAt) : undefined };
       });
       response = saved;
-      if (!response) {
-        if (!attempt || executionStopped(request) || this.squareInFlight.has(id)) return this.refundRequests.open(employee, id);
-        // The local retry window includes the instant exactly 15 minutes after the original attempt.
-        if (Date.parse(this.now()) - Date.parse(attempt.startedAt) > 15 * 60_000) {
-          throw new TeamError("SQUARE_RECONCILIATION_REQUIRED", 409);
-        }
-        this.squareInFlight.add(id);
+      if (!response && attempt && claim) {
         try {
-          const result = await square.submit(attempt.terms).catch((error: unknown) => error instanceof SquareSubmissionBlocked ? error : null);
-          if (started && result instanceof SquareSubmissionBlocked) {
-            const stopped = this.atomic(() => this.refundRequests.stopElectronic(employee, id, result.reason, true));
-            this.requireActiveSession(employee, token);
-            return stopped;
-          }
-          response = this.atomic(() => this.refundRequests.recordProviderResponse(employee, id,
-            result instanceof SquareSubmissionBlocked ? null : result)) ?? undefined;
+          let authorized = false;
+          const result = await square.submit(attempt.terms, () => {
+            this.authorizeSquareDispatch(employee, token, id, claim);
+            authorized = true;
+          }).catch((error: unknown) => {
+            if (error instanceof SquareSubmissionBlocked) return error;
+            if (!authorized) throw error;
+            return null;
+          });
+          // Persist the provider outcome even if the requesting session has since signed out.
+          response = this.atomic(() => {
+            if (!this.releaseSquareDispatch(employee, id, claim)) return this.refundRequests.electronicExecution(employee, id).response;
+            if (started && result instanceof SquareSubmissionBlocked) {
+              this.refundRequests.stopElectronic(employee, id, result.reason, true);
+              return undefined;
+            }
+            return this.refundRequests.recordProviderResponse(employee, id,
+              result instanceof SquareSubmissionBlocked ? null : result) ?? undefined;
+          });
         } finally {
-          this.squareInFlight.delete(id);
+          this.releaseSquareDispatch(employee, id, claim);
         }
       }
     }
@@ -199,6 +210,35 @@ export class TeamStore {
       this.requireActiveSession(employee, token);
       return this.refundRequests.recordProviderLookup(employee, id, readback);
     });
+  }
+
+  private claimSquareDispatch(employee: Employee, id: string, startedAt: string) {
+    const now = Date.parse(this.now());
+    // The retry window includes exactly 15 minutes after the first recorded attempt.
+    if (now - Date.parse(startedAt) > 15 * 60_000) throw new TeamError("SQUARE_RECONCILIATION_REQUIRED", 409);
+    const claim = randomUUID();
+    // Each Square request times out after 8 seconds. Leave time for the merchant check and POST.
+    const expiresAt = now + squareDispatchLeaseMs;
+    return this.db.prepare(`INSERT INTO team_square_dispatches VALUES (?,?,?,?)
+      ON CONFLICT(merchant_id,request_id) DO UPDATE SET claim=excluded.claim,expires_at=excluded.expires_at
+      WHERE team_square_dispatches.expires_at<=? RETURNING claim`)
+      .get(employee.merchantId, id, claim, expiresAt, now) ? claim : undefined;
+  }
+
+  private authorizeSquareDispatch(employee: Employee, token: string, id: string, claim: string) {
+    this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      const now = Date.parse(this.now());
+      const active = this.db.prepare(`UPDATE team_square_dispatches SET expires_at=?
+        WHERE merchant_id=? AND request_id=? AND claim=? AND expires_at>?`)
+        .run(now + squareDispatchLeaseMs, employee.merchantId, id, claim, now);
+      if (!active.changes) throw new TeamError("SQUARE_RECONCILIATION_REQUIRED", 409);
+    });
+  }
+
+  private releaseSquareDispatch(employee: Employee, id: string, claim: string) {
+    return this.db.prepare("DELETE FROM team_square_dispatches WHERE merchant_id=? AND request_id=? AND claim=?")
+      .run(employee.merchantId, id, claim).changes !== 0;
   }
 
   private async processPayPal(employee: Employee, token: string, id: string, paypal: PayPalProvider,
