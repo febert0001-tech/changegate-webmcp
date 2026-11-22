@@ -6,6 +6,8 @@ import type { TeamStore } from "./store";
 import { alertPublicKey } from "./refund-alerts";
 import { canReview } from "./refund-requests";
 import type { SquareSandbox } from "./square-sandbox";
+import type { PayPalProvider } from "./paypal-provider";
+import type { ElectronicProvider } from "./refund-requests";
 import { csvLimit, inspectRefundCsv, reviewRefundCsv } from "./refund-csv";
 
 import { compareRefunds } from "./refund-comparison";
@@ -43,7 +45,7 @@ async function readCommand(request: Request): Promise<unknown> {
 }
 
 export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[], origin: string,
-  { staging = false, square }: { staging?: boolean; square?: SquareSandbox } = {}) {
+  { staging = false, ...providers }: { staging?: boolean; square?: SquareSandbox; paypal?: PayPalProvider } = {}) {
   const cookieName = staging ? "__Host-changegate_team_session" : "changegate_team_session";
   const cookie = (token: string, age: number) =>
     `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${age}${staging ? "; Secure" : ""}`;
@@ -55,6 +57,14 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
   const expectedHost = new URL(origin).host;
   const expectedSalt = randomBytes(16);
   const expectedHash = randomBytes(32);
+
+  function providerFor(employee: Employee, source: ElectronicProvider) {
+    const provider = providers[source];
+    if (!provider?.supports(employee.merchantId)) {
+      throw new TeamError(source === "square" ? "SQUARE_NOT_CONNECTED" : "PAYPAL_NOT_CONNECTED", 503);
+    }
+    return provider;
+  }
   function validIngress(headers: Pick<Headers, "get">) {
     return headers.get("host") === expectedHost &&
       (!staging || (headers.get("x-forwarded-proto") === "https" && headers.get("x-forwarded-host") === expectedHost));
@@ -83,6 +93,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
       username: employee.username, name: employee.name, merchantName: employee.merchantName,
       ...(employee.role && { role: employee.role }),
       reviewerConfigured: roster.some(member=>member.merchantId===employee.merchantId&&canReview(member.role)),
+      paypalConnected: providers.paypal?.supports(employee.merchantId) ?? false,
       coworkers: roster.filter((member) => member.merchantId === employee.merchantId)
         .map(({ username, name }) => ({ username, name })),
     };
@@ -167,9 +178,8 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
               store.refundRequests.open(employee,command.id);
               return json(store.alerts.status(employee,command.id));
             case "lookupOriginalSale": {
-              if (command.source !== "square") return json(store.lookupRefundSale(employee,token,command.reference));
-              if (!square?.supports(employee.merchantId)) throw new TeamError("SQUARE_NOT_CONNECTED",503);
-              const evidence = await square.lookup(command.reference);
+              if (!command.source || command.source === "test") return json(store.lookupRefundSale(employee,token,command.reference));
+              const evidence = await providerFor(employee,command.source).lookup(command.reference);
               return json(store.lookupRefundSale(employee,token,command.reference,evidence));
             }
             case "refundPolicy": return json(store.refundRequests.policy(employee));
@@ -178,16 +188,16 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "listRefundRequests": return json(store.refundRequests.list(employee));
             case "openRefundRequest": return json(store.refundRequests.open(employee,command.id));
             case "createRefundRequest": {
-              if (command.terms.source !== "square") return json(store.createRefundRequest(employee,token,command.submissionId,command.terms));
+              const { source } = command.terms;
+              if (!source || source === "test") return json(store.createRefundRequest(employee,token,command.submissionId,command.terms));
               const saved = store.refundRequests.replay(employee,command.submissionId,command.terms);
               if (saved) return json(saved);
-              if (!square?.supports(employee.merchantId)) throw new TeamError("SQUARE_NOT_CONNECTED",503);
-              const evidence = await square.lookup(command.terms.reference);
+              const evidence = await providerFor(employee,source).lookup(command.terms.reference);
               return json(store.createRefundRequest(employee,token,command.submissionId,command.terms,evidence));
             }
-            case "executeSquareRefund":
-            case "verifySquareRefund":
-              return json(await store.executeSquareRefund(employee,token,command.id,square,command.action === "verifySquareRefund"));
+            case "executeElectronicRefund":
+            case "verifyElectronicRefund":
+              return json(await store.executeElectronicRefund(employee,token,command.id,providers,command.action === "verifyElectronicRefund"));
             case "decideRefundRequest": {
               store.refundRequests.open(employee, command.id);
               if (!canReview(employee.role)) throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);

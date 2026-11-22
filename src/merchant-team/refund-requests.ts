@@ -2,7 +2,7 @@ import type { syntheticRegisterDrift } from "./refund-monitor-rules";
 import { z } from "zod";
 
 export const refundTerms = z.strictObject({
-  source: z.enum(["test", "square"]).optional(),
+  source: z.enum(["test", "square", "paypal"]).optional(),
   reference: z.string().trim().min(1).max(160).regex(/^[^\p{Cc}]+$/u),
   amount: z.string().trim().regex(/^\d{1,10}(\.\d{1,2})?$/).refine(amount => Number(amount) > 0),
   currency: z.literal("USD"),
@@ -20,16 +20,27 @@ export interface TestSale {
   priorCents: number;
   tender: "Cash" | "Electronic";
   square?: { merchantId: string; locationId: string };
+  paypal?: { merchantId: string; orderId: string };
 }
-export type SquareRefundStatus = "PENDING" | "COMPLETED" | "FAILED" | "REJECTED";
-export interface SquareRefundEvidence {
+export type ElectronicProvider = "square" | "paypal";
+export const providerName = (provider: ElectronicProvider) => provider === "square" ? "Square" : "PayPal";
+export const saleProvider = (sale: TestSale | null): ElectronicProvider | undefined =>
+  sale?.square ? "square" : sale?.paypal ? "paypal" : undefined;
+export type ElectronicSaleEvidence = { sale: TestSale; countedRefunds: ProviderRefundEvidence[] };
+export type ElectronicAttemptTerms = {
+  key: string; paymentId: string; merchantId: string; locationId?: string; orderId?: string; amountCents: number; currency: "USD";
+};
+export type RefundVerification = "Verified" | "Pending" | "Mismatch" | "Unconfirmed" | "Failed";
+export interface ProviderRefundEvidence {
   id: string;
   paymentId: string;
-  locationId: string;
+  locationId?: string;
   amountCents: number;
   currency: string;
-  status: SquareRefundStatus;
+  status: "PENDING" | "COMPLETED" | "FAILED" | "REJECTED" | "CANCELLED";
 }
+export type ProviderRefundResponse = { id: string; status: ProviderRefundEvidence["status"] | null }
+  & Partial<Omit<ProviderRefundEvidence, "id" | "status">>;
 export interface RefundCheck {
   balanceCents: number | null;
   cumulativeCents: number | null;
@@ -47,10 +58,10 @@ export type TransactionEvent =
   | { kind: "Decision recorded"; actor: string; occurredAt: string; decision: RefundDecision }
   | { kind: "Cash payout reported"; actor: string; occurredAt: string }
   | { kind: "Execution stopped"; actor: string; occurredAt: string; reason: string }
-  | { kind: "Square attempt recorded" | "Square response unavailable"; actor: string; occurredAt: string }
-  | { kind: "Square refund response"; actor: string; occurredAt: string; refund: SquareRefundEvidence }
-  | { kind: "Square independent lookup"; actor: string; occurredAt: string; refund: SquareRefundEvidence | null;
-      result: "Verified" | "Pending" | "Mismatch" | "Unconfirmed" | "Failed" };
+  | { kind: `${"Square" | "PayPal"} ${"attempt recorded" | "response unavailable"}`; actor: string; occurredAt: string }
+  | { kind: "Square refund response" | "PayPal refund response" | "PayPal refund recovered"; actor: string; occurredAt: string; refund: ProviderRefundResponse }
+  | { kind: `${"Square" | "PayPal"} independent lookup`; actor: string; occurredAt: string; refund: ProviderRefundEvidence | null;
+      result: RefundVerification };
 export interface RefundRequest {
   id: string;
   terms: RefundTerms;
@@ -80,6 +91,7 @@ const sales: TestSale[] = [
 ];
 export const testSale = (reference: string) => sales.find(sale => sale.reference === reference) ?? null;
 export const submitted = (request: RefundRequest) => request.events.find(event => event.kind === "Request submitted")!;
+export const unavailableSaleLocation = "Unavailable";
 export const squareApprovalReason = "Every Square refund requires approval from a separate supervisor.";
 export function checks(request: RefundRequest): RefundCheck {
   const check = request.events.findLast(event => event.kind === "Checks recorded")!.check;
@@ -92,9 +104,13 @@ export function checks(request: RefundRequest): RefundCheck {
 export const requestDecision = (request: RefundRequest) => request.events.find(event => event.kind === "Decision recorded");
 export const payout = (request: RefundRequest) => request.events.find(event => event.kind === "Cash payout reported");
 export const executionStopped = (request: RefundRequest) => request.events.find(event => event.kind === "Execution stopped");
-export const squareResponse = (request: RefundRequest) => request.events.find(event => event.kind === "Square refund response");
-export const squareVerification = (request: RefundRequest) => request.events.findLast(event => event.kind === "Square independent lookup");
-export const squareAttempt = (request: RefundRequest) => request.events.find(event => event.kind === "Square attempt recorded");
+export const providerResponse = (request: RefundRequest) => request.events.find((event): event is
+  Extract<TransactionEvent, { kind: "Square refund response" | "PayPal refund response" | "PayPal refund recovered" }> =>
+  event.kind === "Square refund response" || event.kind === "PayPal refund response" || event.kind === "PayPal refund recovered");
+export const providerVerification = (request: RefundRequest) =>
+  request.events.findLast((event): event is Extract<TransactionEvent, { result: RefundVerification }> =>
+    event.kind === "Square independent lookup" || event.kind === "PayPal independent lookup");
+export const providerAttempt = (request: RefundRequest) => request.events.find(event => event.kind === "Square attempt recorded" || event.kind === "PayPal attempt recorded");
 export function requestStatus(request: RefundRequest) {
   const decision = requestDecision(request);
   const route = checks(request).route;
@@ -104,13 +120,15 @@ export function requestStatus(request: RefundRequest) {
   if (decision?.decision === "Rejected") return "Rejected";
   if (!decision && (route === "manager" || route === "exception")) return "Needs manager decision";
   if (request.sale?.tender === "Cash") return "Ready for cash payout";
-  if (request.sale?.square) {
-    const verified = squareVerification(request);
-    if (verified?.result === "Verified") return "Square Sandbox refund verified";
-    if (verified?.result === "Failed") return "Square Sandbox refund failed";
-    if (squareResponse(request)) return "Square refund awaiting confirmation";
-    if (squareAttempt(request)) return "Square attempt · Outcome unconfirmed";
-    return "Ready for Square Sandbox refund";
+  const provider = saleProvider(request.sale);
+  if (provider) {
+    const name = providerName(provider);
+    const verified = providerVerification(request);
+    if (verified?.result === "Verified") return name + " Sandbox refund verified";
+    if (verified?.result === "Failed") return name + " Sandbox refund failed";
+    if (providerResponse(request)) return name + " refund awaiting confirmation";
+    if (providerAttempt(request)) return name + " attempt · Outcome unconfirmed";
+    return "Ready for " + name + " Sandbox refund";
   }
   return "Blocked · Processor not connected";
 }
@@ -118,17 +136,18 @@ export function currentStep(request: RefundRequest): TransactionStep {
   const status = requestStatus(request);
   if (status.startsWith("Blocked · Over")) return "checks";
   if (status === "Needs manager decision" || status === "Rejected") return "approval";
-  return payout(request) || squareResponse(request) || executionStopped(request) ? "receipt" : "execution";
+  return payout(request) || providerResponse(request) || executionStopped(request) ? "receipt" : "execution";
 }
 export function requestReceipt(request: RefundRequest) {
   const decision = requestDecision(request);
   const reported = payout(request);
-  const attempted = squareAttempt(request);
-  const response = squareResponse(request);
-  const verification = squareVerification(request);
+  const provider = saleProvider(request.sale);
+  const attempted = providerAttempt(request);
+  const response = providerResponse(request);
+  const verification = providerVerification(request);
   return {
     schemaVersion: 1,
-    environment: request.terms.source === "square" ? "Square Sandbox · No real money moved" : "Test data · No money moved",
+    environment: provider ? providerName(provider) + " Sandbox · No real money moved" : "Test data · No money moved",
     exportedAt: new Date().toISOString(),
     transactionId: request.id,
     requested: request.terms,
@@ -136,8 +155,8 @@ export function requestReceipt(request: RefundRequest) {
     checks: checks(request),
     decision: decision ? { status: decision.decision, reviewer: decision.actor, occurredAt: decision.occurredAt } :
       { status: checks(request).route === "routine" ? "Within store policy" : "No decision recorded" },
-    execution: { status: executionStopped(request) ? "Not submitted" :
-      response?.refund.status ?? (attempted ? "Outcome unconfirmed" : reported ? "Test cash payout reported" : "Not submitted"),
+    execution: { status: executionStopped(request) ? "Not submitted" : response?.refund.status ?? (response ? "Provider reference recorded" :
+      attempted ? "Outcome unconfirmed" : reported ? "Test cash payout reported" : "Not submitted"),
       authorizedBy: reported || attempted ? decision?.actor ?? "Store policy" : null, reportedBy: reported?.actor ?? null,
       attempt: attempted ? { actor: attempted.actor, occurredAt: attempted.occurredAt } : null, providerResponse: response?.refund ?? null },
     verification: { status: verification?.result ?? "Not run", independentReadback: verification?.refund ?? null },

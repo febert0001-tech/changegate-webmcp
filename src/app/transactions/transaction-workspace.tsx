@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import type { TeamCommand, TeamSession } from "../../merchant-team/contracts";
 import { canReview, cents, checks, currentStep, executionStopped, money, payout, requestDecision, requestReceipt,
-  squareAttempt, squareResponse, squareVerification,
+  providerAttempt, providerName, providerResponse, providerVerification, saleProvider, type ElectronicProvider,
   requestStatus, submitted, transactionTabs, type RefundRequest, type TestSale, type TransactionStep } from "../../merchant-team/refund-requests";
 import { PhoneAlerts } from "./phone-alerts";
 import { useTransactionTools } from "./use-transaction-tools";
@@ -18,13 +18,15 @@ const url = (id: string, step?: TransactionStep) => "/transactions/" + id + (ste
 const time = (value: string) => value.replace("T"," ").slice(0,19) + " UTC";
 
 function SaleFacts({ sale }: { sale: TestSale }) {
+  const provider=saleProvider(sale);
   return <dl className={styles.facts}>
     <div><dt>Location</dt><dd>{sale.location}</dd></div>
     <div><dt>Register</dt><dd>{sale.register}</dd></div>
     <div><dt>Shift</dt><dd>{sale.shift}</dd></div>
     <div><dt>Original sale</dt><dd>{money(sale.originalCents)}</dd></div>
-    <div><dt>{sale.square?"Square refunds completed or pending":"Prior refunds on test sale"}</dt><dd>{money(sale.priorCents)}</dd></div>
-    <div><dt>Sale source</dt><dd>{sale.square?"Square Sandbox":"ChangeGate test fixture"}</dd></div>
+    <div><dt>{provider?"Provider refunds completed or pending":"Prior refunds on test sale"}</dt><dd>{money(sale.priorCents)}</dd></div>
+    <div><dt>Sale source</dt><dd>{provider?providerName(provider)+" Sandbox":"ChangeGate test fixture"}</dd></div>
+    {sale.paypal&&<div><dt>PayPal order</dt><dd>{sale.paypal.orderId}</dd></div>}
     <div><dt>Original tender</dt><dd>{sale.tender}</dd></div>
   </dl>;
 }
@@ -43,7 +45,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   const [employee,setEmployee]=useState("");
   const [newForm,setNewForm]=useState(false);
   const [reference,setReference]=useState("");
-  const [source,setSource]=useState<"test"|"square">("test");
+  const [source,setSource]=useState<"test"|ElectronicProvider>("test");
   const [lookup,setLookup]=useState<Lookup>();
   const [formId,setFormId]=useState("");
   const [busy,setBusy]=useState(false);
@@ -115,7 +117,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
           setNewForm(true);setReference("");setSource("test");setLookup(undefined);setFormId(crypto.randomUUID());setError("");
         }}>New refund</button></div>
       {session.reviewerConfigured===false&&<p className={styles.formError}>No supervisor is configured for this store. Ask your store administrator to assign a manager or owner.</p>}
-      <p className={styles.fieldHint}>Test environment · ChangeGate fixtures and Square Sandbox</p>
+      <p className={styles.fieldHint}>Test environment · No real money moves</p>
       {noticeBlock}
       {newForm&&<section className={styles.importSection} aria-label="New refund">
         <h3>Find original sale</h3>
@@ -124,14 +126,17 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
           void run(async()=>setLookup(await api<Lookup>({action:"lookupOriginalSale",reference,source})));
         }}>
           <label>Sale source<select name="saleSource" value={source} disabled={busy} onChange={e=>{
-            setSource(e.target.value==="square"?"square":"test");setReference("");setLookup(undefined);setError("");
+            const chosen=e.target.value;
+            setSource(chosen==="square"||chosen==="paypal"?chosen:"test");setReference("");setLookup(undefined);setError("");
             setFormId(crypto.randomUUID());
-          }}><option value="test">ChangeGate test records</option><option value="square">Square Sandbox</option></select></label>
-          <label>Original payment reference<input name="reference" value={reference} maxLength={160} required disabled={busy}
+          }}><option value="test">ChangeGate test records</option><option value="square">Square Sandbox</option>
+            <option value="paypal">PayPal Sandbox</option></select></label>
+          <label>{source==="paypal"?"PayPal capture reference":"Original payment reference"}<input name="reference" value={reference} maxLength={160} required disabled={busy}
             onChange={e=>{setReference(e.target.value);setLookup(undefined);setFormId(crypto.randomUUID());}} /></label>
-          <button type="submit" disabled={busy}>Find sale</button>
+          <button type="submit" disabled={busy||(source==="paypal"&&!session.paypalConnected)}>Find sale</button>
         </form>
         {source==="test"&&<p className={styles.fieldHint}>Test references: TEST-SALE-CASH, TEST-SALE-BALANCE, TEST-SALE-PARTIAL, TEST-SALE-ELECTRONIC, TEST-MONITOR-1 through 6</p>}
+        {source==="paypal"&&!session.paypalConnected&&<p role="status">PayPal not connected</p>}
         {lookup!==undefined&&<>
           {lookup ? <><SaleFacts sale={lookup.sale} /><p><strong>{money(lookup.balanceCents)} remaining refundable</strong>
             {" · "+money(lookup.paidCents)+" reported here · "+money(lookup.reservedCents)+" reserved"}</p></>:
@@ -141,7 +146,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
             const form=new FormData(event.currentTarget);
             void run(async()=>{
               const result=await api<RefundRequest>({action:"createRefundRequest",submissionId:formId,terms:{
-                ...(source==="square"&&{source}),reference,amount:value(form,"amount"),currency:"USD",reason:value(form,"reason"),
+                ...(source!=="test"&&{source}),reference,amount:value(form,"amount"),currency:"USD",reason:value(form,"reason"),
               }});
               router.push(url(result.id,currentStep(result)));
             });
@@ -196,12 +201,14 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   const {step}=destination;
   const review=requestDecision(record), check=checks(record), reported=payout(record);
   const stopped=executionStopped(record);
-  const square=record.sale?.square, attempt=squareAttempt(record), response=squareResponse(record), verification=squareVerification(record);
+  const provider=saleProvider(record.sale), name=provider?providerName(provider):null;
+  const connected=provider!=="paypal"||session.paypalConnected;
+  const attempt=providerAttempt(record), response=providerResponse(record), verification=providerVerification(record);
   const verified=verification?.result==="Verified", failed=verification?.result==="Failed";
   const status=requestStatus(record), current=currentStep(record);
-  const outcome=verified ? "Square Sandbox refund verified · No real money moved"
-    : failed ? "Square Sandbox reports the refund failed"
-    : attempt && !stopped ? "Square Sandbox outcome unconfirmed"
+  const outcome=verified ? name+" Sandbox refund verified · No real money moved"
+    : failed ? name+" Sandbox reports the refund failed"
+    : attempt && !stopped ? name+" Sandbox outcome unconfirmed"
     : reported ? "Test cash payout reported" : "No payout recorded";
   const next=status==="Needs manager decision" ? "A different supervisor must approve or reject this request."
     : check.route==="over-balance" ? "Cashier: check the balance and start a new request for an eligible amount."
@@ -209,16 +216,17 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
     : stopped ? stopped.reason
     : status==="Ready for cash payout" ? "Cashier: confirm and record the test cash payout in Execution."
     : reported ? "Cashier: open the receipt for the recorded employee report."
-    : verified || failed ? "Open the receipt for Square’s independent readback."
-    : response ? "Check the receipt for the latest Square status."
-    : attempt ? "Retry the original Square attempt from Execution."
-    : square ? "Execute the refund in Square Sandbox."
+    : verified || failed ? "Open the receipt for the independent provider readback."
+    : !connected ? "PayPal not connected"
+    : response ? "Check the receipt for the latest "+name+" status."
+    : attempt ? provider==="paypal"?"Reconcile the original PayPal attempt from Execution.":"Retry the original Square attempt from Execution."
+    : provider ? "Execute the refund in "+name+" Sandbox."
     : "Execution is blocked until a payment processor is connected.";
   return <section className={styles.card} aria-labelledby="refund-heading">
     <div className={styles.screenHeading}><h2 id="refund-heading">Refund · {money(cents(record.terms.amount))}</h2><Link href="/transactions">All transactions</Link></div>
-    <p className={styles.caseReference}>{record.terms.reference} · {record.sale?.location??"Sale unverified"} · {square?"Square Sandbox":"Test data"}</p>
+    <p className={styles.caseReference}>{record.terms.reference} · {record.sale?.location??"Sale unverified"} · {name?name+" Sandbox":"Test data"}</p>
     <section className={styles.transactionSummary} aria-label="Refund status and next action">
-      <p className={styles.statusHeading}><strong>{square&&status==="Needs manager decision"?"Supervisor approval required":status}</strong><span>Current step · {transactionTabs.find(([tab])=>tab===current)?.[1]}</span></p>
+      <p className={styles.statusHeading}><strong>{provider==="square"&&status==="Needs manager decision"?"Supervisor approval required":status}</strong><span>Current step · {transactionTabs.find(([tab])=>tab===current)?.[1]}</span></p>
       <dl className={styles.moneySummary}>
         <div><dt>Requested</dt><dd>{money(cents(record.terms.amount))}</dd></div>
         <div><dt>Refundable at request</dt><dd>{check.balanceCents===null?"Unavailable":money(check.balanceCents)}</dd></div>
@@ -240,7 +248,8 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
         <h3>Refund checks</h3><p>{check.explanation}</p>
         <ul className={styles.rejections}>
           <li>Request format and USD amount passed.</li>
-          <li>{square?"Square confirmed a completed USD card sale for the configured merchant and location.":
+          <li>{provider==="square"?"Square confirmed a completed USD card sale for the configured merchant and location.":
+            provider==="paypal"?"PayPal confirmed the USD capture, merchant ownership and refund history.":
             record.sale?"Original sale found in the test POS records.":"Original sale could not be verified."}</li>
           <li>Remaining refundable balance {check.balanceCents===null?"unavailable":money(check.balanceCents)}</li>
           <li>Store approval threshold {money(check.thresholdCents)}</li>
@@ -296,16 +305,19 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       </>}
       {step==="execution"&&<>
         <h3>Execution</h3>
-        {response ? <><p>Square response · {response.refund.status} · {response.refund.id}</p>
+        {response ? <><p>{response.kind==="PayPal refund recovered"?"Recovered PayPal refund reference":name+" response"} · {response.refund.status??"Reference recorded"} · {response.refund.id}</p>
           <Link href={url(record.id,"receipt")}>Open receipt</Link></>:
-          square&&!stopped&&(status==="Ready for Square Sandbox refund"||(attempt&&review?.decision==="Approved"))?<>
-            <p>{attempt?"Square’s response is unavailable. Retrying uses the original attempt.":"Submit this refund to Square Sandbox."}</p>
+          !connected ? <p>PayPal not connected</p>:
+          provider&&!stopped&&(status==="Ready for "+name+" Sandbox refund"||(attempt&&(provider!=="square"||review?.decision==="Approved")))?<>
+            <p>{attempt ? provider==="paypal" ? "Look up the original attempt in PayPal." :
+              "Square’s response is unavailable. Retrying uses the original attempt." : "Submit this refund to "+name+" Sandbox."}</p>
             <button className={styles.primary} disabled={busy} onClick={()=>void run(async()=>{
-              const result=await api<RefundRequest>({action:"executeSquareRefund",id:record.id});
+              const result=await api<RefundRequest>({action:attempt&&provider==="paypal"?"verifyElectronicRefund":"executeElectronicRefund",id:record.id});
               setRecord(result);
-              if(squareResponse(result)||executionStopped(result))router.push(url(record.id,"receipt"));
+              if(providerResponse(result)||executionStopped(result))router.push(url(record.id,"receipt"));
               else if(currentStep(result)==="approval")router.push(url(record.id,"approval"));
-            })}>{attempt?"Retry original attempt":"Execute Square Sandbox refund"}</button></>:
+              else if(attempt&&provider==="paypal")setNotice("PayPal has not confirmed the original refund. The amount stays reserved.");
+            })}>{attempt ? provider==="paypal"?"Reconcile original attempt":"Retry original attempt" : "Execute "+name+" Sandbox refund"}</button></>:
           reported ? <p>Test cash payout reported by {reported.actor} · {time(reported.occurredAt)}</p>:
           status==="Ready for cash payout"?<><p>Record a test cash payout after confirming the amount. This records an employee report.</p>
             <button className={styles.primary} disabled={busy} onClick={()=>void run(async()=>{
@@ -317,19 +329,22 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       </>}
       {step==="receipt"&&<>
         <h3>Receipt and verification</h3>
-        {square?<><p>{response ? "Square returned "+response.refund.status : attempt && !stopped ? "Square response unavailable." : "No Square refund recorded."}</p>
+        {provider?<><p>{response?.kind==="PayPal refund recovered" ? "Recovered original PayPal refund reference." :
+          response ? response.refund.status ? name+" returned "+response.refund.status : name+" refund reference recorded." :
+          attempt && !stopped ? name+" response unavailable." : "No "+name+" refund recorded."}</p>
           {stopped&&<p>{stopped.reason}</p>}
           {review&&<p>{review.decision} by {review.actor} · {time(review.occurredAt)}</p>}
           <p><strong>{verification?.result??"Independent lookup not run"}</strong>{verification?.occurredAt&&" · "+time(verification.occurredAt)}</p>
           {verification?.refund&&<dl className={styles.facts}>
-            <div><dt>Square refund ID</dt><dd>{verification.refund.id}</dd></div>
-            <div><dt>Original Square payment</dt><dd>{verification.refund.paymentId}</dd></div>
+            <div><dt>{name} refund ID</dt><dd>{verification.refund.id}</dd></div>
+            <div><dt>{provider==="paypal"?"Original PayPal capture":"Original Square payment"}</dt><dd>{verification.refund.paymentId}</dd></div>
             <div><dt>Provider amount</dt><dd>{(verification.refund.amountCents/100).toFixed(2)} {verification.refund.currency}</dd></div>
             <div><dt>Provider status</dt><dd>{verification.refund.status}</dd></div>
           </dl>}
-          {verification?.result==="Mismatch"&&<p>Square’s readback did not match the approved refund. The outcome is unconfirmed.</p>}
-          {response&&!verified&&!failed&&<button disabled={busy} onClick={()=>void run(async()=>
-            setRecord(await api<RefundRequest>({action:"verifySquareRefund",id:record.id})))}>Check Square status</button>}
+          {verification?.result==="Mismatch"&&<p>The provider readback did not match the approved refund. The outcome is unconfirmed.</p>}
+          {!connected&&!verified&&!failed&&<p>PayPal not connected</p>}
+          {connected&&response&&!verified&&!failed&&<button disabled={busy} onClick={()=>void run(async()=>
+            setRecord(await api<RefundRequest>({action:"verifyElectronicRefund",id:record.id})))}>Check {name} status</button>}
         </>:<>
           <p>{reported ? "Cash payout recorded. This is a test employee report." : "No payout or provider submission recorded."}</p>
           <p>Independent electronic readback unavailable. No electronic refund has been verified.</p>
