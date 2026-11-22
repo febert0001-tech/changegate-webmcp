@@ -156,6 +156,7 @@
       const sources = { merchant: null, processor: null };
       const versions = { merchant: 0, processor: 0 };
       let report = [];
+      let singleSource = null;
       const columns = [
         "Refund reference",
         "Review result",
@@ -240,14 +241,21 @@
         $("results").hidden = true;
         $("save").disabled = true;
         $("notice").textContent = "";
-        $("run").disabled = !Object.keys(sources).every((side) => {
-          const src = sources[side];
-          if (!src) return false;
-          const values = src.picks.map((p) => p.value);
-          return (
-            values.every(Boolean) && new Set(values).size === values.length
-          );
-        });
+        const loaded = Object.keys(sources).filter((side) => sources[side]);
+        singleSource = loaded.length === 1 ? loaded[0] : null;
+        $("run").textContent = singleSource
+          ? "Review this file"
+          : "Compare refunds";
+        $("run").disabled =
+          !loaded.length ||
+          !loaded.every((side) => {
+            const src = sources[side];
+            if (!src) return false;
+            const values = src.picks.map((p) => p.value);
+            return (
+              values.every(Boolean) && new Set(values).size === values.length
+            );
+          });
       }
       for (const side of Object.keys(sources)) {
         const root = $(side);
@@ -354,34 +362,77 @@
         ];
       }
       $("run").onclick = () => {
-        const a = indexed("merchant"),
-          b = indexed("processor");
         report = [];
-        for (const r of a.missing)
-          report.push(result("Missing reference", r, null));
-        for (const r of b.missing)
-          report.push(result("Missing reference", null, r));
-        for (const id of new Set([...a.map.keys(), ...b.map.keys()])) {
-          const left = a.map.get(id) || [],
-            right = b.map.get(id) || [];
-          if (left.length > 1 || right.length > 1) {
-            for (const r of left)
-              report.push(result("Duplicate reference", r, null));
-            for (const r of right)
-              report.push(result("Duplicate reference", null, r));
-            continue;
+        if (singleSource) {
+          const { map, missing } = indexed(singleSource);
+          function append(record, issue) {
+            const issues = issue ? [issue] : [];
+            if (record.currency.toUpperCase() !== "USD")
+              issues.push("Review currency");
+            if (cents(record.amount) === null)
+              issues.push("Review amount format");
+            if (
+              singleSource === "processor" &&
+              record.status.toUpperCase() !== "COMPLETED"
+            )
+              issues.push("Review processor status");
+            const label = issues.length
+              ? issues.join(" / ")
+              : "Ready for comparison";
+            report.push(
+              result(
+                label,
+                singleSource === "merchant" ? record : null,
+                singleSource === "processor" ? record : null,
+              ),
+            );
           }
-          report.push(result(classify(left[0], right[0]), left[0], right[0]));
+          for (const record of missing) append(record, "Missing reference");
+          for (const group of map.values())
+            for (const record of group)
+              append(record, group.length > 1 ? "Duplicate reference" : "");
+          report.sort(
+            (a, b) =>
+              Number(a[1] === "Ready for comparison") -
+              Number(b[1] === "Ready for comparison"),
+          );
+          const issues = report.filter(
+            (row) => row[1] !== "Ready for comparison",
+          ).length;
+          $("summary").textContent =
+            report.length +
+            " source records · " +
+            issues +
+            " rows flagged · Awaiting counterpart export";
+        } else {
+          const a = indexed("merchant"),
+            b = indexed("processor");
+          for (const r of a.missing)
+            report.push(result("Missing reference", r, null));
+          for (const r of b.missing)
+            report.push(result("Missing reference", null, r));
+          for (const id of new Set([...a.map.keys(), ...b.map.keys()])) {
+            const left = a.map.get(id) || [],
+              right = b.map.get(id) || [];
+            if (left.length > 1 || right.length > 1) {
+              for (const r of left)
+                report.push(result("Duplicate reference", r, null));
+              for (const r of right)
+                report.push(result("Duplicate reference", null, r));
+              continue;
+            }
+            report.push(result(classify(left[0], right[0]), left[0], right[0]));
+          }
+          report.sort(
+            (a, b) => Number(a[1] === "Matched") - Number(b[1] === "Matched"),
+          );
+          const matched = report.filter((r) => r[1] === "Matched").length;
+          $("summary").textContent =
+            matched +
+            " matched refunds · " +
+            (report.length - matched) +
+            " worksheet rows need review";
         }
-        report.sort(
-          (a, b) => Number(a[1] === "Matched") - Number(b[1] === "Matched"),
-        );
-        const matched = report.filter((r) => r[1] === "Matched").length;
-        $("summary").textContent =
-          matched +
-          " matched refunds · " +
-          (report.length - matched) +
-          " worksheet rows need review";
         const head = document.querySelector("thead"),
           body = document.querySelector("tbody");
         const header = document.createElement("tr");
@@ -414,7 +465,9 @@
         );
         const link = document.createElement("a");
         link.href = url;
-        link.download = "changegate-refund-review.csv";
+        link.download = singleSource
+          ? "changegate-" + singleSource + "-file-review.csv"
+          : "changegate-refund-review.csv";
         link.click();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       };
