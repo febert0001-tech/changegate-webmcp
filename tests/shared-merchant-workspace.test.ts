@@ -10,6 +10,7 @@ import { createTeamWorkspace } from "../src/merchant-team/handler";
 import { reviewSummaryCsv, type ReviewSummary } from "../src/merchant-team/review-summary";
 import { TeamStore } from "../src/merchant-team/store";
 import { SquareSandbox } from "../src/merchant-team/square-sandbox";
+import { configuredPayPalSandbox, PayPalProvider } from "../src/merchant-team/paypal-provider";
 import { reviewRefundCsv, type ImportSummary, type RefundImport, type RefundImportResult } from "../src/merchant-team/refund-csv";
 
 const origin = "http://127.0.0.1:3190";
@@ -26,7 +27,7 @@ const roster = [
 const folders: string[] = [];
 const stores = new Set<TeamStore>();
 
-function app(path?: string, users = roster, clock?: () => string, square?: SquareSandbox) {
+function app(path?: string, users = roster, clock?: () => string, square?: SquareSandbox, paypal?: PayPalProvider) {
   if (!path) {
     const folder = mkdtempSync(join(tmpdir(), "changegate-team-"));
     folders.push(folder);
@@ -34,7 +35,7 @@ function app(path?: string, users = roster, clock?: () => string, square?: Squar
   }
   const store = new TeamStore(path, clock);
   stores.add(store);
-  const workspace = createTeamWorkspace(store, users, origin, square ? { square } : {});
+  const workspace = createTeamWorkspace(store, users, origin, { ...(square && { square }), ...(paypal && { paypal }) });
   return {
     path, store,
     stop() { store.close(); stores.delete(store); },
@@ -131,7 +132,7 @@ describe("Square Sandbox refunds", () => {
     const outsider = await signIn(server, "alex");
     const request = await cashier.send<RefundRequest>(submit());
     expect(requestStatus(request)).toBe("Needs manager decision");
-    const execute = { action: "executeSquareRefund", id: request.id };
+    const execute = { action: "executeElectronicRefund", id: request.id };
     const approval = { action: "decideRefundRequest", id: request.id, decision: "Approved", password };
     expect((await cashier.request(execute)).status).toBe(409);
     expect((await cashier.request(approval)).status).toBe(403);
@@ -178,7 +179,7 @@ describe("Square Sandbox refunds", () => {
       const manager = await signIn(server, "jordan");
       const request = await cashier.send<RefundRequest>(submit());
       await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
-      const execute = { action: "executeSquareRefund", id: request.id };
+      const execute = { action: "executeElectronicRefund", id: request.id };
       const stopped = await cashier.send<RefundRequest>(execute);
       expect(stopped.events.at(-1)).toMatchObject({ kind: "Execution stopped" });
       expect(requestReceipt(stopped).execution.status).toBe("Not submitted");
@@ -197,7 +198,7 @@ describe("Square Sandbox refunds", () => {
     const manager = await signIn(server, "jordan");
     const request = await cashier.send<RefundRequest>(submit());
     await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
-    const execute = { action: "executeSquareRefund", id: request.id };
+    const execute = { action: "executeElectronicRefund", id: request.id };
     mock.settings.loseResponse = true;
     await cashier.send(execute);
     mock.settings.denyRefund = true;
@@ -222,12 +223,12 @@ describe("Square Sandbox refunds", () => {
     expect(await cashier.send(lookup)).toMatchObject({ balanceCents: 7000, reservedCents: 0 });
     const request = await cashier.send<RefundRequest>(submit());
     await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
-    const submitted = await cashier.send<RefundRequest>({ action: "executeSquareRefund", id: request.id });
+    const submitted = await cashier.send<RefundRequest>({ action: "executeElectronicRefund", id: request.id });
     expect(requestReceipt(submitted).verification.status).toBe("Pending");
     expect(await cashier.send(lookup)).toMatchObject({ balanceCents: 2000, reservedCents: 0 });
     const above = await cashier.send<RefundRequest>(submit({ amount: "20.01" }));
     expect(requestStatus(above)).toBe("Blocked · Over refundable balance");
-    expect((await cashier.request({ action: "executeSquareRefund", id: above.id })).status).toBe(409);
+    expect((await cashier.request({ action: "executeElectronicRefund", id: above.id })).status).toBe(409);
     expect(mock.posts).toHaveLength(1);
   });
 
@@ -240,7 +241,7 @@ describe("Square Sandbox refunds", () => {
     const request = await cashier.send<RefundRequest>(submit({ amount: "20.00" }));
     expect(requestStatus(request)).toBe("Ready for Square Sandbox refund");
     await owner.send({ action: "setRefundPolicy", thresholdCents: 2000 });
-    const execute = { action: "executeSquareRefund", id: request.id };
+    const execute = { action: "executeElectronicRefund", id: request.id };
     expect(requestStatus(await cashier.send<RefundRequest>(execute))).toBe("Needs manager decision");
     expect((await cashier.request(execute)).status).toBe(409);
     expect(mock.posts).toHaveLength(0);
@@ -255,7 +256,7 @@ describe("Square Sandbox refunds", () => {
     const manager = await signIn(server, "jordan");
     const request = await cashier.send<RefundRequest>(submit());
     await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
-    const execute = { action: "executeSquareRefund", id: request.id };
+    const execute = { action: "executeElectronicRefund", id: request.id };
     const first = cashier.send<RefundRequest>(execute);
     try {
       await vi.waitFor(() => expect(mock.posts).toHaveLength(1));
@@ -275,11 +276,11 @@ describe("Square Sandbox refunds", () => {
     const manager = await signIn(server, "jordan");
     const rejected = await cashier.send<RefundRequest>(submit());
     await manager.send({ action: "decideRefundRequest", id: rejected.id, decision: "Rejected", password });
-    expect((await cashier.request({ action: "executeSquareRefund", id: rejected.id })).status).toBe(409);
+    expect((await cashier.request({ action: "executeElectronicRefund", id: rejected.id })).status).toBe(409);
     const approved = await cashier.send<RefundRequest>(submit());
     await manager.send({ action: "decideRefundRequest", id: approved.id, decision: "Approved", password });
     mock.settings.total = 4900;
-    const result = await cashier.send<RefundRequest>({ action: "executeSquareRefund", id: approved.id });
+    const result = await cashier.send<RefundRequest>({ action: "executeElectronicRefund", id: approved.id });
     expect(requestStatus(result)).toBe("Blocked · No refund submitted");
     expect(requestReceipt(result).execution.status).toBe("Not submitted");
     expect(await cashier.send({ action: "lookupOriginalSale", source: "square", reference: terms.reference }))
@@ -306,7 +307,7 @@ describe("Square Sandbox refunds", () => {
     const request = await cashier.send<RefundRequest>(submit());
     await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
     mock.settings.refundIds = ["earlier-refund"];
-    const stopped = await cashier.send<RefundRequest>({ action: "executeSquareRefund", id: request.id });
+    const stopped = await cashier.send<RefundRequest>({ action: "executeElectronicRefund", id: request.id });
     expect(mock.posts).toHaveLength(0);
     expect(requestReceipt(stopped).execution.status).toBe("Not submitted");
     expect(stopped.events.at(-1)).toMatchObject({ kind: "Execution stopped", reason: expect.stringContaining("earlier refund failed") });
@@ -327,7 +328,7 @@ describe("Square Sandbox refunds", () => {
     const manager = await signIn(server, "jordan");
     const request = await cashier.send<RefundRequest>(submit());
     await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
-    const execute = { action: "executeSquareRefund", id: request.id };
+    const execute = { action: "executeElectronicRefund", id: request.id };
     const original = await cashier.send<RefundRequest>(execute);
     expect(mock.posts).toHaveLength(1);
     const originalPost = mock.posts[0];
@@ -372,16 +373,168 @@ describe("Square Sandbox refunds", () => {
     const cashier = await signIn(server, "maya");
     const request = await cashier.send<RefundRequest>(submit({ amount: "12.34" }));
     mock.settings.visible = false;
-    const result = await cashier.send<RefundRequest>({ action: "executeSquareRefund", id: request.id });
+    const result = await cashier.send<RefundRequest>({ action: "executeElectronicRefund", id: request.id });
     expect(requestReceipt(result).verification.status).toBe("Unconfirmed");
     mock.settings.visible = true;
-    const verify = { action: "verifySquareRefund", id: request.id };
+    const verify = { action: "verifyElectronicRefund", id: request.id };
     mock.settings.readback = { ...refund, status: "PENDING", amount_money: { amount: 1234, currency: "USD" } };
     expect(requestReceipt(await cashier.send<RefundRequest>(verify)).verification.status).toBe("Pending");
     mock.settings.readback = { ...refund, payment_id: "unrelated-payment" };
     expect(requestReceipt(await cashier.send<RefundRequest>(verify)).verification.status).toBe("Mismatch");
     mock.settings.readback = { ...refund, status: "FAILED", amount_money: { amount: 1234, currency: "USD" } };
     expect(requestReceipt(await cashier.send<RefundRequest>(verify)).verification.status).toBe("Failed");
+    expect(mock.posts).toHaveLength(1);
+  });
+});
+
+describe("PayPal Sandbox refunds with simulated transport", () => {
+  const users: Employee[] = roster.map(employee => ({ ...employee, role: "manager" }));
+  const capture = "MOCKCAPTURE123";
+  const order = "MOCKORDER123";
+  const refund = "MOCKREFUND123";
+  const merchantId = "MOCKMERCHANT123";
+  const terms = { source: "paypal", reference: capture, amount: "50.00", currency: "USD", reason: "Simulated PayPal" };
+  const source = { action: "lookupOriginalSale", source: "paypal", reference: capture };
+  const submit = () => ({ action: "createRefundRequest", submissionId: randomUUID(), terms });
+
+  function simulator(allowRefunds = true) {
+    const posts: { key: string; invoice: string }[] = [];
+    const settings = { payee: merchantId, lost: true, visible: true, amount: "50.00", invoice: "", providerStatus: "COMPLETED" };
+    const transport = vi.fn(async (input: string, init: RequestInit) => {
+      const url = new URL(input);
+      expect(url.origin).toBe("https://api-m.sandbox.paypal.com");
+      const money = (value: string) => ({ value, currency_code: "USD" });
+      if (url.pathname === "/v1/oauth2/token") return Response.json({ access_token: "fixture-bearer", token_type: "Bearer", expires_in: 120 });
+      if (url.pathname === "/v2/payments/captures/" + capture) return Response.json({ id: capture, amount: money("120.00"),
+        status: posts.length && settings.providerStatus === "COMPLETED" ? "PARTIALLY_REFUNDED" : "COMPLETED",
+        supplementary_data: { related_ids: { order_id: order } } });
+      if (url.pathname === "/v2/checkout/orders/" + order) return Response.json({ id: order, purchase_units: [
+        { payee: { merchant_id: settings.payee }, payments: { captures: [{ id: capture }],
+          refunds: posts.length && settings.visible ? [{ id: refund }] : [] } },
+      ] });
+      if (url.pathname === "/v2/payments/captures/" + capture + "/refund" && init.method === "POST") {
+        const key = new Headers(init.headers).get("PayPal-Request-Id") ?? "";
+        const body = JSON.parse(String(init.body)) as { amount: unknown; invoice_id: string };
+        expect(key).toMatch(/^[a-f0-9-]{36}$/);
+        expect(body.amount).toEqual(money("50.00"));
+        expect(body.invoice_id).toBe("changegate-" + key);
+        posts.push({ key, invoice: body.invoice_id });
+        if (settings.lost) throw new Error("simulated lost reply");
+        return Response.json({ id: refund });
+      }
+      if (url.pathname === "/v2/payments/refunds/" + refund && settings.visible) {
+        return Response.json({ id: refund, amount: money(settings.amount), status: settings.providerStatus,
+          invoice_id: settings.invoice || posts[0]?.invoice, links: [
+            { rel: "up", href: "https://api-m.sandbox.paypal.com/v2/payments/captures/" + capture, method: "GET" },
+          ] });
+      }
+      return new Response(null, { status: 404 });
+    });
+    const connect = () => new PayPalProvider({ teamMerchantId: "harbor", merchantId, clientId: "mock-client",
+      clientSecret: "mock-secret", allowRefunds }, transport);
+    return { settings, transport, connect, provider: connect(), posts };
+  }
+
+  it("makes no PayPal calls when not enabled or credentials are absent", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    try {
+      for (const paypal of [configuredPayPalSandbox({}), configuredPayPalSandbox({ CHANGEGATE_PAYPAL_MODE: "sandbox" }),
+        configuredPayPalSandbox({ CHANGEGATE_PAYPAL_MODE: "production" })]) {
+        expect(paypal).toBeUndefined();
+        const cashier = await signIn(app(undefined, users, undefined, undefined, paypal), "maya");
+        expect(cashier.user.paypalConnected).toBe(false);
+        expect(await (await cashier.request(source)).json()).toEqual({ error: "PAYPAL_NOT_CONNECTED" });
+        expect(await (await cashier.request(submit())).json()).toEqual({ error: "PAYPAL_NOT_CONNECTED" });
+      }
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("holds for a separate supervisor and reconciles the original request after a lost reply and restart", async () => {
+    const mock = simulator();
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    const otherMerchant = await signIn(server, "alex");
+    expect(await cashier.send(source)).toMatchObject({ balanceCents: 12000, sale: { paypal: { orderId: order } } });
+    expect((await otherMerchant.request(source)).status).toBe(503);
+    const request = await cashier.send<RefundRequest>(submit());
+    const execute = { action: "executeElectronicRefund", id: request.id };
+    const approval = { action: "decideRefundRequest", id: request.id, decision: "Approved", password };
+    expect((await cashier.request(execute)).status).toBe(409);
+    expect((await cashier.request(approval)).status).toBe(403);
+    expect((await otherMerchant.request(execute)).status).toBe(404);
+    expect(mock.posts).toHaveLength(0);
+    await manager.send(approval);
+    const lost = await cashier.send<RefundRequest>(execute);
+    expect(requestReceipt(lost).execution.status).toBe("Outcome unconfirmed");
+    expect(mock.posts).toHaveLength(1);
+    server.stop();
+    const disconnected = app(server.path, users);
+    const disconnectedUser = await signIn(disconnected, "maya");
+    const callsBefore = mock.transport.mock.calls.length;
+    expect(await (await disconnectedUser.request(execute)).json()).toEqual({ error: "PAYPAL_NOT_CONNECTED" });
+    expect(mock.transport.mock.calls).toHaveLength(callsBefore);
+    disconnected.stop();
+    const restarted = app(server.path, users, undefined, undefined, mock.connect());
+    const operator = await signIn(restarted, "maya");
+    const retry = { action: "verifyElectronicRefund", id: request.id };
+    mock.settings.visible = false;
+    expect(requestReceipt(await operator.send<RefundRequest>(retry)).verification.status).toBe("Unconfirmed");
+    mock.settings.visible = true;
+    mock.settings.invoice = "wrong-invoice";
+    expect(requestReceipt(await operator.send<RefundRequest>(retry)).verification.status).toBe("Unconfirmed");
+    mock.settings.invoice = "";
+    const receipt = requestReceipt(await operator.send<RefundRequest>(retry));
+    expect(receipt.decision).toMatchObject({ status: "Approved", reviewer: "Jordan Lee" });
+    expect(receipt.execution.status).toBe("Provider reference recorded");
+    expect(receipt.verification).toMatchObject({ status: "Verified", independentReadback: {
+      id: refund, paymentId: capture, amountCents: 5000, currency: "USD", status: "COMPLETED",
+    } });
+    expect(JSON.stringify(receipt)).not.toContain(mock.posts[0]?.key);
+    expect(JSON.stringify(receipt)).not.toContain("fixture-bearer");
+    await operator.send(execute);
+    expect(mock.posts).toHaveLength(1);
+    expect(await operator.send(source)).toMatchObject({ balanceCents: 7000, reservedCents: 0 });
+  });
+
+  it("blocks unowned capture lookup and allows read-only lookup without starting a refund attempt", async () => {
+    const mock = simulator(false);
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    mock.settings.payee = "OTHERPAYEE";
+    expect((await cashier.request(source)).status).toBe(422);
+    mock.settings.payee = merchantId;
+    const request = await cashier.send<RefundRequest>(submit());
+    await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    expect(await (await cashier.request({ action: "executeElectronicRefund", id: request.id })).json())
+      .toEqual({ error: "PAYPAL_REFUNDS_DISABLED" });
+    expect(mock.posts).toHaveLength(0);
+  });
+
+  it("submits once on double click and distinguishes pending, failed and mismatched provider results", async () => {
+    const mock = simulator();
+    mock.settings.lost = false;
+    mock.settings.providerStatus = "PENDING";
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit());
+    await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    const execute = { action: "executeElectronicRefund", id: request.id };
+    await Promise.all([cashier.send(execute), cashier.send(execute)]);
+    expect(mock.posts).toHaveLength(1);
+    const read = { action: "verifyElectronicRefund", id: request.id };
+    expect(requestReceipt(await cashier.send<RefundRequest>(read)).verification.status).toBe("Pending");
+    mock.settings.providerStatus = "COMPLETED";
+    mock.settings.amount = "49.00";
+    expect(requestReceipt(await cashier.send<RefundRequest>(read)).verification.status).toBe("Mismatch");
+    mock.settings.providerStatus = "FAILED";
+    mock.settings.amount = "50.00";
+    expect(requestReceipt(await cashier.send<RefundRequest>(read)).verification.status).toBe("Failed");
     expect(mock.posts).toHaveLength(1);
   });
 });

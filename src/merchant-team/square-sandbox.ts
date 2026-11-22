@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TeamError } from "./error";
-import type { SquareRefundEvidence, TestSale } from "./refund-requests";
+import type { ElectronicAttemptTerms, ElectronicSaleEvidence, ProviderRefundEvidence, TestSale } from "./refund-requests";
 
 const identifier = z.string().regex(/^[A-Za-z0-9_-]{1,255}$/);
 const money = z.object({ amount: z.number().int().nonnegative().safe(), currency: z.string().length(3) });
@@ -19,10 +19,6 @@ export class SquareSubmissionBlocked extends TeamError {
 const config = z.object({ accessToken: z.string().regex(/^\S+$/), teamMerchantId: z.string().min(1),
   merchantId: identifier, locationId: identifier });
 export type SquareConfig = z.infer<typeof config>;
-export type SquareSaleEvidence = { sale: TestSale; countedRefundIds: string[] };
-export type SquareAttemptTerms = {
-  key: string; paymentId: string; locationId: string; merchantId: string; amountCents: number; currency: "USD";
-};
 
 export function configuredSquareSandbox(env = process.env) {
   const result = config.safeParse({
@@ -72,7 +68,7 @@ export class SquareSandbox {
     if (identity.merchant.id !== this.settings.merchantId) throw new TeamError("SQUARE_SCOPE_MISMATCH", 503);
   }
 
-  async lookup(reference: string): Promise<SquareSaleEvidence> {
+  async lookup(reference: string): Promise<ElectronicSaleEvidence> {
     if (!identifier.safeParse(reference).success) throw new TeamError("SQUARE_SALE_UNAVAILABLE", 422);
     await this.verifyMerchant();
     const { payment: original } = await this.call("/payments/" + reference, z.object({ payment }));
@@ -106,7 +102,7 @@ export class SquareSandbox {
       countedRefundIds: active.map(item => item.id) };
   }
 
-  async submit(terms: SquareAttemptTerms) {
+  async submit(terms: ElectronicAttemptTerms) {
     try {
       await this.verifyMerchant();
     } catch {
@@ -129,7 +125,7 @@ export class SquareSandbox {
     return this.projectRefund(result);
   }
 
-  private projectRefund(result: z.infer<typeof refund>): SquareRefundEvidence {
+  private projectRefund(result: z.infer<typeof refund>): ProviderRefundEvidence {
     return { id: result.id, paymentId: result.payment_id, locationId: result.location_id,
       amountCents: result.amount_money.amount, currency: result.amount_money.currency, status: result.status };
   }

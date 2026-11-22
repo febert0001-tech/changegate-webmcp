@@ -9,10 +9,10 @@ import { summarizeComparison, type ReviewDisposition, type ReviewFindingState } 
 import { RefundAlertStore } from "./refund-alert-store";
 import type { AlertEnrollment } from "./refund-alerts";
 import { RefundRequestStore } from "./refund-request-store";
-import type { RefundDecision, RefundTerms } from "./refund-requests";
-import { executionStopped, squareVerification } from "./refund-requests";
-import type { SquareSandbox, SquareSaleEvidence } from "./square-sandbox";
-import { SquareSubmissionBlocked } from "./square-sandbox";
+import { executionStopped, providerVerification, type ElectronicSaleEvidence, type RefundDecision, type RefundTerms } from "./refund-requests";
+import { SquareSubmissionBlocked, type SquareSandbox } from "./square-sandbox";
+import type { PayPalProvider } from "./paypal-provider";
+import { RefundNotSubmitted, RefundSubmissionRejected } from "./paypal-contracts";
 
 type ImportRow = ImportSummary & { rejections: string };
 type FindingRow = { id: string; importId: string; evidence: string; caseId: string | null };
@@ -120,24 +120,32 @@ export class TeamStore {
     this.db.close();
   }
 
-  createRefundRequest(employee: Employee, token: string, submissionId: string, terms: RefundTerms, evidence?: SquareSaleEvidence) {
+  createRefundRequest(employee: Employee, token: string, submissionId: string, terms: RefundTerms, evidence?: ElectronicSaleEvidence) {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
       return this.refundRequests.create(employee, submissionId, terms, this.alerts, evidence);
     });
   }
 
-  async executeSquareRefund(employee: Employee, token: string, id: string, square: SquareSandbox | undefined, verifyOnly: boolean) {
+  async executeElectronicRefund(employee: Employee, token: string, id: string,
+    providers: { square?: SquareSandbox; paypal?: PayPalProvider }, verifyOnly: boolean) {
     this.requireActiveSession(employee, token);
-    const state = this.refundRequests.squareExecution(employee, id);
-    const completed = squareVerification(state.request)?.result;
+    const state = this.refundRequests.electronicExecution(employee, id);
+    const completed = providerVerification(state.request)?.result;
     if (completed === "Verified" || completed === "Failed" || executionStopped(state.request)) return state.request;
+    if (state.provider === "paypal") {
+      if (!providers.paypal?.supports(employee.merchantId, state.request.sale ?? undefined)) {
+        throw new TeamError("PAYPAL_NOT_CONNECTED", 503);
+      }
+      return this.processPayPal(employee, token, id, providers.paypal, state, verifyOnly);
+    }
+    const square = providers.square;
     if (!square?.supports(employee.merchantId, state.request.sale ?? undefined)) {
       throw new TeamError("SQUARE_NOT_CONNECTED", 503);
     }
     let response = state.response;
     if (!response && !verifyOnly) {
-      let evidence: SquareSaleEvidence | undefined;
+      let evidence: ElectronicSaleEvidence | undefined;
       if (!state.attempt) {
         try {
           evidence = await square.lookup(state.request.terms.reference);
@@ -149,13 +157,13 @@ export class TeamStore {
             : "The sale is outside Square’s refund window or has reached its refund limit.";
           return this.atomic(() => {
             this.requireActiveSession(employee, token);
-            return this.refundRequests.stopSquare(employee, id, reason);
+            return this.refundRequests.stopElectronic(employee, id, reason);
           });
         }
       }
       const { attempt, response: saved, started, request } = this.atomic(() => {
         this.requireActiveSession(employee, token);
-        return this.refundRequests.startSquare(employee, id, this.alerts, evidence);
+        return this.refundRequests.startElectronic(employee, id, this.alerts, evidence);
       });
       response = saved;
       if (!response) {
@@ -168,9 +176,9 @@ export class TeamStore {
         try {
           const result = await square.submit(attempt.terms).catch((error: unknown) => error instanceof SquareSubmissionBlocked ? error : null);
           if (started && result instanceof SquareSubmissionBlocked) {
-            return this.atomic(() => this.refundRequests.stopSquare(employee, id, result.reason, true));
+            return this.atomic(() => this.refundRequests.stopElectronic(employee, id, result.reason, true));
           }
-          response = this.atomic(() => this.refundRequests.recordSquareResponse(employee, id,
+          response = this.atomic(() => this.refundRequests.recordProviderResponse(employee, id,
             result instanceof SquareSubmissionBlocked ? null : result)) ?? undefined;
         } finally {
           this.squareInFlight.delete(id);
@@ -181,7 +189,51 @@ export class TeamStore {
     const readback = await square.verify(response.id).catch(() => null);
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
-      return this.refundRequests.recordSquareLookup(employee, id, readback);
+      return this.refundRequests.recordProviderLookup(employee, id, readback);
+    });
+  }
+
+  private async processPayPal(employee: Employee, token: string, id: string, paypal: PayPalProvider,
+    state: ReturnType<RefundRequestStore["electronicExecution"]>, verifyOnly: boolean) {
+    let { attempt, response } = state;
+    if (!attempt && !verifyOnly) {
+      paypal.assertExecutionEnabled();
+      const evidence = await paypal.lookup(state.request.terms.reference);
+      const recorded = this.atomic(() => {
+        this.requireActiveSession(employee, token);
+        return this.refundRequests.startElectronic(employee, id, this.alerts, evidence);
+      });
+      ({ attempt, response } = recorded);
+      // Only the caller that committed the new attempt can submit. Repeat actions recover by readback.
+      if (attempt && recorded.started) {
+        let refundId: string | null;
+        try {
+          refundId = await paypal.submit(attempt.terms);
+        } catch (error) {
+          if (error instanceof RefundNotSubmitted || error instanceof RefundSubmissionRejected) {
+            const reason = error instanceof RefundNotSubmitted
+              ? "ChangeGate could not authenticate before submission. No refund was sent."
+              : "PayPal rejected the submission without creating a refund.";
+            return this.atomic(() => this.refundRequests.stopElectronic(employee, id, reason, true));
+          }
+          refundId = null;
+        }
+        response = this.atomic(() => this.refundRequests.recordProviderResponse(employee, id,
+          refundId ? { id: refundId, status: null } : null)) ?? undefined;
+        if (!response) return this.refundRequests.open(employee, id);
+      }
+    }
+    if (!attempt) return this.refundRequests.open(employee, id);
+    const { terms } = attempt;
+    const readback = await paypal.readback(terms, response?.id).catch(() => undefined);
+    const sameAttempt = readback && readback.captureId === terms.paymentId &&
+      (readback.invoiceId === "changegate-" + terms.key || (response && readback.invoiceId === null)) &&
+      (!response || response.id === readback.refundId);
+    const evidence = sameAttempt && readback ? paypal.project(readback) : null;
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      if (!response && evidence) this.refundRequests.recordProviderResponse(employee, id, { id: evidence.id, status: null }, true);
+      return this.refundRequests.recordProviderLookup(employee, id, evidence);
     });
   }
 

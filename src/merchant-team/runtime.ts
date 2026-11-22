@@ -3,6 +3,7 @@ import { isAbsolute, join } from "node:path";
 import { rosterSchema } from "./contracts";
 import { createTeamWorkspace } from "./handler";
 import { configuredSquareSandbox } from "./square-sandbox";
+import { configuredPayPalSandbox } from "./paypal-provider";
 import { TeamStore } from "./store";
 
 let workspace: ReturnType<typeof createTeamWorkspace> | undefined;
@@ -40,7 +41,8 @@ export function teamWorkspace() {
     const store = new TeamStore(db);
     try {
       const square = configuredSquareSandbox();
-      return workspace = createTeamWorkspace(store, roster, origin, { staging, ...(square && { square }) });
+      const paypal = configuredPayPalSandbox();
+      return workspace = createTeamWorkspace(store, roster, origin, { staging, ...(square && { square }), ...(paypal && { paypal }) });
     } catch (error) {
       store.close();
       throw error;

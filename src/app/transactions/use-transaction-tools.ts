@@ -2,15 +2,18 @@
 import { useEffect } from "react";
 import { z } from "zod";
 import type { TeamCommand } from "../../merchant-team/contracts";
-import { checks, requestStatus, type RefundRequest } from "../../merchant-team/refund-requests";
+import { checks, providerName, requestStatus, saleProvider, type RefundRequest } from "../../merchant-team/refund-requests";
 import { getWebMcpModelContext } from "../../webmcp/native-contract";
 
 type Read = (command: TeamCommand, signal: AbortSignal) => Promise<RefundRequest | RefundRequest[]>;
-const inspect = (request: RefundRequest) => ({
-  id:request.id, reference:request.terms.reference, amount:request.terms.amount, currency:request.terms.currency,
-  status:requestStatus(request), checks:checks(request),
-  dataSource:request.sale?.square?"Square Sandbox":"Test sale records",
-});
+const inspect = (request: RefundRequest) => {
+  const provider=saleProvider(request.sale);
+  return {
+    id:request.id, reference:request.terms.reference, amount:request.terms.amount, currency:request.terms.currency,
+    status:requestStatus(request), checks:checks(request),
+    dataSource:provider?providerName(provider)+" Sandbox":"Test sale records",
+  };
+};
 export function useTransactionTools(read: Read) {
   useEffect(() => {
     const context=getWebMcpModelContext(document) ?? getWebMcpModelContext(navigator);
