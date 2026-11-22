@@ -1,0 +1,10 @@
+.git
+.next
+node_modules
+.env*
+.vercel
+coverage
+*.sqlite*
+*.db*
+*.pem
+*.pfx

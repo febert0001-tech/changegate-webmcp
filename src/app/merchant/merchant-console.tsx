@@ -8,6 +8,7 @@ import styles from "./merchant.module.css";
 
 const errors: Record<string, string> = {
   SIGN_IN_FAILED: "Check your username and password.",
+  SIGN_IN_LIMIT: "Too many sign-in attempts. Try again in a few minutes.",
   SIGN_IN_RECOVERY_REQUIRED: "This browser kept an old session cookie. Re-enter your password to recover sign-in.",
   SIGN_IN_REQUIRED: "Your session has ended. Sign in again.",
   SESSION_CHANGED: "The signed-in employee changed. Reload this page before making updates.",
