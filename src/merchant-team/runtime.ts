@@ -16,7 +16,13 @@ export function teamWorkspace() {
   try {
     const config: unknown = JSON.parse(readFileSync(users, "utf8"));
     const roster = rosterSchema.parse(config);
-    return workspace = createTeamWorkspace(new TeamStore(db), roster, origin);
+    const store = new TeamStore(db);
+    try {
+      return workspace = createTeamWorkspace(store, roster, origin);
+    } catch (error) {
+      store.close();
+      throw error;
+    }
   } catch {
     return undefined;
   }

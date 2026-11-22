@@ -40,6 +40,10 @@ async function readCommand(request: Request): Promise<unknown> {
 
 export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[], origin: string) {
   const employees = new Map(roster.map((employee) => [employee.username, employee]));
+  const passwordVersion = (employee: Employee) => digest(employee.passwordHash);
+  store.pruneSessions(roster.map((employee) => ({
+    username: employee.username, merchantId: employee.merchantId, passwordVersion: passwordVersion(employee),
+  })));
   const expectedHost = new URL(origin).host;
   const expectedSalt = randomBytes(16);
   const expectedHash = randomBytes(32);
@@ -56,7 +60,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
     const session = store.getSession(token);
     const employee = session && employees.get(session.username);
     if (!employee || employee.merchantId !== session.merchantId ||
-        digest(employee.passwordHash) !== session.passwordVersion) return undefined;
+        passwordVersion(employee) !== session.passwordVersion) return undefined;
     return { employee, token, version: digest(token) };
   }
 
@@ -85,7 +89,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
         if (!timingSafeEqual(actual, expected) || !candidate) return json({ error: "SIGN_IN_FAILED" }, 401);
         const token = randomBytes(32).toString("hex");
         const tokenHash = digest(token);
-        store.replaceSession(tokenHash, candidate, digest(candidate.passwordHash),
+        store.replaceSession(tokenHash, candidate, passwordVersion(candidate),
           Date.now() + sessionSeconds * 1000, tokenDigest(request.headers), command.recoverSession === true);
         return json(projectSession(candidate, digest(tokenHash)), 200, cookie(token, sessionSeconds));
       }

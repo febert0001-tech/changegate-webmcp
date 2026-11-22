@@ -73,6 +73,16 @@ export class TeamStore {
     }
   }
 
+  pruneSessions(roster: readonly SessionRow[]) {
+    this.db.prepare(`DELETE FROM team_sessions
+      WHERE expires_at <= ? OR NOT EXISTS (
+        SELECT 1 FROM json_each(?) AS member
+        WHERE json_extract(member.value, '$.username') = team_sessions.username
+          AND json_extract(member.value, '$.merchantId') = team_sessions.merchant_id
+          AND json_extract(member.value, '$.passwordVersion') = team_sessions.password_version
+      )`).run(Date.now(), JSON.stringify(roster));
+  }
+
   replaceSession(digest: string, employee: Employee, passwordVersion: string, expiresAt: number,
     previous: string | undefined, recoverSession: boolean) {
     this.atomic(() => {

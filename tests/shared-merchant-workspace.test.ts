@@ -135,6 +135,25 @@ describe("shared merchant workspace", () => {
     server.stop();
     const restarted = app(server.path, roster.filter(({ username }) => username !== "jordan"));
     expect((await restarted.request({ action: "session" }, jordan.key)).status).toBe(401);
+    restarted.stop();
+    const restored = app(server.path);
+    expect((await restored.request({ action: "session" }, jordan.key)).status).toBe(401);
+    expect((await signIn(restored, "jordan")).user.username).toBe("jordan");
+  });
+
+  it("keeps a session invalid after a password is changed and later restored", async () => {
+    const original = app();
+    const maya = await signIn(original, "maya");
+    const jordan = await signIn(original, "jordan");
+    original.stop();
+    const rotated = app(original.path, roster.map((employee) => employee.username === "maya"
+      ? { ...employee, passwordHash: randomBytes(32).toString("hex") } : employee));
+    expect((await rotated.request({ action: "session" }, maya.key)).status).toBe(401);
+    expect((await rotated.request({ action: "session" }, jordan.key)).status).toBe(200);
+    rotated.stop();
+    const restored = app(original.path);
+    expect((await restored.request({ action: "session" }, maya.key)).status).toBe(401);
+    expect((await restored.request({ action: "session" }, jordan.key)).status).toBe(200);
   });
 
   it("refreshes identity, queue, and case together and denies writes from a stale view", async () => {
