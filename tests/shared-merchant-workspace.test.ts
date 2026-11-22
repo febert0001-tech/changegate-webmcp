@@ -191,6 +191,30 @@ describe("shared merchant workspace", () => {
     expect((await independent.request({ action: "session" })).status).toBe(200);
   });
 
+  it("recovers once from the old cookie when a successful sign-out response is lost", async () => {
+    const server = app();
+    const old = await signIn(server, "maya");
+    expect((await old.request({ action: "signOut" })).status).toBe(200);
+    expect((await old.request({ action: "session" })).status).toBe(401);
+
+    const regular = await server.request({ action: "signIn", username: "alex", password }, old.key);
+    expect(regular.status).toBe(409);
+    expect(regular.headers.get("set-cookie")).toBeNull();
+    expect(await regular.json()).toEqual({ error: "SIGN_IN_RECOVERY_REQUIRED" });
+    expect((await server.request({ action: "signIn", username: "alex", password: "wrong", recoverSignOut: true }, old.key)).status).toBe(401);
+
+    const recover = { action: "signIn", username: "alex", password, recoverSignOut: true };
+    const responses = await Promise.all([server.request(recover, old.key), server.request(recover, old.key)]);
+    expect(responses.map(({ status }) => status).sort()).toEqual([200, 409]);
+    const winner = responses.find(({ ok }) => ok);
+    const replacement = winner?.headers.get("set-cookie")?.split(";")[0];
+    if (!replacement) throw Error("Recovered session cookie missing");
+    expect(await winner?.json()).toMatchObject({ username: "alex" });
+    expect((await server.request({ action: "session" }, replacement)).status).toBe(200);
+    expect((await server.request({ action: "session" }, old.key)).status).toBe(401);
+    expect((await server.request(recover, old.key)).status).toBe(409);
+  });
+
   it("rejects a stale edit without adding an extra audit entry", async () => {
     const server = app();
     const maya = await signIn(server, "maya");

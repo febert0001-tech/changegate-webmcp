@@ -86,7 +86,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
         const token = randomBytes(32).toString("hex");
         const tokenHash = digest(token);
         store.replaceSession(tokenHash, candidate, digest(candidate.passwordHash),
-          Date.now() + sessionSeconds * 1000, tokenDigest(request.headers));
+          Date.now() + sessionSeconds * 1000, tokenDigest(request.headers), command.recoverSignOut === true);
         return json(projectSession(candidate, digest(tokenHash)), 200, cookie(token, sessionSeconds));
       }
       const identity = authenticate(request.headers);

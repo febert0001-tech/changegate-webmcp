@@ -29,7 +29,7 @@ export const rosterSchema = z.array(z.strictObject({
 export type Employee = z.infer<typeof rosterSchema>[number];
 
 export const teamCommand = z.discriminatedUnion("action", [
-  z.strictObject({ action: z.literal("signIn"), username: slug, password: z.string().min(1).max(160) }),
+  z.strictObject({ action: z.literal("signIn"), username: slug, password: z.string().min(1).max(160), recoverSignOut: z.literal(true).optional() }),
   z.strictObject({ action: z.literal("signOut") }),
   z.strictObject({ action: z.literal("session") }),
   z.strictObject({ action: z.literal("workspace"), id: id.optional() }),

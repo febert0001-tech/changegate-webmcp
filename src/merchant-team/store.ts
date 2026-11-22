@@ -43,6 +43,9 @@ export class TeamStore {
           token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS team_revoked_expiry ON team_revoked_sessions(expires_at);
+        CREATE TABLE IF NOT EXISTS team_signout_recovery (
+          token_hash TEXT PRIMARY KEY REFERENCES team_revoked_sessions(token_hash) ON DELETE CASCADE
+        );
       `);
     } catch (error) {
       this.db.close();
@@ -66,15 +69,23 @@ export class TeamStore {
     }
   }
 
-  replaceSession(digest: string, employee: Employee, passwordVersion: string, expiresAt: number, previous?: string) {
+  replaceSession(digest: string, employee: Employee, passwordVersion: string, expiresAt: number,
+    previous: string | undefined, recoverSignOut: boolean) {
     this.atomic(() => {
       const now = Date.now();
       this.db.prepare("DELETE FROM team_sessions WHERE expires_at <= ?").run(now);
       this.db.prepare("DELETE FROM team_revoked_sessions WHERE expires_at <= ?").run(now);
       if (previous) {
         const alreadyRevoked = this.db.prepare("SELECT 1 FROM team_revoked_sessions WHERE token_hash=?").get(previous);
-        if (alreadyRevoked) throw new TeamError("SESSION_CHANGED", 409);
-        this.revokeActiveSession(previous);
+        if (alreadyRevoked) {
+          if (!this.db.prepare("SELECT 1 FROM team_signout_recovery WHERE token_hash=?").get(previous)) {
+            throw new TeamError("SESSION_CHANGED", 409);
+          }
+          if (!recoverSignOut) throw new TeamError("SIGN_IN_RECOVERY_REQUIRED", 409);
+          this.db.prepare("DELETE FROM team_signout_recovery WHERE token_hash=?").run(previous);
+        } else {
+          this.revokeActiveSession(previous);
+        }
       }
       this.db.prepare("INSERT INTO team_sessions VALUES (?, ?, ?, ?, ?)")
         .run(digest, employee.username, employee.merchantId, passwordVersion, expiresAt);
@@ -89,13 +100,16 @@ export class TeamStore {
   private revokeActiveSession(digest: string) {
     // Keep the original token's expiry so a competing sign-in cannot reuse it.
     const previous = this.db.prepare("DELETE FROM team_sessions WHERE token_hash=? RETURNING expires_at").get(digest);
-    if (typeof previous?.expires_at === "number") {
-      this.db.prepare("INSERT INTO team_revoked_sessions VALUES (?, ?)").run(digest, previous.expires_at);
-    }
+    if (typeof previous?.expires_at !== "number") return false;
+    this.db.prepare("INSERT INTO team_revoked_sessions VALUES (?, ?)").run(digest, previous.expires_at);
+    return true;
   }
 
   revokeSession(digest: string) {
-    this.atomic(() => this.revokeActiveSession(digest));
+    this.atomic(() => {
+      if (!this.revokeActiveSession(digest)) throw new TeamError("SESSION_CHANGED", 409);
+      this.db.prepare("INSERT INTO team_signout_recovery VALUES (?)").run(digest);
+    });
   }
 
   list(employee: Employee): TeamCase[] {
