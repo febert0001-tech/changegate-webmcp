@@ -586,7 +586,14 @@ describe("Square Sandbox refunds", () => {
     clock = started + cutoff;
     const atCutoff = await cashier.send<RefundRequest>(execute);
     expect(mock.posts).toEqual([originalPost, originalPost, originalPost]);
-    clock = started + cutoff + 1;
+    // Begin another retry just before the cutoff, then run the final authorization after it.
+    clock = started + cutoff - 1;
+    mock.settings.beforeMerchantRead = async () => { clock = started + cutoff + 1; };
+    const crossedCutoff = await cashier.request(execute);
+    expect(crossedCutoff.status).toBe(409);
+    expect(await crossedCutoff.json()).toEqual({ error: "SQUARE_RECONCILIATION_REQUIRED" });
+    expect(mock.posts).toHaveLength(3);
+
     const denied = await cashier.request(execute);
     expect(denied.status).toBe(409);
     expect(await denied.json()).toEqual({ error: "SQUARE_RECONCILIATION_REQUIRED" });
