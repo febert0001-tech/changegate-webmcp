@@ -155,7 +155,7 @@ export class TeamStore {
       }
       const { attempt, response: saved, started, request } = this.atomic(() => {
         this.requireActiveSession(employee, token);
-        return this.refundRequests.startSquare(employee, id, this.alerts, evidence);
+        return this.refundRequests.startSquare(employee, id, evidence);
       });
       response = saved;
       if (!response) {

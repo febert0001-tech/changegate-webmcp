@@ -4,7 +4,7 @@ import type { Employee } from "./contracts";
 import type { RefundAlertStore } from "./refund-alert-store";
 import { assessSize, individualLimitCents, ruleVersion, syntheticRegisterDrift, watchWindowMs } from "./refund-monitor-rules";
 import { TeamError } from "./error";
-import { canReview, cents, checks, executionStopped, money, payout, requestDecision, requestStatus, squareResponse, squareVerification, testSale,
+import { canReview, cents, checks, executionStopped, money, payout, requestDecision, requestStatus, squareApprovalReason, squareResponse, squareVerification, testSale,
   type RefundCheck, type RefundDecision, type RefundRequest, type RefundTerms, type SquareRefundEvidence, type TestSale, type TransactionEvent } from "./refund-requests";
 import type { SquareAttemptTerms, SquareSaleEvidence } from "./square-sandbox";
 
@@ -135,6 +135,7 @@ export class RefundRequestStore {
       if(amount>balanceCents) check={...base,route:"over-balance",
         explanation:"Only "+money(balanceCents)+" remains refundable. This request is blocked."};
       else if(reasons.length) check={...base,route:"manager",explanation:reasons[0]!};
+      else if(sale.square) check={...base,route:"manager",explanation:squareApprovalReason};
       else check={...base,route:"routine",explanation:"The request fits the refundable balance and configured review limits."};
     }
     this.db.prepare("INSERT INTO team_refund_requests VALUES (?,?,?,?,?,?,?)")
@@ -172,7 +173,7 @@ export class RefundRequestStore {
   squareExecution(employee: Employee, id: string) {
     const request = this.open(employee, id);
     if (!request.sale?.square || checks(request).route === "over-balance" ||
-        (checks(request).route !== "routine" && requestDecision(request)?.decision !== "Approved")) {
+        requestDecision(request)?.decision !== "Approved") {
       throw new TeamError("TRANSACTION_ACTION_UNAVAILABLE", 409);
     }
     const row = this.db.prepare("SELECT terms, started_at FROM team_square_attempts WHERE merchant_id=? AND request_id=?")
@@ -182,7 +183,7 @@ export class RefundRequestStore {
     return { request, attempt, response: squareResponse(request)?.refund };
   }
 
-  startSquare(employee: Employee, id: string, alerts: RefundAlertStore, evidence?: SquareSaleEvidence) {
+  startSquare(employee: Employee, id: string, evidence?: SquareSaleEvidence) {
     const state = this.squareExecution(employee, id);
     if (state.attempt || executionStopped(state.request)) return { ...state, started: false };
     const { request } = state;
@@ -197,7 +198,6 @@ export class RefundRequestStore {
       this.stopSquare(employee, id, "The refundable balance dropped below the approved amount.");
       return { ...state, started: false };
     }
-    if (this.holdForCurrentThreshold(employee, request, evidence.sale, balanceCents, alerts)) return { ...state, started: false };
     const terms: SquareAttemptTerms = { key: randomUUID(), paymentId: sale.reference,
       locationId: sale.square!.locationId, merchantId: sale.square!.merchantId, amountCents, currency: "USD" };
     const startedAt = this.now();
@@ -212,23 +212,6 @@ export class RefundRequestStore {
       this.add(employee,id,{kind:"Execution stopped",actor:"ChangeGate",occurredAt:this.now(),reason});
     }
     return this.open(employee,id);
-  }
-
-  private holdForCurrentThreshold(employee: Employee, request: RefundRequest, sale: TestSale,
-    balanceCents: number, alerts: RefundAlertStore) {
-    if (requestDecision(request)?.decision === "Approved") return false;
-    const { thresholdCents } = this.policy(employee);
-    const cumulativeCents = sale.originalCents - balanceCents + cents(request.terms.amount);
-    if (cumulativeCents < thresholdCents) return false;
-    const check: RefundCheck = { ...checks(request), route: "manager", balanceCents, cumulativeCents, thresholdCents,
-      explanation: "Cumulative refunds would reach " + money(cumulativeCents) +
-        ", meeting or exceeding the " + money(thresholdCents) + " store threshold." };
-    const occurredAt = this.now();
-    this.add(employee, request.id, { kind: "Checks recorded", actor: "ChangeGate", occurredAt, check });
-    const owner = this.db.prepare("SELECT requester FROM team_refund_requests WHERE merchant_id=? AND id=?")
-      .get(employee.merchantId, request.id);
-    alerts.queue({ ...employee, username: String(owner?.requester) }, request.id, sale.location, check, occurredAt);
-    return true;
   }
 
   recordSquareResponse(employee: Employee, id: string, refund: SquareRefundEvidence | null) {

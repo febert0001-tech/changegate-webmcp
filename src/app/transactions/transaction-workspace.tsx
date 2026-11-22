@@ -298,7 +298,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
         <h3>Execution</h3>
         {response ? <><p>Square response · {response.refund.status} · {response.refund.id}</p>
           <Link href={url(record.id,"receipt")}>Open receipt</Link></>:
-          square&&!stopped&&(status==="Ready for Square Sandbox refund"||attempt)?<>
+          square&&!stopped&&(status==="Ready for Square Sandbox refund"||(attempt&&review?.decision==="Approved"))?<>
             <p>{attempt?"Square’s response is unavailable. Retrying uses the original attempt.":"Submit this refund to Square Sandbox."}</p>
             <button className={styles.primary} disabled={busy} onClick={()=>void run(async()=>{
               const result=await api<RefundRequest>({action:"executeSquareRefund",id:record.id});
