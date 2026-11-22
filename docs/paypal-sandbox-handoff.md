@@ -32,3 +32,5 @@ Unset `CHANGEGATE_PAYPAL_SANDBOX_ALLOW_REFUNDS` to stop new submissions while re
 The simulated transport and staging container checks passed for runtime commit [56a1d9196647b96e4f86761033c4629db26a7426](https://github.com/febert0001-tech/changegate-webmcp/commit/56a1d9196647b96e4f86761033c4629db26a7426). Recheck the exact candidate's CI before activation.
 
 PayPal Sandbox acceptance still needs an authorized test capture, a review of staging credential isolation, and observed recovery against the provider. Production release requires separate approval.
+
+PayPal does not supply a local store location for the capture. A held request with an unavailable location can alert eligible primary and backup supervisors anywhere in the same merchant, even if their subscriptions specify a location. The requester is excluded, and the separate supervisor approval rule still applies.

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { TeamError } from "./error";
 import { MerchantError, providerReference, type RefundObservation } from "./paypal-contracts";
 import { PayPalMerchantSandbox, type SandboxTransport } from "./paypal-sandbox";
-import type { ElectronicAttemptTerms, ElectronicSaleEvidence, ProviderRefundEvidence, TestSale } from "./refund-requests";
+import { unavailableSaleLocation, type ElectronicAttemptTerms, type ElectronicSaleEvidence, type ProviderRefundEvidence, type TestSale } from "./refund-requests";
 
 const settings = z.object({ teamMerchantId: z.string().min(1), merchantId: providerReference,
   clientId: z.string().regex(/^\S+$/), clientSecret: z.string().regex(/^\S+$/), allowRefunds: z.boolean() });
@@ -36,7 +36,7 @@ export class PayPalProvider {
     const priorCents = counted.reduce((sum, refund) => sum + refund.amountCents, 0);
     if (priorCents > capture.amountCents) throw new TeamError("PAYPAL_HISTORY_UNAVAILABLE", 409);
     return { sale: { reference, originalCents: capture.amountCents, priorCents, tender: "Electronic",
-      location: "Unavailable", register: "Unavailable", shift: "Unavailable",
+      location: unavailableSaleLocation, register: "Unavailable", shift: "Unavailable",
       paypal: { merchantId: capture.merchantId, orderId: capture.orderId } },
       countedRefunds: counted.map(item => this.project(item)) };
   }

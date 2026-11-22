@@ -531,6 +531,39 @@ describe("PayPal Sandbox refunds with simulated transport", () => {
     return { settings, transport, connect, provider: connect(), posts, priorRefunds, refundSubmissions };
   }
 
+  it("routes an unlocated PayPal hold to the merchant's enrolled primary and backup supervisors", async () => {
+    const mock = simulator();
+    const backup = { ...users[1]!, username: "pay-backup" };
+    const server = app(undefined, [...users, backup], undefined, undefined, mock.provider);
+    function enroll(member: Employee, duty: "primary" | "backup", location: string) {
+      server.store.alerts.enroll(member, { duty, location,
+        endpoint: "https://fcm.googleapis.com/" + member.username,
+        keys: { p256dh: "a".repeat(87), auth: "b".repeat(22) } });
+    }
+    enroll(users[0]!, "primary", "Harbor Fuel");
+    enroll(users[1]!, "primary", "Harbor Fuel");
+    enroll(backup, "backup", "Harbor Bar");
+    enroll(users[2]!, "primary", "Harbor Fuel");
+
+    const cashier = await signIn(server, "maya");
+    const request = await cashier.send<RefundRequest>(submit());
+    expect(request.sale?.location).toBe("Unavailable");
+    expect(requestStatus(request)).toBe("Needs manager decision");
+
+    const primary = server.store.alerts.claim(Date.now())!;
+    expect(primary).toMatchObject({ requestId: request.id, phase: 0 });
+    expect(server.store.alerts.recipients(primary).map(row => row.username)).toEqual(["jordan"]);
+    expect(server.store.alerts.recipients({ ...primary, location: "Harbor Bar" })).toEqual([]);
+    server.store.alerts.finish(primary, "push accepted");
+
+    const escalation = server.store.alerts.claim(Date.now() + 30 * 60_000)!;
+    expect(escalation).toMatchObject({ requestId: request.id, phase: 1 });
+    expect(server.store.alerts.recipients(escalation).map(row => row.username)).toEqual(["pay-backup"]);
+    const blocked = await cashier.request({ action: "executeElectronicRefund", id: request.id });
+    expect(blocked.status).toBe(409);
+    expect(mock.refundSubmissions()).toHaveLength(0);
+  });
+
   it("excludes PayPal's unavailable register but retains the cashier monitoring threshold", async () => {
     const mock = simulator();
     mock.settings.captureAmount = "300.00";

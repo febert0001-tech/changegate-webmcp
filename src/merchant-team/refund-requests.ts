@@ -91,6 +91,7 @@ const sales: TestSale[] = [
 ];
 export const testSale = (reference: string) => sales.find(sale => sale.reference === reference) ?? null;
 export const submitted = (request: RefundRequest) => request.events.find(event => event.kind === "Request submitted")!;
+export const unavailableSaleLocation = "Unavailable";
 export const squareApprovalReason = "Every Square refund requires approval from a separate supervisor.";
 export function checks(request: RefundRequest): RefundCheck {
   const check = request.events.findLast(event => event.kind === "Checks recorded")!.check;

@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Employee } from "./contracts";
 import { TeamError } from "./error";
 import type { AlertEnrollment } from "./refund-alerts";
-import type { RefundCheck } from "./refund-requests";
+import { unavailableSaleLocation, type RefundCheck } from "./refund-requests";
 
 export type AlertJob={merchantId:string; requestId:string; requester:string; location:string; phase:number;
   route:string; alertEvidence:string; tries:number; createdAt:number};
@@ -69,8 +69,10 @@ export class RefundAlertStore {
         SELECT 1 FROM team_refund_alert_sent s WHERE s.merchant_id=d.merchant_id AND s.endpoint=d.endpoint AND s.request_id=? AND s.phase=?
       ) ORDER BY d.endpoint`).all(job.merchantId,job.requester,Date.now(),job.requestId,job.phase) as {username:string;payload:string}[];
     const duty=job.phase===0?"primary":"backup";
+    // Captures without a provider location still need review by the merchant on duty.
+    const merchantWide=job.location===unavailableSaleLocation;
     return rows.map(row=>({username:row.username,subscription:JSON.parse(row.payload) as AlertEnrollment}))
-      .filter(({subscription:s})=>s.duty===duty && (!s.location || s.location===job.location));
+      .filter(({subscription:s})=>s.duty===duty && (merchantWide || !s.location || s.location===job.location));
   }
   sent(job:AlertJob,endpoint:string) {
     this.db.prepare("INSERT OR IGNORE INTO team_refund_alert_sent VALUES(?,?,?,?)")
