@@ -218,7 +218,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
     <div className={styles.screenHeading}><h2 id="refund-heading">Refund · {money(cents(record.terms.amount))}</h2><Link href="/transactions">All transactions</Link></div>
     <p className={styles.caseReference}>{record.terms.reference} · {record.sale?.location??"Sale unverified"} · {square?"Square Sandbox":"Test data"}</p>
     <section className={styles.transactionSummary} aria-label="Refund status and next action">
-      <p className={styles.statusHeading}><strong>{status}</strong><span>Current step · {transactionTabs.find(([tab])=>tab===current)?.[1]}</span></p>
+      <p className={styles.statusHeading}><strong>{square&&status==="Needs manager decision"?"Supervisor approval required":status}</strong><span>Current step · {transactionTabs.find(([tab])=>tab===current)?.[1]}</span></p>
       <dl className={styles.moneySummary}>
         <div><dt>Requested</dt><dd>{money(cents(record.terms.amount))}</dd></div>
         <div><dt>Refundable at request</dt><dd>{check.balanceCents===null?"Unavailable":money(check.balanceCents)}</dd></div>
