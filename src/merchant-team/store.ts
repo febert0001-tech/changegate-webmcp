@@ -39,6 +39,7 @@ export class TeamStore {
   private readonly db: DatabaseSync;
   readonly refundRequests: RefundRequestStore;
   readonly alerts: RefundAlertStore;
+  private readonly squareInFlight = new Set<string>();
 
   constructor(path: string, private readonly now = () => new Date().toISOString()) {
     this.db = new DatabaseSync(path, { enableForeignKeyConstraints: true });
@@ -138,16 +139,22 @@ export class TeamStore {
       const evidence = state.attempt ? undefined : await square.lookup(state.request.terms.reference);
       const { attempt, response: saved } = this.atomic(() => {
         this.requireActiveSession(employee, token);
-        return this.refundRequests.startSquare(employee, id, evidence);
+        return this.refundRequests.startSquare(employee, id, this.alerts, evidence);
       });
       response = saved;
       if (!response) {
+        if (!attempt || this.squareInFlight.has(id)) return this.refundRequests.open(employee, id);
         // Square does not document a durable retention window for refund keys.
         if (Date.parse(this.now()) - Date.parse(attempt.startedAt) > 15 * 60_000) {
           throw new TeamError("SQUARE_RECONCILIATION_REQUIRED", 409);
         }
-        const result = await square.submit(attempt.terms).catch(() => null);
-        response = this.atomic(() => this.refundRequests.recordSquareResponse(employee, id, result)) ?? undefined;
+        this.squareInFlight.add(id);
+        try {
+          const result = await square.submit(attempt.terms).catch(() => null);
+          response = this.atomic(() => this.refundRequests.recordSquareResponse(employee, id, result)) ?? undefined;
+        } finally {
+          this.squareInFlight.delete(id);
+        }
       }
     }
     if (!response) return this.refundRequests.open(employee, id);

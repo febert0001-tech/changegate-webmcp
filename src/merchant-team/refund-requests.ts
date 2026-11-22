@@ -79,7 +79,7 @@ const sales: TestSale[] = [
 ];
 export const testSale = (reference: string) => sales.find(sale => sale.reference === reference) ?? null;
 export const submitted = (request: RefundRequest) => request.events.find(event => event.kind === "Request submitted")!;
-export const checks = (request: RefundRequest) => request.events.find(event => event.kind === "Checks recorded")!.check;
+export const checks = (request: RefundRequest) => request.events.findLast(event => event.kind === "Checks recorded")!.check;
 export const requestDecision = (request: RefundRequest) => request.events.find(event => event.kind === "Decision recorded");
 export const payout = (request: RefundRequest) => request.events.find(event => event.kind === "Cash payout reported");
 export const squareResponse = (request: RefundRequest) => request.events.find(event => event.kind === "Square refund response");

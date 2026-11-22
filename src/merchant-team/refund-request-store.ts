@@ -182,7 +182,7 @@ export class RefundRequestStore {
     return { request, attempt, response: squareResponse(request)?.refund };
   }
 
-  startSquare(employee: Employee, id: string, evidence?: SquareSaleEvidence) {
+  startSquare(employee: Employee, id: string, alerts: RefundAlertStore, evidence?: SquareSaleEvidence) {
     const state = this.squareExecution(employee, id);
     if (state.attempt) return { ...state, attempt: state.attempt };
     const { request } = state;
@@ -192,15 +192,34 @@ export class RefundRequestStore {
         evidence.sale.square?.merchantId !== sale.square?.merchantId || evidence.sale.square?.locationId !== sale.square?.locationId) {
       throw new TeamError("SQUARE_SALE_UNAVAILABLE", 422);
     }
-    if (amountCents > this.saleUsage(employee, evidence.sale, evidence.countedRefundIds, id).balanceCents) {
+    const { balanceCents } = this.saleUsage(employee, evidence.sale, evidence.countedRefundIds, id);
+    if (amountCents > balanceCents) {
       throw new TeamError("SQUARE_BALANCE_CHANGED", 409);
     }
+    if (this.holdForCurrentThreshold(employee, request, evidence.sale, balanceCents, alerts)) return state;
     const terms: SquareAttemptTerms = { key: randomUUID(), paymentId: sale.reference,
       locationId: sale.square!.locationId, merchantId: sale.square!.merchantId, amountCents, currency: "USD" };
     const startedAt = this.now();
     this.db.prepare("INSERT INTO team_square_attempts VALUES (?,?,?,?)").run(employee.merchantId,id,JSON.stringify(terms),startedAt);
     this.add(employee,id,{kind:"Square attempt recorded",actor:employee.name,occurredAt:startedAt});
     return { ...state, attempt: { terms, startedAt } };
+  }
+
+  private holdForCurrentThreshold(employee: Employee, request: RefundRequest, sale: TestSale,
+    balanceCents: number, alerts: RefundAlertStore) {
+    if (requestDecision(request)?.decision === "Approved") return false;
+    const { thresholdCents } = this.policy(employee);
+    const cumulativeCents = sale.originalCents - balanceCents + cents(request.terms.amount);
+    if (cumulativeCents < thresholdCents) return false;
+    const check: RefundCheck = { ...checks(request), route: "manager", balanceCents, cumulativeCents, thresholdCents,
+      explanation: "Cumulative refunds would reach " + money(cumulativeCents) +
+        ", meeting or exceeding the " + money(thresholdCents) + " store threshold." };
+    const occurredAt = this.now();
+    this.add(employee, request.id, { kind: "Checks recorded", actor: "ChangeGate", occurredAt, check });
+    const owner = this.db.prepare("SELECT requester FROM team_refund_requests WHERE merchant_id=? AND id=?")
+      .get(employee.merchantId, request.id);
+    alerts.queue({ ...employee, username: String(owner?.requester) }, request.id, sale.location, check, occurredAt);
+    return true;
   }
 
   recordSquareResponse(employee: Employee, id: string, refund: SquareRefundEvidence | null) {

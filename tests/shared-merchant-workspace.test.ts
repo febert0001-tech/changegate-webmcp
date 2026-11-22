@@ -85,7 +85,7 @@ describe("Square Sandbox refunds", () => {
     const posts: unknown[] = [];
     const ledger = new Map<string, typeof refund>();
     const settings = { merchant: config.merchantId, location: config.locationId, status: "COMPLETED", currency: "USD",
-      loseResponse: false, visible: true, readback: refund, total: 12000 };
+      loseResponse: false, visible: true, readback: refund, total: 12000, waitForPost: Promise.resolve() };
     const transport: typeof fetch = async (input, init) => {
       const url = new URL(String(input));
       expect(url.origin).toBe("https://connect.squareupsandbox.com");
@@ -99,6 +99,7 @@ describe("Square Sandbox refunds", () => {
       if (url.pathname === "/v2/refunds" && typeof init?.body === "string") {
         const body = JSON.parse(init.body) as { idempotency_key: string };
         posts.push(body);
+        await settings.waitForPost;
         ledger.set(body.idempotency_key, refund);
         if (settings.loseResponse) throw new Error("lost provider response");
         return Response.json({ refund: { ...refund, status: "PENDING" } });
@@ -154,6 +155,43 @@ describe("Square Sandbox refunds", () => {
     expect(mock.posts).toHaveLength(2);
     expect(await operator.send({ action: "lookupOriginalSale", source: "square", reference: terms.reference }))
       .toMatchObject({ balanceCents: 7000, reservedCents: 0 });
+  });
+
+  it("requires supervisor review if the store threshold changes before the first submission", async () => {
+    const mock = provider();
+    const roles: Employee[] = [...users, { ...users[0]!, username: "owner", role: "owner" }];
+    const server = app(undefined, roles, undefined, mock.square);
+    const cashier = await signIn(server, "maya");
+    const owner = await signIn(server, "owner");
+    const request = await cashier.send<RefundRequest>(submit({ amount: "20.00" }));
+    expect(requestStatus(request)).toBe("Ready for Square Sandbox refund");
+    await owner.send({ action: "setRefundPolicy", thresholdCents: 2000 });
+    const execute = { action: "executeSquareRefund", id: request.id };
+    expect(requestStatus(await cashier.send<RefundRequest>(execute))).toBe("Needs manager decision");
+    expect((await cashier.request(execute)).status).toBe(409);
+    expect(mock.posts).toHaveLength(0);
+  });
+
+  it("coalesces concurrent Square submissions while the first call is in flight", async () => {
+    const mock = provider();
+    let release!: () => void;
+    mock.settings.waitForPost = new Promise<void>(resolve => { release = resolve; });
+    const server = app(undefined, users, undefined, mock.square);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit());
+    await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    const execute = { action: "executeSquareRefund", id: request.id };
+    const first = cashier.send<RefundRequest>(execute);
+    try {
+      await vi.waitFor(() => expect(mock.posts).toHaveLength(1));
+      const repeated = await cashier.send<RefundRequest>(execute);
+      expect(requestReceipt(repeated).execution.status).toBe("Outcome unconfirmed");
+      expect(mock.posts).toHaveLength(1);
+    } finally {
+      release();
+      await first;
+    }
   });
 
   it("blocks rejected refunds and refunds that exceed a fresh provider balance", async () => {

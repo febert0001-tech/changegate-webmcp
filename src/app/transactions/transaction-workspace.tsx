@@ -302,6 +302,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
               const result=await api<RefundRequest>({action:"executeSquareRefund",id:record.id});
               setRecord(result);
               if(squareResponse(result))router.push(url(record.id,"receipt"));
+              else if(currentStep(result)==="approval")router.push(url(record.id,"approval"));
             })}>{attempt?"Retry original attempt":"Execute Square Sandbox refund"}</button></>:
           reported ? <p>Test cash payout reported by {reported.actor} · {time(reported.occurredAt)}</p>:
           status==="Ready for cash payout"?<><p>Record a test cash payout after confirming the amount. This records an employee report.</p>
