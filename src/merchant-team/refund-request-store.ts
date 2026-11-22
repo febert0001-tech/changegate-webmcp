@@ -4,7 +4,7 @@ import type { Employee } from "./contracts";
 import type { RefundAlertStore } from "./refund-alert-store";
 import { assessSize, individualLimitCents, ruleVersion, syntheticRegisterDrift, watchWindowMs } from "./refund-monitor-rules";
 import { TeamError } from "./error";
-import { canReview, cents, checks, money, payout, requestDecision, requestStatus, squareResponse, squareVerification, testSale,
+import { canReview, cents, checks, executionStopped, money, payout, requestDecision, requestStatus, squareResponse, squareVerification, testSale,
   type RefundCheck, type RefundDecision, type RefundRequest, type RefundTerms, type SquareRefundEvidence, type TestSale, type TransactionEvent } from "./refund-requests";
 import type { SquareAttemptTerms, SquareSaleEvidence } from "./square-sandbox";
 
@@ -75,7 +75,7 @@ export class RefundRequestStore {
     for (const request of rows) {
       if (request.id === excludeId || !request.sale || Boolean(request.sale.square) !== Boolean(sale.square) ||
           request.sale.square?.merchantId !== sale.square?.merchantId || request.sale.square?.locationId !== sale.square?.locationId ||
-          checks(request).route === "over-balance" || requestDecision(request)?.decision === "Rejected") continue;
+          checks(request).route === "over-balance" || executionStopped(request) || requestDecision(request)?.decision === "Rejected") continue;
       if (sale.square) {
         const verification = squareVerification(request);
         const response = squareResponse(request)?.refund;
@@ -185,6 +185,7 @@ export class RefundRequestStore {
   startSquare(employee: Employee, id: string, alerts: RefundAlertStore, evidence?: SquareSaleEvidence) {
     const state = this.squareExecution(employee, id);
     if (state.attempt) return { ...state, attempt: state.attempt };
+    if (executionStopped(state.request)) return state;
     const { request } = state;
     const amountCents = cents(request.terms.amount);
     const sale = request.sale!;
@@ -194,7 +195,8 @@ export class RefundRequestStore {
     }
     const { balanceCents } = this.saleUsage(employee, evidence.sale, evidence.countedRefundIds, id);
     if (amountCents > balanceCents) {
-      throw new TeamError("SQUARE_BALANCE_CHANGED", 409);
+      this.stopSquare(employee, id, "The refundable balance dropped below the approved amount.");
+      return state;
     }
     if (this.holdForCurrentThreshold(employee, request, evidence.sale, balanceCents, alerts)) return state;
     const terms: SquareAttemptTerms = { key: randomUUID(), paymentId: sale.reference,
@@ -203,6 +205,14 @@ export class RefundRequestStore {
     this.db.prepare("INSERT INTO team_square_attempts VALUES (?,?,?,?)").run(employee.merchantId,id,JSON.stringify(terms),startedAt);
     this.add(employee,id,{kind:"Square attempt recorded",actor:employee.name,occurredAt:startedAt});
     return { ...state, attempt: { terms, startedAt } };
+  }
+
+  stopSquare(employee: Employee, id: string, reason: string) {
+    const { request, attempt } = this.squareExecution(employee, id);
+    if (!attempt && !executionStopped(request)) {
+      this.add(employee,id,{kind:"Execution stopped",actor:"ChangeGate",occurredAt:this.now(),reason});
+    }
+    return this.open(employee,id);
   }
 
   private holdForCurrentThreshold(employee: Employee, request: RefundRequest, sale: TestSale,

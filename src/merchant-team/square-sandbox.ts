@@ -5,6 +5,7 @@ import type { SquareRefundEvidence, TestSale } from "./refund-requests";
 const identifier = z.string().regex(/^[A-Za-z0-9_-]{1,255}$/);
 const money = z.object({ amount: z.number().int().nonnegative().safe(), currency: z.string().length(3) });
 const payment = z.object({ id: identifier, location_id: identifier, status: z.string(),
+  created_at: z.iso.datetime({ offset: true }),
   source_type: z.string(), total_money: money, refunded_money: money.optional(),
   refund_ids: z.array(identifier).max(20).optional() });
 const refund = z.object({ id: identifier, payment_id: identifier, location_id: identifier,
@@ -68,6 +69,11 @@ export class SquareSandbox {
       throw new TeamError("SQUARE_SALE_UNAVAILABLE", 422);
     }
     const ids = [...new Set(original.refund_ids ?? [])];
+    const oldest = new Date();
+    oldest.setUTCFullYear(oldest.getUTCFullYear() - 1);
+    if (Date.parse(original.created_at) < oldest.getTime() || ids.length >= 20) {
+      throw new TeamError("SQUARE_SALE_INELIGIBLE", 422);
+    }
     const prior = await Promise.all(ids.map(id => this.readRefund(id)));
     if (prior.some((item, index) => item.id !== ids[index] || item.paymentId !== original.id ||
         item.locationId !== original.location_id || item.currency !== "USD")) {

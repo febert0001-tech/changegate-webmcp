@@ -10,7 +10,7 @@ import { RefundAlertStore } from "./refund-alert-store";
 import type { AlertEnrollment } from "./refund-alerts";
 import { RefundRequestStore } from "./refund-request-store";
 import type { RefundDecision, RefundTerms } from "./refund-requests";
-import { squareVerification } from "./refund-requests";
+import { executionStopped, squareVerification } from "./refund-requests";
 import type { SquareSandbox, SquareSaleEvidence } from "./square-sandbox";
 
 type ImportRow = ImportSummary & { rejections: string };
@@ -130,13 +130,24 @@ export class TeamStore {
     this.requireActiveSession(employee, token);
     const state = this.refundRequests.squareExecution(employee, id);
     const completed = squareVerification(state.request)?.result;
-    if (completed === "Verified" || completed === "Failed") return state.request;
+    if (completed === "Verified" || completed === "Failed" || executionStopped(state.request)) return state.request;
     if (!square?.supports(employee.merchantId, state.request.sale ?? undefined)) {
       throw new TeamError("SQUARE_NOT_CONNECTED", 503);
     }
     let response = state.response;
     if (!response && !verifyOnly) {
-      const evidence = state.attempt ? undefined : await square.lookup(state.request.terms.reference);
+      let evidence: SquareSaleEvidence | undefined;
+      if (!state.attempt) {
+        try {
+          evidence = await square.lookup(state.request.terms.reference);
+        } catch (error) {
+          if (!(error instanceof TeamError) || error.code !== "SQUARE_SALE_INELIGIBLE") throw error;
+          return this.atomic(() => {
+            this.requireActiveSession(employee, token);
+            return this.refundRequests.stopSquare(employee, id, "The sale is outside Square’s refund window or has reached its refund limit.");
+          });
+        }
+      }
       const { attempt, response: saved } = this.atomic(() => {
         this.requireActiveSession(employee, token);
         return this.refundRequests.startSquare(employee, id, this.alerts, evidence);
@@ -159,7 +170,10 @@ export class TeamStore {
     }
     if (!response) return this.refundRequests.open(employee, id);
     const readback = await square.verify(response.id).catch(() => null);
-    return this.atomic(() => this.refundRequests.recordSquareLookup(employee, id, readback));
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      return this.refundRequests.recordSquareLookup(employee, id, readback);
+    });
   }
 
   decideRefundRequest(employee: Employee, token: string, id: string, decision: RefundDecision) {

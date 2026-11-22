@@ -46,6 +46,7 @@ export type TransactionEvent =
   | { kind: "Checks recorded"; actor: string; occurredAt: string; check: RefundCheck }
   | { kind: "Decision recorded"; actor: string; occurredAt: string; decision: RefundDecision }
   | { kind: "Cash payout reported"; actor: string; occurredAt: string }
+  | { kind: "Execution stopped"; actor: string; occurredAt: string; reason: string }
   | { kind: "Square attempt recorded" | "Square response unavailable"; actor: string; occurredAt: string }
   | { kind: "Square refund response"; actor: string; occurredAt: string; refund: SquareRefundEvidence }
   | { kind: "Square independent lookup"; actor: string; occurredAt: string; refund: SquareRefundEvidence | null;
@@ -82,6 +83,7 @@ export const submitted = (request: RefundRequest) => request.events.find(event =
 export const checks = (request: RefundRequest) => request.events.findLast(event => event.kind === "Checks recorded")!.check;
 export const requestDecision = (request: RefundRequest) => request.events.find(event => event.kind === "Decision recorded");
 export const payout = (request: RefundRequest) => request.events.find(event => event.kind === "Cash payout reported");
+export const executionStopped = (request: RefundRequest) => request.events.find(event => event.kind === "Execution stopped");
 export const squareResponse = (request: RefundRequest) => request.events.find(event => event.kind === "Square refund response");
 export const squareVerification = (request: RefundRequest) => request.events.findLast(event => event.kind === "Square independent lookup");
 export const squareAttempt = (request: RefundRequest) => request.events.find(event => event.kind === "Square attempt recorded");
@@ -89,6 +91,7 @@ export function requestStatus(request: RefundRequest) {
   const decision = requestDecision(request);
   const route = checks(request).route;
   if (payout(request)) return "Cash payout recorded";
+  if (executionStopped(request)) return "Blocked · No refund submitted";
   if (route === "over-balance") return "Blocked · Over refundable balance";
   if (decision?.decision === "Rejected") return "Rejected";
   if (!decision && (route === "manager" || route === "exception")) return "Needs manager decision";
@@ -107,7 +110,7 @@ export function currentStep(request: RefundRequest): TransactionStep {
   const status = requestStatus(request);
   if (status.startsWith("Blocked · Over")) return "checks";
   if (status === "Needs manager decision" || status === "Rejected") return "approval";
-  return payout(request) || squareResponse(request) ? "receipt" : "execution";
+  return payout(request) || squareResponse(request) || executionStopped(request) ? "receipt" : "execution";
 }
 export function requestReceipt(request: RefundRequest) {
   const decision = requestDecision(request);
@@ -125,7 +128,8 @@ export function requestReceipt(request: RefundRequest) {
     checks: checks(request),
     decision: decision ? { status: decision.decision, reviewer: decision.actor, occurredAt: decision.occurredAt } :
       { status: checks(request).route === "routine" ? "Within store policy" : "No decision recorded" },
-    execution: { status: response?.refund.status ?? (attempted ? "Outcome unconfirmed" : reported ? "Test cash payout reported" : "Not submitted"),
+    execution: { status: executionStopped(request) ? "Not submitted" :
+      response?.refund.status ?? (attempted ? "Outcome unconfirmed" : reported ? "Test cash payout reported" : "Not submitted"),
       authorizedBy: reported || attempted ? decision?.actor ?? "Store policy" : null, reportedBy: reported?.actor ?? null,
       attempt: attempted ? { actor: attempted.actor, occurredAt: attempted.occurredAt } : null, providerResponse: response?.refund ?? null },
     verification: { status: verification?.result ?? "Not run", independentReadback: verification?.refund ?? null },

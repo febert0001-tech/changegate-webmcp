@@ -40,7 +40,7 @@ const errors: Record<string, string> = {
   SQUARE_SALE_UNAVAILABLE: "Square could not verify a completed USD card payment for this store and location.",
   SQUARE_SCOPE_MISMATCH: "Square Sandbox credentials do not match the configured store.",
   SQUARE_PROVIDER_UNAVAILABLE: "Square did not return enough information to confirm the sale or its refundable balance. Try again.",
-  SQUARE_BALANCE_CHANGED: "The refundable balance changed. Recheck the original sale before starting a new request.",
+  SQUARE_SALE_INELIGIBLE: "The Square sale is outside its refund window or has reached its refund limit.",
   SQUARE_RECONCILIATION_REQUIRED: "The retry window ended. Reconcile the original attempt in Square before taking further action.",
   FINDING_NOT_FOUND: "This finding is unavailable in your workspace.",
   CSV_TOO_LARGE: "Choose a file no larger than 96 KiB.",

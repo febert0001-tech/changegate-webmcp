@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import type { TeamCommand, TeamSession } from "../../merchant-team/contracts";
-import { canReview, cents, checks, currentStep, money, payout, requestDecision, requestReceipt,
+import { canReview, cents, checks, currentStep, executionStopped, money, payout, requestDecision, requestReceipt,
   squareAttempt, squareResponse, squareVerification,
   requestStatus, submitted, transactionTabs, type RefundRequest, type TestSale, type TransactionStep } from "../../merchant-team/refund-requests";
 import { PhoneAlerts } from "./phone-alerts";
@@ -195,6 +195,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   if(!record)return <section className={styles.card}>{noticeBlock}{loading&&<p>Loading refund…</p>}</section>;
   const {step}=destination;
   const review=requestDecision(record), check=checks(record), reported=payout(record);
+  const stopped=executionStopped(record);
   const square=record.sale?.square, attempt=squareAttempt(record), response=squareResponse(record), verification=squareVerification(record);
   const verified=verification?.result==="Verified", failed=verification?.result==="Failed";
   const status=requestStatus(record), current=currentStep(record);
@@ -205,6 +206,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   const next=status==="Needs manager decision" ? "A different supervisor must approve or reject this request."
     : check.route==="over-balance" ? "Cashier: check the balance and start a new request for an eligible amount."
     : review?.decision==="Rejected" ? "No payout action is available. Return to the transaction list."
+    : stopped ? stopped.reason
     : status==="Ready for cash payout" ? "Cashier: confirm and record the test cash payout in Execution."
     : reported ? "Cashier: open the receipt for the recorded employee report."
     : verified || failed ? "Open the receipt for Square’s independent readback."
@@ -301,7 +303,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
             <button className={styles.primary} disabled={busy} onClick={()=>void run(async()=>{
               const result=await api<RefundRequest>({action:"executeSquareRefund",id:record.id});
               setRecord(result);
-              if(squareResponse(result))router.push(url(record.id,"receipt"));
+              if(squareResponse(result)||executionStopped(result))router.push(url(record.id,"receipt"));
               else if(currentStep(result)==="approval")router.push(url(record.id,"approval"));
             })}>{attempt?"Retry original attempt":"Execute Square Sandbox refund"}</button></>:
           reported ? <p>Test cash payout reported by {reported.actor} · {time(reported.occurredAt)}</p>:
@@ -316,6 +318,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       {step==="receipt"&&<>
         <h3>Receipt and verification</h3>
         {square?<><p>{response ? "Square returned "+response.refund.status : attempt ? "Square response unavailable." : "No Square submission recorded."}</p>
+          {stopped&&<p>{stopped.reason}</p>}
           {review&&<p>{review.decision} by {review.actor} · {time(review.occurredAt)}</p>}
           <p><strong>{verification?.result??"Independent lookup not run"}</strong>{verification?.occurredAt&&" · "+time(verification.occurredAt)}</p>
           {verification?.refund&&<dl className={styles.facts}>

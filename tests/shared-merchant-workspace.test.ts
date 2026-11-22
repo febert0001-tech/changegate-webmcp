@@ -85,15 +85,16 @@ describe("Square Sandbox refunds", () => {
     const posts: unknown[] = [];
     const ledger = new Map<string, typeof refund>();
     const settings = { merchant: config.merchantId, location: config.locationId, status: "COMPLETED", currency: "USD",
-      loseResponse: false, visible: true, readback: refund, total: 12000, waitForPost: Promise.resolve() };
+      loseResponse: false, visible: true, readback: refund, total: 12000, waitForPost: Promise.resolve(),
+      createdAt: new Date().toISOString(), refundIds: [] as string[] };
     const transport: typeof fetch = async (input, init) => {
       const url = new URL(String(input));
       expect(url.origin).toBe("https://connect.squareupsandbox.com");
       if (url.pathname === "/v2/merchants/me") return Response.json({ merchant: { id: settings.merchant } });
       if (url.pathname === "/v2/payments/" + terms.reference) {
         return Response.json({ payment: { id: terms.reference, location_id: settings.location, status: settings.status,
-          source_type: "CARD", total_money: { amount: settings.total, currency: settings.currency },
-          refund_ids: [...ledger.values()].map(row => row.id),
+          source_type: "CARD", created_at: settings.createdAt, total_money: { amount: settings.total, currency: settings.currency },
+          refund_ids: [...settings.refundIds, ...[...ledger.values()].map(row => row.id)],
           refunded_money: { amount: ledger.size * 5000, currency: "USD" } } });
       }
       if (url.pathname === "/v2/refunds" && typeof init?.body === "string") {
@@ -205,9 +206,23 @@ describe("Square Sandbox refunds", () => {
     const approved = await cashier.send<RefundRequest>(submit());
     await manager.send({ action: "decideRefundRequest", id: approved.id, decision: "Approved", password });
     mock.settings.total = 4900;
-    const response = await cashier.request({ action: "executeSquareRefund", id: approved.id });
-    expect(await response.json()).toEqual({ error: "SQUARE_BALANCE_CHANGED" });
+    const result = await cashier.send<RefundRequest>({ action: "executeSquareRefund", id: approved.id });
+    expect(requestStatus(result)).toBe("Blocked · No refund submitted");
+    expect(requestReceipt(result).execution.status).toBe("Not submitted");
+    expect(await cashier.send({ action: "lookupOriginalSale", source: "square", reference: terms.reference }))
+      .toMatchObject({ balanceCents: 4900, reservedCents: 0 });
     expect(mock.posts).toEqual([]);
+  });
+
+  it("rejects expired Square payments and payments that reached the refund limit", async () => {
+    const mock = provider();
+    const cashier = await signIn(app(undefined, users, undefined, mock.square), "maya");
+    mock.settings.createdAt = "2020-01-01T00:00:00Z";
+    expect(await (await cashier.request(submit())).json()).toEqual({ error: "SQUARE_SALE_INELIGIBLE" });
+    mock.settings.createdAt = new Date().toISOString();
+    mock.settings.refundIds = Array.from({ length: 20 }, (_, index) => "refund-" + index);
+    expect(await (await cashier.request(submit())).json()).toEqual({ error: "SQUARE_SALE_INELIGIBLE" });
+    expect(mock.posts).toHaveLength(0);
   });
 
   it("requires the configured seller, location, completed status and USD", async () => {
