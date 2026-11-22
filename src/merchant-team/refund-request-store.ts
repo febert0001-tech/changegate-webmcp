@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Employee } from "./contracts";
 import type { RefundAlertStore } from "./refund-alert-store";
-import { assessSize, individualLimitCents, ruleVersion, watchWindowMs } from "./refund-monitor-rules";
+import { assessSize, individualLimitCents, ruleVersion, syntheticRegisterDrift, watchWindowMs } from "./refund-monitor-rules";
 import { TeamError } from "./error";
 import { canReview, cents, checks, money, payout, requestDecision, requestStatus, testSale,
   type RefundCheck, type RefundDecision, type RefundRequest, type RefundTerms, type TestSale, type TransactionEvent } from "./refund-requests";
@@ -102,7 +102,7 @@ export class RefundRequestStore {
     if (size.relativeHold) reasons.push("The amount is unusually large for the test baseline (score "+size.z?.toFixed(2)+").");
     if (cashierWatchCount>=3) reasons.push(cashierWatchCount+" unusual refunds by this cashier across registers in 15 minutes.");
     if (registerWatchCount>=3) reasons.push(registerWatchCount+" unusual refunds at this register across cashiers in 15 minutes.");
-    const monitoring={ruleVersion,z:size.z,watch:size.watch,cashierWatchCount,registerWatchCount,related:recent.slice(0,8).map(row=>row.id),reasons};
+    const monitoring={ruleVersion,z:size.z,watch:size.watch,cashierWatchCount,registerWatchCount,related:recent.slice(0,8).map(row=>row.id),reasons,drift:syntheticRegisterDrift(terms.reference)};
     if (!sale) {
       check={route:"exception",balanceCents:null,cumulativeCents:null,thresholdCents,monitoring,
         explanation:"The sale could not be verified. Route it to a manager for exception review. Payment remains blocked."};

@@ -1,3 +1,4 @@
+import type { syntheticRegisterDrift } from "./refund-monitor-rules";
 import { z } from "zod";
 
 export const refundTerms = z.strictObject({
@@ -26,7 +27,7 @@ export interface RefundCheck {
   explanation: string;
   monitoring?: {
     ruleVersion: string; z: number | null; watch: boolean; cashierWatchCount: number;
-    registerWatchCount: number; related: string[]; reasons: string[];
+    registerWatchCount: number; related: string[]; reasons: string[]; drift?: ReturnType<typeof syntheticRegisterDrift>;
   };
 }
 export type TransactionEvent =

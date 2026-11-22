@@ -81,6 +81,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
       sessionVersion: version,
       username: employee.username, name: employee.name, merchantName: employee.merchantName,
       ...(employee.role && { role: employee.role }),
+      reviewerConfigured: roster.some(member=>member.merchantId===employee.merchantId&&canReview(member.role)),
       coworkers: roster.filter((member) => member.merchantId === employee.merchantId)
         .map(({ username, name }) => ({ username, name })),
     };

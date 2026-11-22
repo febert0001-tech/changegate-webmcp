@@ -9,3 +9,8 @@ The staging container serves the authenticated merchant workspace and enforces t
 Run the container and persistence test with `docker build -t changegate-staging:test .` followed by `node scripts/check-merchant-staging.mjs changegate-staging:test`. That test uses an isolated disposable Docker volume and an HTTPS edge fixture. Hosted acceptance is a separate run with independently signed-in staff, a redacted case, container replacement on the same volume, and a second-merchant access check.
 
 For staging acceptance, the optional sealed `CHANGEGATE_TEAM_ACCEPTANCE_ROSTER_JSON` service variable adds synthetic test employees to the existing staff roster. Use distinct usernames and synthetic merchant IDs. Clear the variable and redeploy after the acceptance check to revoke those sessions.
+
+
+For a supervised register demo, set `role` on the enrolled staff records. Use `cashier`, `manager`, or `owner`. Give each participating merchant at least one named manager or owner and keep role-less legacy roster members as cashiers. The signed-in transaction page reports a missing supervisor.
+
+Phone alerts need persistent staging Web Push signing keys in `CHANGEGATE_PUSH_PUBLIC_KEY` and `CHANGEGATE_PUSH_PRIVATE_KEY`, with `CHANGEGATE_PUSH_SUBJECT` set to the staging HTTPS URL. Reviewers enroll a device for a 12-hour primary or backup duty period and choose its location. The default backup deadline is 120 seconds. Override `CHANGEGATE_ALERT_ESCALATION_SECONDS` only for a scoped test. Push acceptance records the push provider response, not a phone receipt or a human decision. The optional `CHANGEGATE_MONITOR_AI_KEY` and `CHANGEGATE_MONITOR_AI_MODEL` activate numeric-only AI advisory calls after separate provider authorization.

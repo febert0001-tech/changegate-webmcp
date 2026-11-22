@@ -82,7 +82,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
     if(!id&&session.role==="owner")void send<{thresholdCents:number}>({action:"refundPolicy"},options)
       .then(result=>{if(!controller.signal.aborted)setThreshold(result.thresholdCents);})
       .catch(e=>{if(!controller.signal.aborted&&!onSessionError(e))setError("Could not load the refund policy.");});
-    const timer=!id&&manager ? window.setInterval(()=>{if(document.visibilityState==="visible")void load();},5000):undefined;
+    const timer=id||manager ? window.setInterval(()=>{if(document.visibilityState==="visible")void load();},5000):undefined;
     return()=>{controller.abort();if(timer!==undefined)window.clearInterval(timer);};
   },[id,manager,onSessionError,send,session.role,version]);
 
@@ -111,6 +111,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
         <button className={styles.primary} type="button" onClick={()=>{
           setNewForm(true);setReference("");setLookup(undefined);setFormId(crypto.randomUUID());setError("");
         }}>New refund</button></div>
+      {session.reviewerConfigured===false&&<p className={styles.formError}>No supervisor is configured for this store. Ask your store administrator to assign a manager or owner.</p>}
       <p className={styles.fieldHint}>Test sales only · No POS or payment processor connected</p>
       {noticeBlock}
       {newForm&&<section className={styles.importSection} aria-label="New refund">
@@ -216,7 +217,13 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
           {check.monitoring.watch&&<p>Unusual refunds in 15 minutes · Cashier {check.monitoring.cashierWatchCount} · Register {check.monitoring.registerWatchCount}</p>}
           {!!check.monitoring.reasons.length&&<ul className={styles.rejections}>{check.monitoring.reasons.map(reason=><li key={reason}>{reason}</li>)}</ul>}
           {!!check.monitoring.related.length&&<details><summary>Earlier watch signals</summary><ul>{check.monitoring.related.map(id=><li key={id}><Link href={url(id,"checks")}>Open {id}</Link></li>)}</ul></details>}
-          <p className={styles.fieldHint}>Register drift is unavailable until comparable POS sales and refund totals are connected.</p>
+          {check.monitoring.drift?<details><summary>Register drift · Synthetic observation only</summary>
+            <p>These completed test windows do not change the refund decision.</p>
+            <ul className={styles.rejections}>{check.monitoring.drift.windows.map(window=><li key={window.endedAt}>
+              {window.endedAt} · {window.refunds} refunds in {window.salesAndRefunds} transactions · Smoothed share {(window.ewma*100).toFixed(2)}%
+              {" · Threshold "+(window.percentile*100).toFixed(2)+"%"+(window.elevated?" · Elevated":"")}
+            </li>)}</ul>
+          </details>:<p className={styles.fieldHint}>Register drift is unavailable until comparable POS sales and refund totals are connected.</p>}
         </>}
         {check.route==="over-balance"&&<Link className={styles.primary} href="/transactions">Return to transactions</Link>}
       </>}

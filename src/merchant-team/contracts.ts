@@ -107,6 +107,7 @@ export interface TeamSession {
   name: string;
   merchantName: string;
   role?: MerchantRole;
+  reviewerConfigured?: boolean;
   coworkers: { username: string; name: string }[];
 }
 
