@@ -24,3 +24,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run build
+      - name: Verify offline case handoff in Chrome
+        run: |
+          npm install --prefix "$RUNNER_TEMP/changegate-browser" --no-save --ignore-scripts playwright-core@1.56.1
+          NODE_PATH="$RUNNER_TEMP/changegate-browser/node_modules" CHROME_BIN="$(command -v google-chrome)" node scripts/verify-refund-desk.mjs
