@@ -11,14 +11,23 @@ export const refundMapping = z.strictObject({
 }).refine(mapping => new Set(Object.values(mapping)).size === Object.values(mapping).length);
 export type RefundMapping = z.infer<typeof refundMapping>;
 export type RefundRow = { line: number; reference: string; amountCents: number; status?: string };
-export type Rejection = { line: number; reasons: string[] };
-export type FindingKind = "Repeated reference" | "Status needs review";
-export type RefundFinding = { kind: FindingKind; explanation: string; rows: RefundRow[] };
+export type ExportSide = "Merchant" | "Processor";
+export type EvidenceRow = Omit<RefundRow, "amountCents"> & { amountCents: number | null; side?: ExportSide; rejected?: true };
+export type Rejection = { line: number; reasons: string[]; side?: ExportSide };
+export type ComparisonPeriod = { start: string; end: string };
+export type ComparisonEvidence = {
+  period: ComparisonPeriod;
+  files: Record<ExportSide, string>;
+  exact: EvidenceRow[][];
+};
+export type CaseComparison = Omit<ComparisonEvidence, "exact">;
+export type FindingKind = "Repeated reference" | "Status needs review" | "Amount difference" | "Merchant only" | "Processor only" | "Ambiguous reference";
+export type RefundFinding = { kind: FindingKind; explanation: string; rows: EvidenceRow[]; differenceCents?: number };
 export interface SavedFinding extends RefundFinding { id: string; caseId: string | null; }
 export type ImportSummary = { id: string; importedAt: string; acceptedCount: number; rejectedCount: number; findingCount: number };
-export type RefundImport = { summary: ImportSummary; findings: SavedFinding[]; rejections: Rejection[] };
+export type RefundImport = { summary: ImportSummary; findings: SavedFinding[]; rejections: Rejection[]; comparison?: ComparisonEvidence };
 export interface RefundImportResult { batch: RefundImport; existing: boolean }
-export interface CaseEvidence { importId: string; finding: SavedFinding }
+export interface CaseEvidence { importId: string; finding: SavedFinding; comparison?: CaseComparison }
 type CsvRow = { line: number; cells: string[] };
 
 function bad(code: string): never { throw new TeamError(code, 422); }
@@ -81,11 +90,12 @@ function cents(raw: string) {
   return result > 0 ? result : null;
 }
 
-export function reviewRefundCsv(raw: string, mapping: RefundMapping) {
+export function reviewRefundCsv(raw: string, mapping: RefundMapping, includeCandidates = false) {
   const { headers, rows } = source(raw);
   if (Object.values(mapping).some(index => index !== undefined && index >= headers.length)) bad("CSV_MAPPING");
   const accepted: RefundRow[] = [], rejections: Rejection[] = [];
   const findings: RefundFinding[] = [];
+  const candidates: EvidenceRow[] = [];
   const byReference = new Map<string, RefundRow[]>();
   for (const { line, cells } of rows) {
     const get = (index: number) => cells[index]?.trim() ?? "";
@@ -95,16 +105,19 @@ export function reviewRefundCsv(raw: string, mapping: RefundMapping) {
     const status = mapping.status === undefined ? undefined : get(mapping.status);
     const reasons: string[] = [];
     if (cells.length !== headers.length) reasons.push("Column count differs from the header.");
-    if (!reference || reference.length > 160 || /[\u0000-\u001f\u007f]/.test(reference)) reasons.push("Use a refund reference of 1 to 160 characters without line breaks.");
+    const validReference = reference && reference.length <= 160 && !/[\u0000-\u001f\u007f]/.test(reference);
+    if (!validReference) reasons.push("Use a refund reference of 1 to 160 characters without line breaks.");
     if (amountCents === null) reasons.push("Amount must be a positive number with up to two decimal places.");
     if (currency !== "USD") reasons.push("Currency must be USD.");
     if (status && (status.length > 64 || /[\u0000-\u001f\u007f]/.test(status))) reasons.push("Status must be at most 64 characters without line breaks.");
     if (reasons.length || amountCents === null) {
       rejections.push({ line, reasons });
+      if (includeCandidates && validReference) candidates.push({ line, reference, amountCents: currency === "USD" ? amountCents : null, rejected: true });
       continue;
     }
     const evidence: RefundRow = { line, reference, amountCents, ...(status !== undefined && { status }) };
     accepted.push(evidence);
+    if (includeCandidates) candidates.push(evidence);
     const group = byReference.get(reference) ?? [];
     group.push(evidence);
     byReference.set(reference, group);
@@ -118,5 +131,5 @@ export function reviewRefundCsv(raw: string, mapping: RefundMapping) {
     if (group.length > 1) findings.push({ kind: "Repeated reference", rows: group, explanation:
       group.length + " accepted rows share this refund reference. The file alone cannot establish that money moved twice." });
   }
-  return { accepted, rejections, findings: findings.sort((a, b) => a.rows[0]!.line - b.rows[0]!.line) };
+  return { accepted, candidates, rejections, findings: findings.sort((a, b) => a.rows[0]!.line - b.rows[0]!.line) };
 }

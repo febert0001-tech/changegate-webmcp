@@ -395,4 +395,46 @@ describe("shared merchant workspace", () => {
     expect(detail.case.revision).toBe(2);
     expect(detail.history.map(({ detail }) => detail)).toEqual(["Initial owner: Maya Chen", "First note."]);
   });
+  it("reuses comparison and assigned case IDs, persists both source rows, and scopes evidence to the merchant", async () => {
+    const server = app();
+    const maya = await signIn(server, "maya");
+    const alex = await signIn(server, "alex");
+    const mapping = { reference: 0, amount: 1, currency: 2 };
+    const file = (name: string) => ({ name, mapping, text: readFileSync("tests/fixtures/" + name, "utf8") });
+    const input = {
+      merchant: file("TEST-only-merchant-register.csv"),
+      processor: file("TEST-only-processor-export.csv"),
+      period: { start: "2026-11-01", end: "2026-11-07" },
+    };
+    expect(await maya.send({ action: "previewComparison", input })).toMatchObject({ acceptedCount: 10 });
+    expect(await maya.send({ action: "listImports" })).toEqual([]);
+    const command = { action: "saveComparison", input };
+    const { batch } = await maya.send<RefundImportResult>(command);
+    const finding = batch.findings.find(row => row.differenceCents === 1800);
+    if (!finding) throw Error("Amount difference missing");
+    const assign = { action: "assignFinding", id: finding.id, assignee: "jordan" };
+    const [original, repeat] = await Promise.all([maya.send<TeamCaseDetail>(assign), maya.send<TeamCaseDetail>(assign)]);
+    expect(repeat).toEqual(original);
+    const reused = await maya.send<RefundImportResult>(command);
+    expect(reused.existing).toBe(true);
+    expect(reused.batch.summary.id).toBe(batch.summary.id);
+    expect(reused.batch.findings.find(row => row.id === finding.id)?.caseId).toBe(original.case.id);
+    expect(await alex.send({ action: "listImports" })).toEqual([]);
+    expect((await alex.request({ ...assign, assignee: "alex" })).status).toBe(404);
+    expect((await alex.request({ action: "openImport", id: batch.summary.id })).status).toBe(404);
+    expect((await alex.request({ action: "open", id: original.case.id })).status).toBe(404);
+    server.stop();
+
+    const restarted = app(server.path);
+    const jordan = await signIn(restarted, "jordan");
+    const persisted = await jordan.send<TeamCaseDetail>({ action: "open", id: original.case.id });
+    expect(persisted).toEqual(original);
+    expect(persisted.evidence?.comparison).toEqual({
+      period: input.period,
+      files: { Merchant: input.merchant.name, Processor: input.processor.name },
+    });
+    expect(persisted.evidence?.finding.rows.map(row => [row.side, row.line, row.amountCents]))
+      .toEqual([["Merchant", 2, 4200], ["Processor", 2, 2400]]);
+    expect(await jordan.send({ action: "list" })).toMatchObject([{ assignee: "jordan", differenceCents: 1800 }]);
+  });
 });

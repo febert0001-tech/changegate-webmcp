@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { csvText, refundMapping, type CaseEvidence } from "./refund-csv";
+import { comparisonInput } from "./refund-comparison";
 export { TeamError } from "./error";
 
 const text = (max: number) => z.string().trim().min(1).max(max);
@@ -46,6 +47,8 @@ export const teamCommand = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("inspectCsv"), text: csvText }),
   z.strictObject({ action: z.literal("previewCsv"), text: csvText, mapping: refundMapping }),
   z.strictObject({ action: z.literal("importCsv"), text: csvText, mapping: refundMapping }),
+  z.strictObject({ action: z.literal("previewComparison"), input: comparisonInput }),
+  z.strictObject({ action: z.literal("saveComparison"), input: comparisonInput }),
   z.strictObject({ action: z.literal("listImports") }),
   z.strictObject({ action: z.literal("openImport"), id }),
   z.strictObject({ action: z.literal("assignFinding"), id, assignee: slug }),
@@ -71,6 +74,7 @@ export interface TeamCase {
   finding: string;
   nextAction: string;
   updatedAt: string;
+  differenceCents?: number;
 }
 export interface TeamCaseDetail {
   case: TeamCase;

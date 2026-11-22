@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { TeamError, type CaseHistory, type Employee, type HistoryKind, type TeamCase, type TeamCaseDetail, type TeamCommand } from "./contracts";
 
-import type { CaseEvidence, ImportSummary, RefundFinding, RefundImport, RefundImportResult, Rejection, SavedFinding } from "./refund-csv";
+import type { CaseComparison, CaseEvidence, ComparisonEvidence, ImportSummary, RefundFinding, RefundImport, RefundImportResult, Rejection, SavedFinding } from "./refund-csv";
 
 type ImportRow = ImportSummary & { rejections: string };
 type FindingRow = { id: string; importId: string; evidence: string; caseId: string | null };
@@ -43,6 +43,11 @@ export class TeamStore {
           merchant_id TEXT NOT NULL, id TEXT NOT NULL, fingerprint TEXT NOT NULL, imported_at TEXT NOT NULL,
           accepted_count INTEGER NOT NULL, rejected_count INTEGER NOT NULL, finding_count INTEGER NOT NULL,
           rejections TEXT NOT NULL, PRIMARY KEY (merchant_id, id), UNIQUE (merchant_id, fingerprint)
+        );
+        CREATE TABLE IF NOT EXISTS team_refund_comparisons (
+          merchant_id TEXT NOT NULL, import_id TEXT NOT NULL, evidence TEXT NOT NULL,
+          PRIMARY KEY (merchant_id, import_id),
+          FOREIGN KEY (merchant_id, import_id) REFERENCES team_refund_imports(merchant_id, id)
         );
         CREATE TABLE IF NOT EXISTS team_refund_findings (
           merchant_id TEXT NOT NULL, id TEXT NOT NULL, import_id TEXT NOT NULL, evidence TEXT NOT NULL, case_id TEXT,
@@ -178,8 +183,12 @@ export class TeamStore {
   }
 
   list(employee: Employee): TeamCase[] {
-    return this.db.prepare(`SELECT ${caseColumns} FROM team_cases
-      WHERE merchant_id=? ORDER BY updated_at DESC, id`).all(employee.merchantId) as unknown as TeamCase[];
+    const rows = this.db.prepare(`SELECT ${caseColumns},
+        (SELECT json_extract(evidence, '$.differenceCents') FROM team_refund_findings
+         WHERE merchant_id=c.merchant_id AND case_id=c.id) AS differenceCents
+      FROM team_cases AS c WHERE merchant_id=? ORDER BY updated_at DESC, id`)
+      .all(employee.merchantId) as unknown as (Omit<TeamCase, "differenceCents"> & { differenceCents: number | null })[];
+    return rows.map(({ differenceCents, ...item }) => ({ ...item, ...(differenceCents !== null && { differenceCents }) }));
   }
 
   open(employee: Employee, id: string): TeamCaseDetail {
@@ -193,8 +202,12 @@ export class TeamStore {
     const { history, ...item } = row;
     const linked = this.db.prepare(`SELECT ${findingColumns} FROM team_refund_findings
       WHERE merchant_id=? AND case_id=?`).get(employee.merchantId, id) as FindingRow | undefined;
-    const evidence: CaseEvidence | undefined = linked
-      ? { importId: linked.importId, finding: projectFinding(linked) } : undefined;
+    const comparison = linked && this.db.prepare(`SELECT json_remove(evidence, '$.exact') AS evidence
+      FROM team_refund_comparisons WHERE merchant_id=? AND import_id=?`).get(employee.merchantId, linked.importId)?.evidence;
+    const evidence: CaseEvidence | undefined = linked ? {
+      importId: linked.importId, finding: projectFinding(linked),
+      ...(typeof comparison === "string" && { comparison: JSON.parse(comparison) as CaseComparison }),
+    } : undefined;
     return { case: item, history: JSON.parse(history) as CaseHistory[], ...(evidence && { evidence }) };
   }
 
@@ -210,23 +223,28 @@ export class TeamStore {
     const { rejections, ...summary } = row;
     const findings = this.db.prepare(`SELECT ${findingColumns} FROM team_refund_findings
       WHERE merchant_id=? AND import_id=? ORDER BY rowid`).all(employee.merchantId, id) as unknown as FindingRow[];
-    return { summary, findings: findings.map(projectFinding), rejections: JSON.parse(rejections) as Rejection[] };
+    const comparison = this.db.prepare("SELECT evidence FROM team_refund_comparisons WHERE merchant_id=? AND import_id=?")
+      .get(employee.merchantId, id)?.evidence;
+    return { summary, findings: findings.map(projectFinding), rejections: JSON.parse(rejections) as Rejection[],
+      ...(typeof comparison === "string" && { comparison: JSON.parse(comparison) as ComparisonEvidence }) };
   }
 
   importRefunds(employee: Employee, token: string, raw: string,
-    review: () => { accepted: unknown[]; findings: RefundFinding[]; rejections: Rejection[] }): RefundImportResult {
+    review: () => { accepted: unknown[]; findings: RefundFinding[]; rejections: Rejection[]; comparison?: ComparisonEvidence }): RefundImportResult {
     const fingerprint = createHash("sha256").update(raw).digest("hex");
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
       const saved = this.db.prepare("SELECT id FROM team_refund_imports WHERE merchant_id=? AND fingerprint=?")
         .get(employee.merchantId, fingerprint)?.id;
       if (typeof saved === "string") return { batch: this.openImport(employee, saved), existing: true };
-      const { accepted, findings, rejections } = review();
+      const { accepted, findings, rejections, comparison } = review();
       if (!accepted.length) throw new TeamError("CSV_NO_ACCEPTED_ROWS", 422);
       const id = randomUUID();
       this.db.prepare(`INSERT INTO team_refund_imports VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(employee.merchantId, id, fingerprint, this.now(), accepted.length, rejections.length,
           findings.length, JSON.stringify(rejections));
+      if (comparison) this.db.prepare("INSERT INTO team_refund_comparisons VALUES (?, ?, ?)")
+        .run(employee.merchantId, id, JSON.stringify(comparison));
       const insert = this.db.prepare("INSERT INTO team_refund_findings VALUES (?, ?, ?, ?, NULL)");
       for (const finding of findings) insert.run(employee.merchantId, randomUUID(), id, JSON.stringify(finding));
       return { batch: this.openImport(employee, id), existing: false };
@@ -251,7 +269,7 @@ export class TeamStore {
         .run(caseId, employee.merchantId, id);
       this.addEvent(employee, caseId, "Opened", "Case opened from a refund import.", now);
       this.addEvent(employee, caseId, "Imported evidence", finding.kind + " · Source lines " +
-        finding.rows.map(({ line }) => line).join(", "), now);
+        finding.rows.map(({ line, side }) => side ? side + " " + line : String(line)).join(", "), now);
       this.addEvent(employee, caseId, "Assigned", assignee.name, now);
       return this.open(employee, caseId);
     });

@@ -1,0 +1,7 @@
+Refund reference,Refund amount,Currency,Status
+TEST-DIFFERENCE-1042,42.00,USD,Completed
+TEST-MATCH-1001,10.20,USD,Completed
+TEST-MERCHANT-ONLY,8.00,USD,Completed
+TEST-AMBIGUOUS,2.00,USD,Completed
+TEST-AMBIGUOUS,3.00,USD,Completed
+TEST-INVALID,invalid,USD,Completed

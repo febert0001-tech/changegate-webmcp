@@ -2,7 +2,7 @@ name: Merchant staging container
 
 on:
   pull_request:
-    branches: [main, feat/private-merchant-staging]
+    branches: [main, feat/private-merchant-staging, feat/merchant-refund-import]
     paths:
       - '.github/workflows/staging-container.yml'
       - 'Dockerfile'

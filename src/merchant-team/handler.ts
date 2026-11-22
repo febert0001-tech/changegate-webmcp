@@ -5,6 +5,8 @@ import { TeamError, teamCommand, type Employee, type TeamSession } from "./contr
 import type { TeamStore } from "./store";
 import { csvLimit, inspectRefundCsv, reviewRefundCsv } from "./refund-csv";
 
+import { compareRefunds } from "./refund-comparison";
+
 const hash = promisify(scrypt);
 const sessionSeconds = 8 * 60 * 60;
 const responseHeaders = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
@@ -24,7 +26,7 @@ async function readCommand(request: Request): Promise<unknown> {
     const part = await reader.read();
     if (part.done) break;
     size += part.value.byteLength;
-    if (size > 6 * csvLimit + 1024) {
+    if (size > 12 * csvLimit + 2048) {
       void reader.cancel().catch(() => {});
       throw new TeamError("REQUEST_TOO_LARGE", 413);
     }
@@ -132,6 +134,15 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "previewCsv": return json(reviewRefundCsv(command.text, command.mapping));
             case "importCsv": return json(store.importRefunds(employee, token, command.text,
               () => reviewRefundCsv(command.text, command.mapping)));
+            case "previewComparison": {
+              const { accepted, ...result } = compareRefunds(command.input);
+              return json({ ...result, acceptedCount: accepted.length });
+            }
+            case "saveComparison": {
+              const { merchant, processor } = command.input;
+              const key = JSON.stringify(["refund-comparison-v1", merchant.text, processor.text]);
+              return json(store.importRefunds(employee, token, key, () => compareRefunds(command.input)));
+            }
             case "listImports": return json(store.listImports(employee));
             case "openImport": return json(store.openImport(employee, command.id));
             case "assignFinding": {
