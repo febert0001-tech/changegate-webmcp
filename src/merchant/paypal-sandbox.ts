@@ -1,6 +1,6 @@
 import { z } from "zod";
 import {
-  cents, MerchantError, RefundNotSubmitted, parseUsd, providerReference,
+  cents, MerchantError, RefundNotSubmitted, RefundSubmissionRejected, parseUsd, providerReference,
   type CaptureSnapshot, type MerchantProvider, type RefundObservation,
 } from "./contracts";
 
@@ -28,6 +28,15 @@ const refund = z.object({
   id: providerReference, amount, status: z.enum(["COMPLETED", "PENDING", "FAILED", "CANCELLED"]),
   invoice_id: z.string().max(127).optional(), links: z.array(link).max(30),
 });
+const refundRejection = z.object({
+  name: z.string(),
+  details: z.array(z.object({ issue: z.string() })).min(1),
+});
+const refundBusinessDenials = new Set([
+  "CAPTURED_AMOUNT_FULLY_REFUNDED",
+  "REFUND_AMOUNT_EXCEEDED",
+  "REFUND_TIME_LIMIT_EXCEEDED",
+]);
 const routes: Readonly<Record<string, RegExp>> = {
   GET: /^\/v2\/(checkout\/orders|payments\/(captures|refunds))\/[A-Za-z0-9]{5,64}$/,
   POST: /^(\/v1\/oauth2\/token|\/v2\/payments\/captures\/[A-Za-z0-9]{5,64}\/refund)$/,
@@ -85,8 +94,10 @@ export class PayPalMerchantSandbox implements MerchantProvider {
     const response = await withinDeadline(this.transport(sandboxOrigin + path, {
       ...init, method, redirect: "error", signal, cache: "no-store",
     }), signal);
-    // Keep upstream bodies, headers and payer data out of operator errors.
-    if (!response.ok) throw new MerchantError("PAYPAL_HTTP_" + response.status, 502);
+    // Only inspect documented candidate denials from the refund POST itself.
+    const possibleDenial = method === "POST" && path.endsWith("/refund") &&
+      (response.status === 403 || response.status === 422);
+    if (!response.ok && !possibleDenial) throw new MerchantError("PAYPAL_HTTP_" + response.status, 502);
     if (!response.headers.get("content-type")?.includes("application/json") ||
         Number(response.headers.get("content-length") ?? 0) > maxResponseBytes || !response.body) {
       throw new MerchantError("INVALID_PROVIDER_RESPONSE", 502);
@@ -104,7 +115,19 @@ export class PayPalMerchantSandbox implements MerchantProvider {
       }
       pieces.push(part.value);
     }
-    return JSON.parse(Buffer.concat(pieces).toString("utf8")) as unknown;
+    const body: unknown = JSON.parse(Buffer.concat(pieces).toString("utf8"));
+    if (possibleDenial) {
+      const parsed = refundRejection.safeParse(body);
+      if (parsed.success) {
+        const { name, details } = parsed.data;
+        const denied = response.status === 403
+          ? name === "NOT_AUTHORIZED" && details.every(({ issue }) => issue === "PERMISSION_DENIED")
+          : name === "UNPROCESSABLE_ENTITY" && details.every(({ issue }) => refundBusinessDenials.has(issue));
+        if (denied) throw new RefundSubmissionRejected();
+      }
+      throw new MerchantError("PAYPAL_HTTP_" + response.status, 502);
+    }
+    return body;
   }
 
   private async bearer(deadline?: AbortSignal): Promise<string> {

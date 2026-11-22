@@ -291,6 +291,38 @@ describe("merchant refunds through the authenticated application handler", () =>
     expect(refundPosts).toBe(0);
   });
 
+  it.each([
+    { http: 403, name: "NOT_AUTHORIZED", issues: ["PERMISSION_DENIED"], definitive: true },
+    { http: 422, name: "UNPROCESSABLE_ENTITY", issues: ["REFUND_AMOUNT_EXCEEDED"], definitive: true },
+    { http: 422, name: "UNPROCESSABLE_ENTITY", issues: ["REFUND_AMOUNT_EXCEEDED", "UNKNOWN"], definitive: false },
+    { http: 409, name: "UNPROCESSABLE_ENTITY", issues: ["REFUND_AMOUNT_EXCEEDED"], definitive: false },
+    { http: 500, name: "INTERNAL_SERVER_ERROR", issues: [], definitive: false },
+  ])("classifies refund POST HTTP $http with $issues (definitive: $definitive)", async ({
+    http, name, issues, definitive,
+  }) => {
+    let refundPosts = 0;
+    const instance = app(database(), {
+      inject: (fake) => async (url, init) => {
+        if (!url.endsWith("/refund")) return fake(url, init);
+        refundPosts++;
+        return Response.json({ name, details: issues.map((issue) => ({ issue })) }, { status: http });
+      },
+    });
+    const intent = await approved(instance, "DEMOCAPTURE100", 759);
+    const detail = await instance.ok<MerchantCaseDetail>({ action: "execute", ...intent });
+    const issue = definitive ? "REFUND_SUBMISSION_REJECTED" : "SUBMISSION_RESPONSE_UNAVAILABLE";
+    expect(detail.case).toMatchObject({ status: definitive ? "FAILED" : "UNCERTAIN", issue, refundId: null });
+    expect(merchantReceipt(detail, "Simulated PayPal Sandbox")).toMatchObject({
+      execution: { status: definitive ? "FAILED" : "IN_PROGRESS", refundOutcome: definitive ? "NOT_EXECUTED" : "UNKNOWN" },
+      verification: { status: "NOT_RUN", issue, source: null, observed: null },
+    });
+    const [balance] = await instance.ok<MerchantCapture[]>({ action: "find", kind: "capture", reference: "DEMOCAPTURE100" });
+    expect(balance).toMatchObject({ remainingCents: definitive ? 1899 : 1140 });
+    expect(balance?.outstanding).toHaveLength(definitive ? 0 : 1);
+    expect((await instance.command({ action: "execute", ...intent })).status).toBe(409);
+    expect(refundPosts).toBe(1);
+  });
+
   it("reconciles a known refund with exactly one refund GET", async () => {
     let refundReads = 0;
     const instance = app(database(), {

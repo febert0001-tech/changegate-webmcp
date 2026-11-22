@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
-  cents, MerchantError, RefundNotSubmitted, type CaptureSnapshot, type CaseStatus, type MerchantCapture,
+  cents, MerchantError, RefundNotSubmitted, RefundSubmissionRejected, type CaptureSnapshot, type CaseStatus, type MerchantCapture,
   type MerchantEnvironment, type MerchantProvider, type RefundObservation,
 } from "./contracts";
 import { MerchantStore, type CaseRow } from "./store";
@@ -144,13 +144,13 @@ export class MerchantRefunds {
     try {
       refundId = await this.provider.submit(attempt.captureId, attempt.amountCents, attempt.requestId);
     } catch (error) {
-      if (error instanceof RefundNotSubmitted) {
+      if (error instanceof RefundNotSubmitted || error instanceof RefundSubmissionRejected) {
+        const issue = error instanceof RefundNotSubmitted ? "REFUND_NOT_SUBMITTED" : "REFUND_SUBMISSION_REJECTED";
         this.store.atomic(() => {
           const current = this.store.get(id);
           if (activeAttempt(current.status) && !current.refund_id && !current.observation) {
-            this.store.db.prepare("UPDATE merchant_cases SET status='FAILED', issue='REFUND_NOT_SUBMITTED' WHERE id=?")
-              .run(id);
-            this.store.event(id, "SYSTEM", "REFUND_NOT_SUBMITTED", "FAILED", this.now());
+            this.store.db.prepare("UPDATE merchant_cases SET status='FAILED', issue=? WHERE id=?").run(issue, id);
+            this.store.event(id, "SYSTEM", issue, "FAILED", this.now());
           }
         });
       } else {

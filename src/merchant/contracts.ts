@@ -98,6 +98,9 @@ export class MerchantError extends Error {
 /** The adapter never invoked the refund POST for this attempt. */
 export class RefundNotSubmitted extends Error {}
 
+/** PayPal explicitly denied this refund request without creating a refund. */
+export class RefundSubmissionRejected extends Error {}
+
 export function parseUsd(value: string): number | null {
   if (!/^\d{1,6}(\.\d{1,2})?$/.test(value)) return null;
   const [whole, fraction = ""] = value.split(".");

@@ -248,6 +248,8 @@ export function MerchantConsole() {
                 <button disabled={busy}>Reconcile original attempt</button>
               </form>}
               {refundCase.issue && <p>{label(refundCase.issue)}</p>}
+              {refundCase.issue === "REFUND_SUBMISSION_REJECTED" &&
+                <p>PayPal declined this request without creating a refund. The balance hold was released. Check the capture and permissions before requesting a new refund.</p>}
               <h3>Provider evidence</h3>
               {refundCase.status === "COMPLETED" && <p>{auth.session.environment === "PayPal Sandbox" ? "Provider verified" : "Simulated provider matched"}</p>}
               {refundCase.observation ? <p>{refundCase.observation.refundId} · {label(refundCase.observation.status)} · {refundCase.observation.currency} {refundCase.observation.amountCents / 100} · {refundCase.observation.observedAt}</p>
