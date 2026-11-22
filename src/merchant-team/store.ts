@@ -46,6 +46,10 @@ export class TeamStore {
         CREATE TABLE IF NOT EXISTS team_signout_recovery (
           token_hash TEXT PRIMARY KEY REFERENCES team_revoked_sessions(token_hash) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS team_session_replacements (
+          token_hash TEXT PRIMARY KEY REFERENCES team_revoked_sessions(token_hash) ON DELETE CASCADE,
+          replacement_hash TEXT NOT NULL
+        );
       `);
     } catch (error) {
       this.db.close();
@@ -70,7 +74,7 @@ export class TeamStore {
   }
 
   replaceSession(digest: string, employee: Employee, passwordVersion: string, expiresAt: number,
-    previous: string | undefined, recoverSignOut: boolean) {
+    previous: string | undefined, recoverSession: boolean) {
     this.atomic(() => {
       const now = Date.now();
       this.db.prepare("DELETE FROM team_sessions WHERE expires_at <= ?").run(now);
@@ -78,18 +82,31 @@ export class TeamStore {
       if (previous) {
         const alreadyRevoked = this.db.prepare("SELECT 1 FROM team_revoked_sessions WHERE token_hash=?").get(previous);
         if (alreadyRevoked) {
-          if (!this.db.prepare("SELECT 1 FROM team_signout_recovery WHERE token_hash=?").get(previous)) {
-            throw new TeamError("SESSION_CHANGED", 409);
-          }
-          if (!recoverSignOut) throw new TeamError("SIGN_IN_RECOVERY_REQUIRED", 409);
-          this.db.prepare("DELETE FROM team_signout_recovery WHERE token_hash=?").run(previous);
-        } else {
-          this.revokeActiveSession(previous);
+          this.recoverSession(previous, employee, recoverSession);
+        } else if (this.revokeActiveSession(previous)) {
+          this.db.prepare("INSERT INTO team_session_replacements VALUES (?, ?)").run(previous, digest);
         }
       }
       this.db.prepare("INSERT INTO team_sessions VALUES (?, ?, ?, ?, ?)")
         .run(digest, employee.username, employee.merchantId, passwordVersion, expiresAt);
     });
+  }
+
+  // The losing regular sign-in cannot overwrite a winning response. A deliberate retry with
+  // the winning employee's credentials may revoke the unseen replacement and issue one new token.
+  private recoverSession(previous: string, employee: Employee, allowed: boolean) {
+    const signedOut = this.db.prepare("SELECT 1 FROM team_signout_recovery WHERE token_hash=?").get(previous);
+    const replacement = this.db.prepare(`SELECT s.token_hash FROM team_session_replacements AS r
+      JOIN team_sessions AS s ON s.token_hash=r.replacement_hash
+      WHERE r.token_hash=? AND s.username=? AND s.merchant_id=? AND s.expires_at>?`)
+      .get(previous, employee.username, employee.merchantId, Date.now())?.token_hash;
+    if (!signedOut && typeof replacement !== "string") throw new TeamError("SESSION_CHANGED", 409);
+    if (!allowed) throw new TeamError("SIGN_IN_RECOVERY_REQUIRED", 409);
+    if (signedOut) this.db.prepare("DELETE FROM team_signout_recovery WHERE token_hash=?").run(previous);
+    if (typeof replacement === "string") {
+      this.revokeActiveSession(replacement);
+      this.db.prepare("DELETE FROM team_session_replacements WHERE token_hash=?").run(previous);
+    }
   }
 
   getSession(digest: string) {
@@ -134,8 +151,16 @@ export class TeamStore {
       VALUES (?, ?, ?, ?, ?, ?, ?)`).run(employee.merchantId, id, employee.name, employee.username, kind, detail, time);
   }
 
-  create(employee: Employee, reference: string) {
+  private requireActiveSession(employee: Employee, token: string) {
+    const session = this.getSession(token);
+    if (session?.username !== employee.username || session.merchantId !== employee.merchantId) {
+      throw new TeamError("SIGN_IN_REQUIRED", 401);
+    }
+  }
+
+  create(employee: Employee, reference: string, token: string) {
     return this.atomic(() => {
+      this.requireActiveSession(employee, token);
       const id = randomUUID();
       const time = this.now();
       this.db.prepare(`INSERT INTO team_cases VALUES (?, ?, ?, 1, ?, ?, 'Investigating', '', '', ?)`)
@@ -145,8 +170,9 @@ export class TeamStore {
     });
   }
 
-  change(employee: Employee, command: Change, roster: readonly Employee[]) {
+  change(employee: Employee, command: Change, roster: readonly Employee[], token: string) {
     return this.atomic(() => {
+      this.requireActiveSession(employee, token);
       const current = this.open(employee, command.id).case;
       if (current.revision !== command.revision) throw new TeamError("CASE_CHANGED", 409);
       if (current.status === "Resolved") throw new TeamError("CASE_RESOLVED", 409);

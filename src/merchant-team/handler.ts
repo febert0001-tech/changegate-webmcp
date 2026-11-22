@@ -86,7 +86,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
         const token = randomBytes(32).toString("hex");
         const tokenHash = digest(token);
         store.replaceSession(tokenHash, candidate, digest(candidate.passwordHash),
-          Date.now() + sessionSeconds * 1000, tokenDigest(request.headers), command.recoverSignOut === true);
+          Date.now() + sessionSeconds * 1000, tokenDigest(request.headers), command.recoverSession === true);
         return json(projectSession(candidate, digest(tokenHash)), 200, cookie(token, sessionSeconds));
       }
       const identity = authenticate(request.headers);
@@ -110,8 +110,8 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "signOut":
               store.revokeSession(token);
               return json(null, 200, cookie("", 0));
-            case "create": return json(store.create(employee, command.reference), 201);
-            default: return json(store.change(employee, command, roster));
+            case "create": return json(store.create(employee, command.reference, token), 201);
+            default: return json(store.change(employee, command, roster, token));
           }
       }
     } catch (error) {

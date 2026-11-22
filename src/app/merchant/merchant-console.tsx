@@ -8,7 +8,7 @@ import styles from "./merchant.module.css";
 
 const errors: Record<string, string> = {
   SIGN_IN_FAILED: "Check your username and password.",
-  SIGN_IN_RECOVERY_REQUIRED: "Sign-out finished, but this browser kept the old cookie. Re-enter your password to recover sign-in.",
+  SIGN_IN_RECOVERY_REQUIRED: "This browser kept an old session cookie. Re-enter your password to recover sign-in.",
   SIGN_IN_REQUIRED: "Your session has ended. Sign in again.",
   SESSION_CHANGED: "The signed-in employee changed. Reload this page before making updates.",
   CASE_NOT_FOUND: "This case could not be opened in your workspace.",
@@ -56,7 +56,7 @@ function notifySessionChange() {
 export function MerchantConsole({ caseId }: { caseId?: string }) {
   const router = useRouter();
   const [ready, setReady] = useState(false);
-  const [recoverSignOut, setRecoverSignOut] = useState(false);
+  const [recoverSession, setRecoverSession] = useState(false);
   const [workspace, setWorkspace] = useState<TeamWorkspaceView | null>(null);
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -100,7 +100,7 @@ export function MerchantConsole({ caseId }: { caseId?: string }) {
       if (error instanceof RequestError && (error.status === 401 || error.code === "SESSION_CHANGED")) {
         setWorkspace(null);
       }
-      setRecoverSignOut(error instanceof RequestError && error.code === "SIGN_IN_RECOVERY_REQUIRED");
+      setRecoverSession(error instanceof RequestError && error.code === "SIGN_IN_RECOVERY_REQUIRED");
       setNotice(errorText(error));
     } finally {
       setBusy(false);
@@ -149,7 +149,7 @@ export function MerchantConsole({ caseId }: { caseId?: string }) {
         event.currentTarget.reset();
         void run(async () => {
           await send<TeamSession>({ action: "signIn", username: field(data, "username").trim().toLowerCase(),
-            password: field(data, "password"), ...(recoverSignOut && { recoverSignOut: true as const }) });
+            password: field(data, "password"), ...(recoverSession && { recoverSession: true as const }) });
           notifySessionChange();
           window.location.reload();
         });
@@ -157,7 +157,7 @@ export function MerchantConsole({ caseId }: { caseId?: string }) {
         <h2>Employee sign-in</h2>
         <label>Username<input name="username" autoComplete="username" maxLength={64} required /></label>
         <label>Password<input name="password" type="password" autoComplete="current-password" maxLength={160} required /></label>
-        <button className={styles.primary} disabled={busy}>{recoverSignOut ? "Recover sign-in" : "Sign in"}</button>
+        <button className={styles.primary} disabled={busy}>{recoverSession ? "Recover sign-in" : "Sign in"}</button>
       </form>
     ) : (
       <div className={styles.grid}>

@@ -2,7 +2,7 @@ import { randomBytes, scryptSync } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Employee, TeamCase, TeamCaseDetail, TeamSession, TeamWorkspaceView } from "../src/merchant-team/contracts";
 import { createTeamWorkspace } from "../src/merchant-team/handler";
 import { TeamStore } from "../src/merchant-team/store";
@@ -31,7 +31,7 @@ function app(path?: string, users = roster) {
   stores.add(store);
   const workspace = createTeamWorkspace(store, users, origin);
   return {
-    path,
+    path, store,
     stop() { store.close(); stores.delete(store); },
     request(command: unknown, cookie = "", { requestOrigin = origin, host = new URL(origin).host, sessionVersion = "" } = {}) {
       return workspace.handle(new Request(origin + "/api/merchant", {
@@ -201,9 +201,9 @@ describe("shared merchant workspace", () => {
     expect(regular.status).toBe(409);
     expect(regular.headers.get("set-cookie")).toBeNull();
     expect(await regular.json()).toEqual({ error: "SIGN_IN_RECOVERY_REQUIRED" });
-    expect((await server.request({ action: "signIn", username: "alex", password: "wrong", recoverSignOut: true }, old.key)).status).toBe(401);
+    expect((await server.request({ action: "signIn", username: "alex", password: "wrong", recoverSession: true }, old.key)).status).toBe(401);
 
-    const recover = { action: "signIn", username: "alex", password, recoverSignOut: true };
+    const recover = { action: "signIn", username: "alex", password, recoverSession: true };
     const responses = await Promise.all([server.request(recover, old.key), server.request(recover, old.key)]);
     expect(responses.map(({ status }) => status).sort()).toEqual([200, 409]);
     const winner = responses.find(({ ok }) => ok);
@@ -213,6 +213,57 @@ describe("shared merchant workspace", () => {
     expect((await server.request({ action: "session" }, replacement)).status).toBe(200);
     expect((await server.request({ action: "session" }, old.key)).status).toBe(401);
     expect((await server.request(recover, old.key)).status).toBe(409);
+  });
+
+  it("recovers a lost replacement response only for the employee issued the unseen session", async () => {
+    const server = app();
+    const old = await signIn(server, "maya");
+    const first = await server.request({ action: "signIn", username: "jordan", password }, old.key);
+    expect(first.status).toBe(200);
+    const unseen = first.headers.get("set-cookie")?.split(";")[0];
+    if (!unseen) throw Error("Replacement response missing cookie");
+
+    const unrelated = await server.request({ action: "signIn", username: "alex", password, recoverSession: true }, old.key);
+    expect(unrelated.status).toBe(409);
+    expect((await server.request({ action: "session" }, unseen)).status).toBe(200);
+    const regular = await server.request({ action: "signIn", username: "jordan", password }, old.key);
+    expect(regular.status).toBe(409);
+    expect(await regular.json()).toEqual({ error: "SIGN_IN_RECOVERY_REQUIRED" });
+
+    const recovery = { action: "signIn", username: "jordan", password, recoverSession: true };
+    const attempts = await Promise.all([server.request(recovery, old.key), server.request(recovery, old.key)]);
+    expect(attempts.map(({ status }) => status).sort()).toEqual([200, 409]);
+    const recovered = attempts.find(({ ok }) => ok)?.headers.get("set-cookie")?.split(";")[0];
+    if (!recovered) throw Error("Recovery response missing cookie");
+    expect((await server.request({ action: "session" }, unseen)).status).toBe(401);
+    expect((await server.request({ action: "session" }, recovered)).status).toBe(200);
+  });
+
+  it("rejects a case write if a separate connection revokes the session after authentication", async () => {
+    const server = app();
+    const other = app(server.path);
+    const maya = await signIn(server, "maya");
+    const jordan = await signIn(server, "jordan");
+    const { case: item } = await maya.send<TeamCaseDetail>({ action: "create", reference: "REF-ACTIVE-SESSION" });
+
+    const create = server.store.create.bind(server.store);
+    vi.spyOn(server.store, "create").mockImplementationOnce((employee, reference, token) => {
+      other.store.revokeSession(token);
+      return create(employee, reference, token);
+    });
+    expect((await maya.request({ action: "create", reference: "REVOKED-CREATE" })).status).toBe(401);
+    expect(await jordan.send<TeamCase[]>({ action: "list" })).toMatchObject([{ id: item.id }]);
+
+    const change = server.store.change.bind(server.store);
+    vi.spyOn(server.store, "change").mockImplementationOnce((employee, command, users, token) => {
+      other.store.revokeSession(token);
+      return change(employee, command, users, token);
+    });
+    expect((await jordan.request({ action: "note", id: item.id, revision: 1, note: "REVOKED-NOTE" })).status).toBe(401);
+    const fresh = await signIn(server, "maya");
+    const detail = await fresh.send<TeamCaseDetail>({ action: "open", id: item.id });
+    expect(detail.case.revision).toBe(1);
+    expect(detail.history.map(({ kind }) => kind)).toEqual(["Opened"]);
   });
 
   it("rejects a stale edit without adding an extra audit entry", async () => {
