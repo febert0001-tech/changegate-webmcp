@@ -106,6 +106,30 @@
       small {
         color: #486264;
       }
+      textarea {
+        font: inherit;
+        width: 100%;
+        padding: 8px;
+        min-height: 64px;
+      }
+      details {
+        padding: 14px;
+        background: #fff;
+        border: 1px solid #becdc8;
+        border-radius: 8px;
+        margin: 16px 0;
+      }
+      summary {
+        font-weight: 700;
+        cursor: pointer;
+      }
+      #history li {
+        margin: 8px 20px;
+        overflow-wrap: anywhere;
+      }
+      #caseMessage {
+        color: #234e48;
+      }
       #results {
         margin-top: 18px;
       }
@@ -115,13 +139,48 @@
     <main>
       <header>
         <p class="brand">Midtown Intelligence Labs · ChangeGate</p>
-        <h1>Refund reconciliation</h1>
+        <h1>Refund review workspace</h1>
         <p>
-          Compare issued or approved refund amounts against processor records
-          using a shared, refund-level reference. Both files stay on this
-          device.
+          Track a refund investigation or compare merchant and processor exports. Case notes and imported files stay on this device.
         </p>
       </header>
+      <details id="desk" open>
+        <summary>Refund case desk</summary>
+        <p>
+          Start with a refund or ticket reference. Record the owner, finding and
+          next action, then download the case for handoff. Use redacted notes.
+        </p>
+        <label
+          >Case reference<input id="caseRef" maxlength="160" required
+        /></label>
+        <label>Review owner<input id="owner" maxlength="120" required /></label>
+        <label
+          >Case status<select id="disposition">
+            <option>Investigating</option>
+            <option>Awaiting evidence</option>
+            <option>Resolved</option>
+          </select></label
+        >
+        <label
+          >Finding and next action<textarea
+            id="note"
+            maxlength="2000"
+            required
+          ></textarea>
+        </label>
+        <button type="button" id="record">Record update</button
+        ><button id="caseSave" disabled>Download case</button
+        ><button id="newCase">New case</button>
+        <label
+          >Reopen saved case<input
+            type="file"
+            id="caseLoad"
+            accept=".json,application/json"
+        /></label>
+        <p id="caseMessage" role="status">No case open.</p>
+        <ol id="history"></ol>
+      </details>
+      <h2>Reconcile CSV exports</h2>
       <p>
         Use CSV exports with a header row and one record per refund. Select a
         positive USD amount column and a currency column in each file. Review
@@ -437,11 +496,29 @@
           body = document.querySelector("tbody");
         const header = document.createElement("tr");
         columns.forEach((c) => header.append(element("th", c)));
+        header.append(element("th", "Case"));
         head.replaceChildren(header);
         body.replaceChildren();
         for (const row of report.slice(0, 200)) {
           const tr = document.createElement("tr");
           row.forEach((v) => tr.append(element("td", String(v))));
+          const action = document.createElement("td");
+          const open = element("button", "Start case");
+          open.onclick = () =>
+            startCase(
+              String(row[0]).slice(0, 160),
+              (
+                "Worksheet: " +
+                row[1] +
+                ". Merchant row: " +
+                (row[2] || "—") +
+                ". Processor row: " +
+                (row[5] || "—") +
+                "."
+              ).slice(0, 2000),
+            );
+          action.append(open);
+          tr.append(action);
           body.append(tr);
         }
         $("limit").textContent =
@@ -470,6 +547,167 @@
           : "changegate-refund-review.csv";
         link.click();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
+      };
+      const statuses = Array.from(
+        $("disposition").options,
+        (option) => option.value,
+      );
+      let entries = [];
+      let unsaved = false;
+      let editing = false;
+      function warnBeforeReplace() {
+        return (
+          !(unsaved || editing) ||
+          window.confirm("Discard the current unsaved case changes?")
+        );
+      }
+      window.addEventListener("beforeunload", (event) => {
+        if (unsaved || editing) {
+          event.preventDefault();
+          event.returnValue = "";
+        }
+      });
+      for (const id of ["caseRef", "owner", "disposition", "note"]) {
+        $(id).addEventListener("input", () => {
+          editing = true;
+        });
+      }
+      function drawHistory() {
+        $("caseRef").readOnly = entries.length > 0;
+        $("caseSave").disabled = !entries.length;
+        $("history").replaceChildren(
+          ...entries.map((e) =>
+            element(
+              "li",
+              e.at + " · " + e.owner + " · " + e.status + " — " + e.note,
+            ),
+          ),
+        );
+      }
+      function startCase(ref = "", note = "") {
+        if (!warnBeforeReplace()) return;
+        entries = [];
+        unsaved = false;
+        editing = Boolean(ref || note);
+        $("caseRef").value = ref;
+        $("note").value = note;
+        $("owner").value = "";
+        $("caseLoad").value = "";
+        $("disposition").value = statuses[0];
+        drawHistory();
+        $("desk").open = true;
+        $("caseMessage").textContent =
+          "Enter a reference, owner and note to record an update.";
+        $("caseRef").focus();
+      }
+      $("newCase").onclick = () => startCase();
+      function nonempty(value, max) {
+        return (
+          typeof value === "string" &&
+          Boolean(value.trim()) &&
+          value.length <= max
+        );
+      }
+      $("record").onclick = () => {
+        const ref = $("caseRef").value.trim(),
+          owner = $("owner").value.trim(),
+          note = $("note").value.trim();
+        if (!ref || !owner || !note) {
+          $("caseMessage").textContent =
+            "Enter a case reference, review owner and finding.";
+          return;
+        }
+        if (entries.length >= 500) {
+          $("caseMessage").textContent =
+            "Case history is full. Download this case and open a follow-up.";
+          return;
+        }
+        $("caseRef").value = ref;
+        entries.push({
+          at: new Date().toISOString(),
+          owner,
+          status: $("disposition").value,
+          note,
+        });
+        unsaved = true;
+        editing = false;
+        $("note").value = "";
+        drawHistory();
+        $("caseMessage").textContent =
+          "Update recorded in this tab. Download the case to keep it.";
+      };
+      $("caseSave").onclick = () => {
+        if (editing) {
+          $("caseMessage").textContent =
+            "Record your pending update before downloading.";
+          return;
+        }
+        const file = {
+          format: "changegate-review-case",
+          version: 1,
+          reference: $("caseRef").value,
+          entries,
+        };
+        const url = URL.createObjectURL(
+          new Blob([JSON.stringify(file, null, 2)], {
+            type: "application/json",
+          }),
+        );
+        const link = document.createElement("a");
+        link.href = url;
+        link.download =
+          "changegate-case-" +
+          file.reference.replace(/[^a-z0-9_-]/gi, "_") +
+          ".json";
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        unsaved = false;
+        $("caseMessage").textContent =
+          "Download requested. Keep the latest case file for the next shift.";
+      };
+      $("caseLoad").onchange = async () => {
+        const input = $("caseLoad"),
+          file = input.files[0];
+        if (!file) return;
+        input.value = "";
+        try {
+          if (file.size > 8 * 1024 * 1024) throw Error();
+          const c = JSON.parse(await file.text());
+          if (
+            c?.format !== "changegate-review-case" ||
+            c.version !== 1 ||
+            !nonempty(c.reference, 160) ||
+            !Array.isArray(c.entries) ||
+            !c.entries.length ||
+            c.entries.length > 500
+          )
+            throw Error();
+          const clean = c.entries.map((e) => {
+            if (
+              !nonempty(e?.owner, 120) ||
+              !nonempty(e.note, 2000) ||
+              !statuses.includes(e.status) ||
+              !nonempty(e.at, 24) ||
+              new Date(e.at).toISOString() !== e.at
+            )
+              throw Error();
+            return { at: e.at, owner: e.owner, status: e.status, note: e.note };
+          });
+          if (!warnBeforeReplace()) return;
+          entries = clean;
+          unsaved = false;
+          editing = false;
+          $("caseRef").value = c.reference;
+          $("owner").value = "";
+          $("note").value = "";
+          $("disposition").value = entries.at(-1).status;
+          drawHistory();
+          $("caseMessage").textContent =
+            "Case reopened. Enter your name to add an update.";
+        } catch {
+          $("caseMessage").textContent =
+            "Could not open this case file. Check its format and version.";
+        }
       };
     </script>
   </body>
