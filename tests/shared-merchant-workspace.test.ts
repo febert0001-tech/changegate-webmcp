@@ -243,6 +243,24 @@ describe("authenticated synthetic shift", () => {
       vi.unstubAllGlobals();
       vi.unstubAllEnvs();
     }
+    const replayHeld = { action: "replayHeldDemoRefund", runId: state.runId };
+    expect((await alex!.request(replayHeld)).status).toBe(404);
+    const heldOverview = await jordan!.send<import("../src/merchant-team/shift-overview").ShiftOverview>(replayHeld);
+    expect(heldOverview).toMatchObject({ seed, sales: overview.sales });
+    expect(heldOverview.runId).not.toBe(state.runId);
+    expect(heldOverview.refunds).toHaveLength(5);
+    const held = heldOverview.refunds.find(refund => refund.amountCents === 3800)!;
+    expect(held).toMatchObject({ location: "Harbor Fuel", awaitingApproval: true, awaitingSubmission: false, confirmedPayoutCents: null });
+    expect(heldOverview.refunds.filter(refund => refund.awaitingApproval)).toHaveLength(2);
+    expect(heldOverview.refunds.every(refund => !refund.awaitingSubmission && refund.confirmedPayoutCents === null)).toBe(true);
+    const final = await jordan!.send<View>({ action: "demoShift" });
+    expect(final.state).toMatchObject({ requestId: held.id, finished: false, event: generateDemoEvents(seed)[6] });
+    expect(final.inbox).toContainEqual({ requestId: held.id, phase: 0 });
+    expect((await backup!.send<View>({ action: "demoShift" })).inbox).not.toContainEqual({ requestId: held.id, phase: 1 });
+    expect((await jordan!.request(replayHeld)).status).toBe(409);
+    expect((await jordan!.request({ action: "openRefundRequest", id: secondHeld.id })).status).toBe(404);
+    expect((await maya!.send<RefundRequest[]>({ action: "listRefundRequests" })).map(row => row.id)).toContain(sameMerchant.id);
+    expect(await alex!.send<RefundRequest[]>({ action: "listRefundRequests" })).toEqual([other]);
   });
 });
 

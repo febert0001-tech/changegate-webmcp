@@ -95,7 +95,7 @@ export class DemoShift {
     });
     const rows = this.db.prepare("SELECT payload FROM team_demo_shift_sales WHERE merchant_id=? AND run_id=? ORDER BY step")
       .all(demoMerchant, run.runId);
-    return { seed: run.seed, locations: [fuel.location, bar.location],
+    return { runId: run.runId, seed: run.seed, locations: [fuel.location, bar.location],
       sales: rows.map(row => JSON.parse(row.payload as string) as ShiftSale), refundIds };
   }
 
@@ -126,7 +126,7 @@ export class DemoShift {
     return next;
   }
 
-  replay(runId: string) {
+  replay(runId: string, seed?: string) {
     const run = this.run();
     if (!run || run.runId !== runId) throw new TeamError("DEMO_SHIFT_CHANGED", 409);
     const ids = generateDemoEvents(run.seed).flatMap(({ sale }) => sale ? this.request(sale.reference) ?? [] : []);
@@ -138,7 +138,7 @@ export class DemoShift {
       this.db.prepare("DELETE FROM team_refund_requests WHERE merchant_id=? AND id=?").run(demoMerchant, id);
     }
     this.db.prepare("DELETE FROM team_demo_shift WHERE merchant_id=?").run(demoMerchant);
-    return this.start(run.seed);
+    return this.start(seed ?? run.seed);
   }
 
   find(employee: Employee, reference: string) {

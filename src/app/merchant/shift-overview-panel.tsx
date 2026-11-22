@@ -31,6 +31,8 @@ export function ShiftOverviewPanel({ session, send, onSessionError }: {
   const params = useSearchParams();
   const [overview, setOverview] = useState<ShiftOverview | null>();
   const [error, setError] = useState("");
+  const [replaying, setReplaying] = useState(false);
+  const replay = useRef({ version: 0, busy: false });
   const detail = useRef<HTMLElement>(null);
   const { demoShift, sessionVersion } = session;
   useEffect(() => {
@@ -38,13 +40,15 @@ export function ShiftOverviewPanel({ session, send, onSessionError }: {
     const controller = new AbortController();
     let loading = false;
     async function load() {
-      if (loading || controller.signal.aborted) return;
+      if (loading || replay.current.busy || controller.signal.aborted) return;
+      const version = replay.current.version;
       loading = true;
       try {
         const result = await send<ShiftOverview | null>({ action: "shiftOverview" }, { signal: controller.signal, sessionVersion });
-        if (!controller.signal.aborted) { setOverview(result); setError(""); }
+        if (!controller.signal.aborted && version === replay.current.version) { setOverview(result); setError(""); }
       } catch (e) {
-        if (!controller.signal.aborted && !onSessionError(e)) setError("Could not refresh Shift Overview.");
+        if (!controller.signal.aborted && version === replay.current.version && !onSessionError(e))
+          setError("Could not refresh Shift Overview.");
       } finally { loading = false; }
     }
     void load();
@@ -59,14 +63,35 @@ export function ShiftOverviewPanel({ session, send, onSessionError }: {
     window.history.replaceState(null, "", url);
   }
 
+  async function replayHeldRefund() {
+    if (overview === undefined || replay.current.busy) return;
+    replay.current.version++;
+    replay.current.busy = true;
+    setReplaying(true);
+    setError("");
+    try {
+      const result = await send<ShiftOverview>({ action: "replayHeldDemoRefund", runId: overview?.runId ?? null }, { sessionVersion });
+      window.history.replaceState(null, "", "/shift-overview");
+      setOverview(result);
+    } catch (e) {
+      if (!onSessionError(e)) setError("Could not replay the shift. Refresh the overview and try again.");
+    } finally {
+      replay.current.busy = false;
+      setReplaying(false);
+    }
+  }
+
+  const replayButton = <button type="button" className={styles.primary} disabled={replaying}
+    onClick={() => void replayHeldRefund()}>{replaying ? "Replaying fictional shift…" : "Replay to held $38 refund"}</button>;
+
   if (!demoShift) return <section className={styles.card}>
     <h2>Shift Overview</h2><p>No fictional shift is available in this workspace.</p>
   </section>;
   if (!overview) return <section className={styles.card}>
     <h2>Shift Overview</h2>
     <p className={styles.fieldHint}>Fictional shift</p>
-    {error ? <p role="alert">{error}</p> : overview === undefined ? <p role="status">Loading shift activity…</p> :
-      <p>Open <Link href="/transactions">Transactions</Link> to run a demo shift. Activity will appear here as it is recorded.</p>}
+    {error && <p role="alert">{error}</p>}
+    {overview === undefined ? !error && <p role="status">Loading shift activity…</p> : replayButton}
   </section>;
 
   const location = overview.locations.find(name => name === params.get("location")) ?? "";
@@ -78,10 +103,13 @@ export function ShiftOverviewPanel({ session, send, onSessionError }: {
   return <section className={`${styles.card} ${styles.shiftOverview}`} aria-labelledby="shift-heading">
     <div className={styles.shiftOverviewHeading}>
       <div><h2 id="shift-heading">Shift Overview</h2><p className={styles.fieldHint}>Fictional shift · {overview.seed}</p></div>
-      <label>Location<select value={location} onChange={event => updateFilter("location", event.target.value)}>
-        <option value="">All locations</option>
-        {overview.locations.map(name => <option key={name} value={name}>{name}</option>)}
-      </select></label>
+      <div className={styles.shiftOverviewActions}>
+        <label>Location<select value={location} onChange={event => updateFilter("location", event.target.value)}>
+          <option value="">All locations</option>
+          {overview.locations.map(name => <option key={name} value={name}>{name}</option>)}
+        </select></label>
+        {replayButton}
+      </div>
     </div>
     {error && <p role="alert">{error}</p>}
     <section aria-labelledby="shift-attention">

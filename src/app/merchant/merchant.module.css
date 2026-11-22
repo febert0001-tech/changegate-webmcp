@@ -107,6 +107,7 @@
 .shiftOverview { display: grid; gap: 22px; }
 .shiftOverviewHeading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px 24px; align-items: end; }
 .shiftOverviewHeading label { min-width: min(100%, 190px); }
+.shiftOverviewActions { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; }
 .shiftAttentionList, .shiftRecords { display: grid; gap: 8px; list-style: none; margin-top: 8px; }
 .shiftAttentionLink { display: grid; gap: 3px; padding: 10px 13px; background: #f4f8f9; border: 1px solid var(--line); border-left: 3px solid #13796e; border-radius: 8px; text-decoration: none; color: inherit; overflow-wrap: anywhere; }
 .shiftAttentionLink:hover { border-color: #13796e; }

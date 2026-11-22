@@ -9,7 +9,7 @@ import { summarizeComparison, type ReviewDisposition, type ReviewFindingState } 
 import { RefundAlertStore } from "./refund-alert-store";
 import type { AlertEnrollment } from "./refund-alerts";
 import { RefundRequestStore } from "./refund-request-store";
-import { executionStopped, providerVerification, type ElectronicSaleEvidence, type RefundDecision, type RefundTerms } from "./refund-requests";
+import { checks, executionStopped, providerVerification, type ElectronicSaleEvidence, type RefundDecision, type RefundTerms } from "./refund-requests";
 import { SquareSubmissionBlocked, type SquareSandbox } from "./square-sandbox";
 import type { PayPalProvider } from "./paypal-provider";
 import { RefundNotSubmitted, RefundSubmissionRejected } from "./paypal-contracts";
@@ -138,14 +138,25 @@ export class TeamStore {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
       if (demoRun || (this.demo && terms.reference.startsWith(demoReferencePrefix))) {
-        if (!this.demo) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
-        const input = this.demo.submission(employee, demoRun, terms);
-        return this.refundRequests.create(employee, input.submissionId, terms, this.alerts, undefined, {
-          sale: input.sale, occurredAt: input.occurredAt, escalationMs: demoEscalationMs,
-        });
+        return this.createDemoRefund(employee, demoRun, terms);
       }
       return this.refundRequests.create(employee, submissionId, terms, this.alerts, evidence);
     });
+  }
+
+  private createDemoRefund(employee: Employee, runId: string | undefined, terms: RefundTerms) {
+    if (!this.demo) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
+    const input = this.demo.submission(employee, runId, terms);
+    return this.refundRequests.create(employee, input.submissionId, terms, this.alerts, undefined, {
+      sale: input.sale, occurredAt: input.occurredAt, escalationMs: demoEscalationMs,
+    });
+  }
+
+  private readShiftOverview(employee: Employee, demo: DemoShift) {
+    const records = demo.overviewRecords();
+    if (!records) return null;
+    const { refundIds, ...shift } = records;
+    return summarizeShift(shift, refundIds.map(id => this.refundRequests.open(employee, id)));
   }
 
   shiftOverview(employee: Employee, token: string) {
@@ -153,10 +164,34 @@ export class TeamStore {
     if (!demo?.includes(employee)) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
-      const records = demo.overviewRecords();
-      if (!records) return null;
-      const { refundIds, ...shift } = records;
-      return summarizeShift(shift, refundIds.map(id => this.refundRequests.open(employee,id)));
+      return this.readShiftOverview(employee, demo);
+    });
+  }
+
+  replayHeldDemoRefund(employee: Employee, token: string, expectedRunId: string | null, roster: readonly Employee[]) {
+    const demo = this.demo;
+    if (!demo?.includes(employee)) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      const previous = demo.state();
+      if ((previous?.runId ?? null) !== expectedRunId) throw new TeamError("DEMO_SHIFT_CHANGED", 409);
+      const seed = "harbor-evening";
+      let state = previous ? demo.replay(previous.runId, seed) : demo.start(seed);
+      while (!state.finished) {
+        const { refund, sale } = state.event;
+        if (refund && sale) {
+          const cashier = roster.find(member => demo.includes(member) && member.role === "cashier" && member.username === refund.cashier);
+          if (!cashier) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
+          const request = this.createDemoRefund(cashier, state.runId, {
+            reference: sale.reference, amount: refund.amount, currency: "USD", reason: refund.reason,
+          });
+          if (sale.location === "Harbor Fuel" && refund.amount === "38.00" && checks(request).route === "manager") {
+            return this.readShiftOverview(employee, demo);
+          }
+        }
+        state = demo.next(state.runId, state.step);
+      }
+      throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
     });
   }
 

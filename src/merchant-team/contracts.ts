@@ -71,6 +71,7 @@ export const teamCommand = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("listRefundRequests") }),
   z.strictObject({ action: z.literal("demoShift") }),
   z.strictObject({ action: z.literal("shiftOverview") }),
+  z.strictObject({ action: z.literal("replayHeldDemoRefund"), runId: id.nullable() }),
   z.strictObject({ action: z.literal("startDemoShift"), seed: z.string().trim().regex(/^[A-Za-z0-9_-]{1,40}$/) }),
   z.strictObject({ action: z.literal("nextDemoEvent"), runId: id, step: z.number().int().nonnegative() }),
   z.strictObject({ action: z.literal("replayDemoShift"), runId: id }),
