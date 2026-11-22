@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { activeStatuses, type TeamCaseDetail, type TeamCommand, type TeamSession, type TeamWorkspaceView } from "../../merchant-team/contracts";
 import styles from "./merchant.module.css";
+import { EvidenceRows, RefundImportPanel } from "./refund-import-panel";
 
 const errors: Record<string, string> = {
   SIGN_IN_FAILED: "Check your username and password.",
@@ -18,6 +19,16 @@ const errors: Record<string, string> = {
   ASSIGNEE_UNAVAILABLE: "Select an employee from your merchant workspace.",
   FINDING_REQUIRED: "Record a finding and next action before resolving this case.",
   INVALID_COMMAND: "Check the required fields and try again.",
+  IMPORT_NOT_FOUND: "This import is unavailable in your workspace.",
+  FINDING_NOT_FOUND: "This finding is unavailable in your workspace.",
+  CSV_TOO_LARGE: "Choose a file no larger than 96 KiB.",
+  CSV_ENCODING: "Save the CSV as UTF-8 and try again.",
+  CSV_EMPTY: "Include a header with at least three columns and at least one refund row.",
+  CSV_LIMIT: "A CSV can contain at most 1,000 source rows and 48 columns.",
+  CSV_QUOTING: "The CSV has invalid quoting. Fix the quotation marks or export it again.",
+  CSV_MAPPING: "Select a different column for each mapped field.",
+  CSV_NO_ACCEPTED_ROWS: "Correct the rejected rows before importing.",
+  REQUEST_TOO_LARGE: "The request exceeds the import size limit.",
   WORKSPACE_NOT_CONFIGURED: "This workspace has not been configured on the server.",
 };
 
@@ -44,6 +55,7 @@ function formValues(event: FormEvent<HTMLFormElement>) {
 }
 const field = (data: FormData, key: string) => String(data.get(key) ?? "");
 const errorText = (error: unknown) => error instanceof RequestError ? error.message : "Could not connect to the workspace.";
+const versionKey = (version: string, id?: string) => version + ":" + (id ?? "");
 const timeText = (time: string) => time.replace("T", " ").slice(0, 19) + " UTC";
 const sessionChannel = "changegate-merchant-session";
 
@@ -54,7 +66,7 @@ function notifySessionChange() {
   channel.close();
 }
 
-export function MerchantConsole({ caseId }: { caseId?: string }) {
+export function MerchantConsole({ caseId, imports, importId }: { caseId?: string; imports?: boolean; importId?: string }) {
   const router = useRouter();
   const [ready, setReady] = useState(false);
   const [recoverSession, setRecoverSession] = useState(false);
@@ -91,6 +103,13 @@ export function MerchantConsole({ caseId }: { caseId?: string }) {
     void load();
     return () => controller.abort();
   }, [caseId]);
+
+  const clearOnSessionError = useCallback((error: unknown) => {
+    if (!(error instanceof RequestError) || (error.status !== 401 && error.code !== "SESSION_CHANGED")) return false;
+    setWorkspace(null);
+    setNotice(errorText(error));
+    return true;
+  }, []);
 
   async function run(operation: () => Promise<void>) {
     setBusy(true);
@@ -133,6 +152,7 @@ export function MerchantConsole({ caseId }: { caseId?: string }) {
         {session && <p className={styles.merchant}>{session.merchantName}</p>}
       </div>
       {session && <div className={styles.profile}>
+        <Link href={imports ? "/merchant" : "/merchant/imports"} prefetch={false}>{imports ? "Case workspace" : "Import refunds"}</Link>
         <span>{session.name}</span>
         <button type="button" disabled={busy} onClick={() => void run(async () => {
           await send<null>({ action: "signOut" }, { sessionVersion: session.sessionVersion });
@@ -160,6 +180,9 @@ export function MerchantConsole({ caseId }: { caseId?: string }) {
         <label>Password<input name="password" type="password" autoComplete="current-password" maxLength={160} required /></label>
         <button className={styles.primary} disabled={busy}>{recoverSession ? "Recover sign-in" : "Sign in"}</button>
       </form>
+    ) : imports ? (
+      <RefundImportPanel key={versionKey(session.sessionVersion, importId)} send={send} session={session}
+        {...(importId && { importId })} onSessionError={clearOnSessionError} />
     ) : (
       <div className={styles.grid}>
         <aside className={styles.card} aria-label="Case queue">
@@ -262,6 +285,13 @@ export function MerchantConsole({ caseId }: { caseId?: string }) {
                   }}>Resolve case</button>
               </fieldset>
             )}
+            {detail.evidence && <section className={styles.importSection} aria-labelledby="import-evidence">
+              <h3 id="import-evidence">Imported refund evidence</h3>
+              <p><strong>{detail.evidence.finding.kind}</strong></p>
+              <p>{detail.evidence.finding.explanation}</p>
+              <EvidenceRows rows={detail.evidence.finding.rows} />
+              <Link href={`/merchant/imports/${detail.evidence.importId}`} prefetch={false}>Open source import</Link>
+            </section>}
             <section className={styles.history} aria-labelledby="history-heading">
               <h3 id="history-heading">Case history</h3>
               <ol>{detail.history.map((event) => <li key={event.sequence}>

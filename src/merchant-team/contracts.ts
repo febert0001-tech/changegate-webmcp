@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { csvText, refundMapping, type CaseEvidence } from "./refund-csv";
+export { TeamError } from "./error";
 
 const text = (max: number) => z.string().trim().min(1).max(max);
 const slug = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/);
@@ -41,10 +43,16 @@ export const teamCommand = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("assign"), id, revision, assignee: slug }),
   z.strictObject({ action: z.literal("note"), id, revision, note: text(1600) }),
   z.strictObject({ action: z.literal("resolve"), id, revision }),
+  z.strictObject({ action: z.literal("inspectCsv"), text: csvText }),
+  z.strictObject({ action: z.literal("previewCsv"), text: csvText, mapping: refundMapping }),
+  z.strictObject({ action: z.literal("importCsv"), text: csvText, mapping: refundMapping }),
+  z.strictObject({ action: z.literal("listImports") }),
+  z.strictObject({ action: z.literal("openImport"), id }),
+  z.strictObject({ action: z.literal("assignFinding"), id, assignee: slug }),
 ]);
 export type TeamCommand = z.infer<typeof teamCommand>;
 
-export type HistoryKind = "Opened" | "Recorded finding" | "Assigned" | "Added note" | "Resolved";
+export type HistoryKind = "Opened" | "Recorded finding" | "Assigned" | "Added note" | "Resolved" | "Imported evidence";
 export interface CaseHistory {
   sequence: number;
   actor: string;
@@ -67,6 +75,7 @@ export interface TeamCase {
 export interface TeamCaseDetail {
   case: TeamCase;
   history: CaseHistory[];
+  evidence?: CaseEvidence;
 }
 export interface TeamSession {
   sessionVersion: string;
@@ -80,10 +89,4 @@ export interface TeamWorkspaceView {
   session: TeamSession;
   cases: TeamCase[];
   detail: TeamCaseDetail | null;
-}
-
-export class TeamError extends Error {
-  constructor(readonly code: string, readonly status: number) {
-    super(code);
-  }
 }

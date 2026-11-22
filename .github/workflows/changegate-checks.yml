@@ -2,7 +2,7 @@ name: ChangeGate checks
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, feat/private-merchant-staging]
 
 permissions:
   contents: read

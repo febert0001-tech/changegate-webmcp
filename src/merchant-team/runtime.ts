@@ -23,7 +23,9 @@ export function teamWorkspace() {
         return undefined;
       }
       db = join("/data", "merchant.sqlite");
-      config = JSON.parse(env.CHANGEGATE_TEAM_ROSTER_JSON ?? "");
+      const current = rosterSchema.parse(JSON.parse(env.CHANGEGATE_TEAM_ROSTER_JSON ?? "") as unknown);
+      const acceptance = env.CHANGEGATE_TEAM_ACCEPTANCE_ROSTER_JSON;
+      config = acceptance ? [...current, ...rosterSchema.parse(JSON.parse(acceptance) as unknown)] : current;
     } else {
       const localDb = env.CHANGEGATE_TEAM_DB;
       const users = env.CHANGEGATE_TEAM_USERS_FILE;

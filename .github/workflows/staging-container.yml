@@ -2,7 +2,7 @@ name: Merchant staging container
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, feat/private-merchant-staging]
     paths:
       - '.github/workflows/staging-container.yml'
       - 'Dockerfile'
