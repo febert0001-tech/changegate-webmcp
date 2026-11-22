@@ -21,6 +21,7 @@ function ReceiptSummary({ receipt }: { readonly receipt: DecisionReceiptSummary 
     <section className={styles.savedReceipt} aria-label="Saved decision receipt">
       <h3>Saved decision receipt</h3>
       <p>Statuses reported by the file.</p>
+      <p>{receipt.environment}</p>
       <dl>
         <div><dt>Human decision</dt><dd>{statusLabel(receipt.decision.status)}</dd></div>
         <div><dt>Execution</dt><dd>{statusLabel(receipt.execution.status)}</dd></div>

@@ -1,5 +1,5 @@
 import type { ChangeGateWebMcpOperations } from "../application/changegate-operations";
-import type { WebMcpModelContext } from "./native-contract";
+import type { WebMcpModelContext, WebMcpToolDefinition } from "./native-contract";
 import { createGate2ToolDefinitions } from "./tool-catalog";
 
 export type WebMcpRegistrationResult =
@@ -18,14 +18,22 @@ export function startWebMcpRegistration(
   modelContext: WebMcpModelContext | undefined,
   operations: ChangeGateWebMcpOperations,
 ): WebMcpRegistrationSession {
+  return registerWebMcpTools(modelContext, () => createGate2ToolDefinitions(operations));
+}
+
+export function registerWebMcpTools(
+  modelContext: WebMcpModelContext | undefined,
+  definitions: () => readonly WebMcpToolDefinition[],
+): WebMcpRegistrationSession {
   const controller = new AbortController();
 
   const ready: Promise<WebMcpRegistrationResult> = modelContext === undefined
     ? Promise.resolve(Object.freeze({ status: "UNSUPPORTED", toolCount: 0 }))
     : (async () => {
         try {
-          const definitions = createGate2ToolDefinitions(operations);
-          for (const definition of definitions) {
+          const catalog = definitions();
+          if (catalog.length !== 7) throw new Error("Invalid WebMCP tool count");
+          for (const definition of catalog) {
             if (controller.signal.aborted) {
               return Object.freeze({ status: "ABORTED", toolCount: 0 });
             }

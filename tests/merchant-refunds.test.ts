@@ -1,0 +1,484 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { checkDecisionReceiptConsistency, readDecisionReceipt } from "../src/application/read-decision-receipt";
+import type { MerchantCapture, MerchantCaseDetail, MerchantCommand } from "../src/merchant/contracts";
+import { createMerchantHandler } from "../src/merchant/handler";
+import { PayPalMerchantSandbox, type SandboxTransport } from "../src/merchant/paypal-sandbox";
+import { merchantReceipt } from "../src/merchant/receipt";
+import { MerchantRefunds } from "../src/merchant/service";
+import { demoMerchant, simulatedSandbox } from "../src/merchant/simulation";
+import { MerchantStore } from "../src/merchant/store";
+import { merchantWebMcp } from "../src/merchant/webmcp";
+import { GATE_2_TOOL_NAMES } from "../src/webmcp/tool-catalog";
+
+const origin = "http://127.0.0.1:3190";
+const password = "local-fixture-password";
+const authorization = "Basic " + Buffer.from("reviewer:" + password).toString("base64");
+const stores = new Set<MerchantStore>();
+const dirs: string[] = [];
+
+function database() {
+  const dir = mkdtempSync(join(tmpdir(), "changegate-merchant-"));
+  dirs.push(dir);
+  return join(dir, "merchant.sqlite");
+}
+
+function app(path = database(), config: {
+  merchantId?: string; limit?: number; execute?: boolean;
+  lookupTimeoutMs?: number;
+  inject?: (transport: SandboxTransport) => SandboxTransport;
+} = {}) {
+  const merchantId = config.merchantId ?? demoMerchant;
+  const cap = config.limit ?? 10_000;
+  const store = new MerchantStore(path, merchantId, "simulated");
+  stores.add(store);
+  const fake = simulatedSandbox(store);
+  const provider = new PayPalMerchantSandbox({
+    merchantId, clientId: "client", clientSecret: "secret", maxRefundCents: cap,
+    ...(config.lookupTimeoutMs === undefined ? {} : { lookupTimeoutMs: config.lookupTimeoutMs }),
+  },
+    config.inject?.(fake) ?? fake);
+  const service = new MerchantRefunds(store, provider, "Simulated PayPal Sandbox", cap);
+  const handle = createMerchantHandler(service, { origin, operator: "reviewer", password, executionEnabled: config.execute ?? true });
+  function command(input: unknown, credential = authorization, requestOrigin = origin) {
+    return handle(new Request(origin + "/api/merchant", {
+      method: "POST", headers: { Origin: requestOrigin, Authorization: credential, "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    }));
+  }
+  async function ok<T>(input: MerchantCommand): Promise<T> {
+    const response = await command(input);
+    if (!response.ok) throw new Error(JSON.stringify(await response.json()));
+    return response.json() as Promise<T>;
+  }
+  return { command, ok, store, path };
+}
+
+afterEach(() => {
+  for (const store of stores) store.close();
+  stores.clear();
+  const root = resolve(tmpdir());
+  for (const path of dirs.splice(0)) {
+    if (dirname(resolve(path)) !== root) throw Error("Unexpected test directory");
+    rmSync(path, { recursive: true, force: true });
+  }
+});
+
+async function proposal(instance: ReturnType<typeof app>, captureId: string, amountCents: number | null) {
+  return (await instance.ok<MerchantCaseDetail>({ action: "propose", captureId, amountCents })).case;
+}
+
+async function approved(instance: ReturnType<typeof app>, captureId: string, amountCents: number | null) {
+  const row = await proposal(instance, captureId, amountCents);
+  await instance.ok({ action: "review", id: row.id, version: row.version });
+  await instance.ok({ action: "decide", id: row.id, version: row.version, decision: "approve" });
+  return { id: row.id, version: row.version };
+}
+
+describe("merchant refunds through the authenticated application handler", () => {
+  it("locates a capture by order and executes a full refund from its remaining balance", async () => {
+    const instance = app();
+    const [capture] = await instance.ok<MerchantCapture[]>({ action: "find", kind: "order", reference: "DEMOORDER100" });
+    expect(capture).toMatchObject({ captureId: "DEMOCAPTURE100", amountCents: 1899, remainingCents: 1899 });
+    const intent = await approved(instance, "DEMOCAPTURE100", null);
+    const result = await instance.ok<MerchantCaseDetail>({ action: "execute", ...intent });
+    expect(result.case).toMatchObject({
+      amountCents: 1899, status: "COMPLETED", reviewer: "reviewer",
+      observation: { amountCents: 1899, status: "COMPLETED", captureId: "DEMOCAPTURE100" },
+    });
+    const receipt = merchantReceipt(result, "Simulated PayPal Sandbox");
+    expect(readDecisionReceipt(JSON.stringify(receipt))?.verification.status).toBe("VERIFIED");
+    expect(receipt.verification.source).toBe("SIMULATED_PROVIDER_GET");
+    expect(JSON.stringify(receipt)).not.toMatch(/invoiceId|requestId|authorization|local-fixture-password/i);
+  });
+
+  it("subtracts prior partial refunds and finishes with the remaining amount", async () => {
+    const instance = app();
+    const first = await approved(instance, "DEMOCAPTURE200", 1328);
+    await instance.ok({ action: "execute", ...first });
+    const [snapshot] = await instance.ok<MerchantCapture[]>({ action: "find", kind: "capture", reference: "DEMOCAPTURE200" });
+    expect(snapshot).toMatchObject({ remainingCents: 5907, refunds: [{ amountCents: 1328 }] });
+    const second = await approved(instance, "DEMOCAPTURE200", 1704);
+    await instance.ok({ action: "execute", ...second });
+    const excess = await instance.command({ action: "propose", captureId: "DEMOCAPTURE200", amountCents: 4204 });
+    expect(await excess.json()).toEqual({ error: "REFUND_EXCEEDS_REMAINING_BALANCE" });
+    const rest = await approved(instance, "DEMOCAPTURE200", null);
+    expect((await instance.ok<MerchantCaseDetail>({ action: "execute", ...rest })).case.amountCents).toBe(4203);
+  });
+
+  it("checks operator identity, origin, merchant ownership, proposal version, and the server policy", async () => {
+    const instance = app(database(), { limit: 1500 });
+    expect((await instance.command({ action: "queue" }, "Basic invalid")).status).toBe(401);
+    expect((await instance.command({ action: "queue" }, authorization, "https://foreign.example")).status).toBe(403);
+    const foreign = app(database(), { merchantId: "OTHERCOMPANY" });
+    expect((await foreign.command({ action: "find", kind: "order", reference: "DEMOORDER100" })).status).toBe(404);
+    expect((await foreign.command({ action: "propose", captureId: "DEMOCAPTURE100", amountCents: 500 })).status).toBe(404);
+    const limit = await instance.command({ action: "propose", captureId: "DEMOCAPTURE100", amountCents: 1501 });
+    expect(await limit.json()).toEqual({ error: "REFUND_POLICY_LIMIT" });
+    const row = await proposal(instance, "DEMOCAPTURE100", 1210);
+    expect((await instance.command({ action: "execute", id: row.id, version: row.version, approved: true })).status).toBe(400);
+    expect((await instance.command({ action: "review", id: row.id, version: row.version + 1 })).status).toBe(409);
+    await instance.ok({ action: "review", id: row.id, version: row.version });
+    const detail = await instance.ok<MerchantCaseDetail>({ action: "decide", id: row.id, version: row.version, decision: "reject" });
+    expect(detail.case.status).toBe("REJECTED");
+    expect((await instance.command({ action: "execute", id: row.id, version: row.version })).status).toBe(409);
+    expect(instance.store.db.prepare("SELECT count(*) n FROM simulated_provider_refunds").get()?.n).toBe(0);
+  });
+
+  it("reserves balance once across competing workers and duplicate Execute", async () => {
+    const instance = app();
+    const other = app(instance.path);
+    const one = await approved(instance, "DEMOCAPTURE200", 4100);
+    const two = await approved(other, "DEMOCAPTURE200", 4000);
+    const responses = await Promise.all([
+      instance.command({ action: "execute", ...one }),
+      other.command({ action: "execute", ...one }),
+      other.command({ action: "execute", ...two }),
+    ]);
+    expect(responses.map(({ status }) => status).sort()).toEqual([200, 409, 409]);
+    expect(instance.store.db.prepare("SELECT count(*) n FROM simulated_provider_refunds").get()?.n).toBe(1);
+  });
+
+  it.each([
+    ["DEMOCAPTURE400", "PENDING", null],
+    ["DEMOCAPTURE500", "UNCERTAIN", "REFUND_READBACK_MISMATCH"],
+    ["DEMOCAPTURE600", "FAILED", "PROVIDER_REFUND_FAILED"],
+  ] as const)("keeps %s as %s with evidence and no verified receipt", async (captureId, status, issue) => {
+    const instance = app();
+    const intent = await approved(instance, captureId, 867);
+    const detail = await instance.ok<MerchantCaseDetail>({ action: "execute", ...intent });
+    expect(detail.case).toMatchObject({ status, issue });
+    expect(merchantReceipt(detail, "Simulated PayPal Sandbox").verification.status).not.toBe("VERIFIED");
+    expect(await instance.ok({ action: "queue" })).toMatchObject([{ id: intent.id, status }]);
+  });
+
+  it("reopens a lost response without a second submission and reconciles the original invoice", async () => {
+    const instance = app();
+    const intent = await approved(instance, "DEMOCAPTURE300", 1237);
+    const first = await instance.ok<MerchantCaseDetail>({ action: "execute", ...intent });
+    const attempt = instance.store.get(intent.id);
+    expect(first.case).toMatchObject({ status: "UNCERTAIN", refundId: null, issue: "SUBMISSION_RESPONSE_UNAVAILABLE" });
+    expect(attempt.request_id).toMatch(/^[a-f0-9-]{36}$/);
+    stores.delete(instance.store);
+    instance.store.close();
+    const restarted = app(instance.path);
+    expect((await restarted.ok<MerchantCaseDetail>({ action: "case", id: intent.id })).case.status).toBe("UNCERTAIN");
+    expect((await restarted.command({ action: "execute", ...intent })).status).toBe(409);
+    const recovered = await restarted.ok<MerchantCaseDetail>({ action: "reconcile", id: intent.id });
+    expect(recovered.case).toMatchObject({ status: "COMPLETED", observation: { amountCents: 1237, status: "COMPLETED" } });
+    expect(restarted.store.get(intent.id).request_id).toBe(attempt.request_id);
+    expect(restarted.store.db.prepare("SELECT count(*) n FROM simulated_provider_refunds").get()?.n).toBe(1);
+  });
+
+  it("counts a uniquely correlated lost-response refund once without resolving the case", async () => {
+    const instance = app();
+    const intent = await approved(instance, "DEMOCAPTURE300", 1237);
+    await instance.ok({ action: "execute", ...intent });
+    const [snapshot] = await instance.ok<MerchantCapture[]>({ action: "find", kind: "capture", reference: "DEMOCAPTURE300" });
+    expect(snapshot).toMatchObject({
+      remainingCents: 2254,
+      refunds: [{ amountCents: 1237, status: "COMPLETED" }],
+      outstanding: [{ id: intent.id, status: "UNCERTAIN", refundId: null }],
+    });
+    expect((await proposal(instance, "DEMOCAPTURE300", null)).amountCents).toBe(2254);
+    const unchanged = await instance.ok<MerchantCaseDetail>({ action: "case", id: intent.id });
+    expect(unchanged.case).toMatchObject({ status: "UNCERTAIN", refundId: null, observation: null });
+    expect(instance.store.db.prepare("SELECT count(*) n FROM simulated_provider_refunds").get()?.n).toBe(1);
+  });
+
+  it("keeps the full reservation when an acknowledged ID points to a different refund", async () => {
+    const captureId = "DEMOCAPTURE200";
+    const priorId = "DEMOPRIORREFUND";
+    const instance: ReturnType<typeof app> = app(database(), {
+      inject: (fake) => async (url, init) => {
+        const response = await fake(url, init);
+        if (url.endsWith(captureId + "/refund") && response.ok) {
+          const created = await response.json();
+          instance.store.db.prepare("UPDATE simulated_provider_refunds SET status='PENDING' WHERE id=?").run(created.id);
+          return Response.json({ id: priorId }, { status: 201 });
+        }
+        if (url.endsWith("/orders/DEMOORDER200") && response.ok) {
+          const parent = await response.json();
+          parent.purchase_units[0].payments.refunds = [{ id: priorId }];
+          return Response.json(parent);
+        }
+        return response;
+      },
+    });
+    instance.store.db.prepare("INSERT INTO simulated_provider_refunds VALUES (?, ?, ?, ?, 'COMPLETED')")
+      .run(priorId, captureId, 2000, "earlier-provider-refund");
+    const competing = await approved(instance, captureId, 5000);
+    const intent = await approved(instance, captureId, 1000);
+    const result = await instance.ok<MerchantCaseDetail>({ action: "execute", ...intent });
+    expect(result.case).toMatchObject({
+      status: "UNCERTAIN", issue: "REFUND_READBACK_MISMATCH", refundId: priorId, observation: null,
+    });
+    expect(merchantReceipt(result, "Simulated PayPal Sandbox")).toMatchObject({
+      execution: { refundOutcome: "UNKNOWN" },
+      verification: { status: "FAILED", issue: "REFUND_READBACK_MISMATCH", observed: null },
+    });
+    const [balance] = await instance.ok<MerchantCapture[]>({ action: "find", kind: "capture", reference: captureId });
+    expect(balance).toMatchObject({ remainingCents: 4235, outstanding: [{ amountCents: 1000, status: "UNCERTAIN" }] });
+    const denied = await instance.command({ action: "execute", ...competing });
+    expect(await denied.json()).toEqual({ error: "REFUND_EXCEEDS_REMAINING_BALANCE" });
+    expect(instance.store.db.prepare("SELECT count(*) n FROM simulated_provider_refunds").get()?.n).toBe(2);
+  });
+
+  it("returns a case with its ordered audit slice and full event count", async () => {
+    const instance = app();
+    const intent = await approved(instance, "DEMOCAPTURE300", 1237);
+    await instance.ok({ action: "execute", ...intent });
+    instance.store.atomic(() => {
+      for (let i = 0; i < 51; i++) {
+        instance.store.event(intent.id, "SYSTEM", "ORIGINAL_REFUND_NOT_LOCATED", "UNCERTAIN", "2026-11-21T00:00:00Z");
+      }
+    });
+    const detail = await instance.ok<MerchantCaseDetail>({ action: "case", id: intent.id });
+    expect(detail.case.status).toBe("UNCERTAIN");
+    expect(detail.audit).toMatchObject({ totalEvents: 56, truncated: true });
+    expect(detail.audit.events.map(({ sequence }) => sequence)).toEqual(Array.from({ length: 50 }, (_, i) => i + 7));
+    expect(detail.audit.events.at(-1)?.lifecycle).toBe(detail.case.status);
+  });
+
+  it("preserves a submission reservation if a worker has not returned from the provider POST", async () => {
+    let accepted!: () => void;
+    const observed = new Promise<void>((done) => { accepted = done; });
+    let release!: () => void;
+    const paused = new Promise<void>((done) => { release = done; });
+    const first = app(database(), {
+      inject: (fake) => async (url, init) => {
+        if (!url.endsWith("/refund")) return fake(url, init);
+        try { return await fake(url, init); }
+        finally { accepted(); await paused; }
+      },
+    });
+    const intent = await approved(first, "DEMOCAPTURE300", 623);
+    const executing = first.ok<MerchantCaseDetail>({ action: "execute", ...intent });
+    await observed;
+    try {
+      const restarted = app(first.path);
+      expect((await restarted.ok<MerchantCaseDetail>({ action: "case", id: intent.id })).case)
+        .toMatchObject({ status: "SUBMITTED", refundId: null });
+      expect((await restarted.command({ action: "execute", ...intent })).status).toBe(409);
+      expect((await restarted.ok<MerchantCaseDetail>({ action: "reconcile", id: intent.id })).case.status).toBe("COMPLETED");
+      expect(restarted.store.db.prepare("SELECT count(*) n FROM simulated_provider_refunds").get()?.n).toBe(1);
+    } finally {
+      release();
+      await executing;
+    }
+  });
+
+  it("keeps independently observed pending evidence when a fresh readback fails", async () => {
+    let readAvailable = true;
+    const instance = app(database(), {
+      inject: (fake) => (url, init) => !readAvailable && url.includes("/refunds/")
+        ? Promise.resolve(Response.json({}, { status: 503 })) : fake(url, init),
+    });
+    const intent = await approved(instance, "DEMOCAPTURE400", 631);
+    const before = await instance.ok<MerchantCaseDetail>({ action: "execute", ...intent });
+    expect(before.case).toMatchObject({ status: "PENDING", observation: { status: "PENDING" } });
+    readAvailable = false;
+    const after = await instance.ok<MerchantCaseDetail>({ action: "reconcile", id: intent.id });
+    expect(after.case).toMatchObject({
+      status: "PENDING", issue: "INDEPENDENT_READBACK_UNAVAILABLE", observation: before.case.observation,
+    });
+    expect(after.audit.events.at(-1)).toMatchObject({
+      type: "INDEPENDENT_READBACK_UNAVAILABLE", lifecycle: "PENDING",
+    });
+    expect(merchantReceipt(after, "Simulated PayPal Sandbox")).toMatchObject({
+      execution: { status: "EXECUTED", refundOutcome: "UNKNOWN" },
+      verification: { status: "IN_PROGRESS", observed: { status: "PENDING" } },
+    });
+    readAvailable = true;
+    const [balance] = await instance.ok<MerchantCapture[]>({ action: "find", kind: "capture", reference: "DEMOCAPTURE400" });
+    expect(balance).toMatchObject({ remainingCents: 4181, outstanding: [{ status: "PENDING" }] });
+  });
+
+  it("keeps a concurrent worker's pending readback when the POST response arrives as a failure", async () => {
+    const accepted = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const first = app(database(), {
+      inject: (fake) => async (url, init) => {
+        const response = await fake(url, init);
+        if (!url.endsWith("/refund")) return response;
+        accepted.resolve();
+        await release.promise;
+        throw Error("Simulated late lost response");
+      },
+    });
+    const intent = await approved(first, "DEMOCAPTURE400", 631);
+    const executing = first.ok<MerchantCaseDetail>({ action: "execute", ...intent });
+    await accepted.promise;
+    try {
+      const reader = app(first.path);
+      const detail = await reader.ok<MerchantCaseDetail>({ action: "reconcile", id: intent.id });
+      expect(detail.case).toMatchObject({ status: "PENDING", observation: { status: "PENDING" } });
+      release.resolve();
+      const settled = await executing;
+      expect(settled.case).toMatchObject({
+        status: "PENDING", issue: "SUBMISSION_RESPONSE_UNAVAILABLE",
+        refundId: detail.case.refundId, observation: detail.case.observation,
+      });
+      expect(reader.store.db.prepare("SELECT count(*) n FROM simulated_provider_refunds").get()?.n).toBe(1);
+    } finally {
+      release.resolve();
+      await executing;
+    }
+  });
+
+  it("escalates an undiscoverable refund and refuses a candidate from a different capture", async () => {
+    const instance = app();
+    const intent = await approved(instance, "DEMOCAPTURE700", 1400);
+    await instance.ok({ action: "execute", ...intent });
+    const unknown = await instance.ok<MerchantCaseDetail>({ action: "reconcile", id: intent.id });
+    expect(unknown.case).toMatchObject({ status: "UNCERTAIN", issue: "ORIGINAL_REFUND_NOT_LOCATED", refundId: null });
+    const unrelated = await approved(instance, "DEMOCAPTURE200", 1400);
+    const other = await instance.ok<MerchantCaseDetail>({ action: "execute", ...unrelated });
+    if (!other.case.refundId) throw Error("Expected unrelated refund reference");
+    const conflict = await instance.ok<MerchantCaseDetail>({ action: "reconcile", id: intent.id, refundId: other.case.refundId });
+    expect(conflict.case).toMatchObject({ status: "UNCERTAIN", refundId: null, observation: null });
+    const receipt = readDecisionReceipt(JSON.stringify(merchantReceipt(conflict, "Simulated PayPal Sandbox")));
+    expect(receipt).toMatchObject({
+      execution: { status: "IN_PROGRESS" }, verification: { status: "FAILED" },
+    });
+    if (!receipt) throw Error("Expected a readable merchant receipt");
+    expect(checkDecisionReceiptConsistency(receipt)).toEqual({ status: "consistent" });
+    expect(checkDecisionReceiptConsistency({ ...receipt, verification: { status: "VERIFIED" } }))
+      .toMatchObject({ status: "inconsistent" });
+    const blocked = await instance.command({ action: "propose", captureId: "DEMOCAPTURE700", amountCents: 100 });
+    expect(await blocked.json()).toEqual({ error: "REFUND_HISTORY_UNCERTAIN" });
+    expect(instance.store.db.prepare("SELECT count(*) n FROM simulated_provider_refunds WHERE capture_id=?").get("DEMOCAPTURE700")?.n)
+      .toBe(1);
+  });
+
+  it("exports a lost-response readback mismatch as failed verification even without a bound refund ID", async () => {
+    const instance = app(database(), {
+      inject: (fake) => async (url, init) => {
+        const response = await fake(url, init);
+        if (!url.includes("/refunds/") || !response.ok) return response;
+        const observed = await response.json();
+        return Response.json({ ...observed, amount: { currency_code: "USD", value: "12.38" } });
+      },
+    });
+    const intent = await approved(instance, "DEMOCAPTURE300", 1237);
+    await instance.ok({ action: "execute", ...intent });
+    const detail = await instance.ok<MerchantCaseDetail>({ action: "reconcile", id: intent.id });
+    expect(detail.case).toMatchObject({ status: "UNCERTAIN", refundId: null, observation: { amountCents: 1238 } });
+    expect(merchantReceipt(detail, "Simulated PayPal Sandbox")).toMatchObject({
+      execution: { status: "EXECUTED", refundOutcome: "UNKNOWN" },
+      verification: { status: "FAILED", issue: "REFUND_READBACK_MISMATCH" },
+    });
+  });
+
+  it("releases the reservation on an OAuth failure proven to occur before the refund POST", async () => {
+    let refundPosts = 0;
+    const instance: ReturnType<typeof app> = app(database(), {
+      inject: (fake) => async (url, init) => {
+        if (url.endsWith("/refund")) refundPosts++;
+        if (!url.endsWith("/oauth2/token")) return fake(url, init);
+        if (instance.store.db.prepare("SELECT id FROM merchant_cases WHERE status='SUBMITTED'").get()) {
+          return Response.json({}, { status: 503 });
+        }
+        return Response.json({ access_token: "short-lived", token_type: "Bearer", expires_in: 1 });
+      },
+    });
+    const intent = await approved(instance, "DEMOCAPTURE100", 759);
+    const failed = await instance.ok<MerchantCaseDetail>({ action: "execute", ...intent });
+    expect(failed.case).toMatchObject({ status: "FAILED", issue: "REFUND_NOT_SUBMITTED", refundId: null });
+    expect(merchantReceipt(failed, "Simulated PayPal Sandbox")).toMatchObject({
+      execution: { status: "FAILED", refundOutcome: "NOT_EXECUTED" }, verification: { status: "NOT_RUN" },
+    });
+    expect((await instance.ok<MerchantCapture[]>({ action: "find", kind: "capture", reference: "DEMOCAPTURE100" }))[0])
+      .toMatchObject({ remainingCents: 1899, outstanding: [] });
+    expect(refundPosts).toBe(0);
+  });
+
+  it.each([
+    { http: 403, name: "NOT_AUTHORIZED", issues: ["PERMISSION_DENIED"], definitive: true },
+    { http: 422, name: "UNPROCESSABLE_ENTITY", issues: ["REFUND_AMOUNT_EXCEEDED"], definitive: true },
+    { http: 422, name: "UNPROCESSABLE_ENTITY", issues: ["REFUND_AMOUNT_EXCEEDED", "UNKNOWN"], definitive: false },
+    { http: 409, name: "UNPROCESSABLE_ENTITY", issues: ["REFUND_AMOUNT_EXCEEDED"], definitive: false },
+    { http: 500, name: "INTERNAL_SERVER_ERROR", issues: [], definitive: false },
+  ])("classifies refund POST HTTP $http with $issues (definitive: $definitive)", async ({
+    http, name, issues, definitive,
+  }) => {
+    let refundPosts = 0;
+    const instance = app(database(), {
+      inject: (fake) => async (url, init) => {
+        if (!url.endsWith("/refund")) return fake(url, init);
+        refundPosts++;
+        return Response.json({ name, details: issues.map((issue) => ({ issue })) }, { status: http });
+      },
+    });
+    const intent = await approved(instance, "DEMOCAPTURE100", 759);
+    const detail = await instance.ok<MerchantCaseDetail>({ action: "execute", ...intent });
+    const issue = definitive ? "REFUND_SUBMISSION_REJECTED" : "SUBMISSION_RESPONSE_UNAVAILABLE";
+    expect(detail.case).toMatchObject({ status: definitive ? "FAILED" : "UNCERTAIN", issue, refundId: null });
+    expect(merchantReceipt(detail, "Simulated PayPal Sandbox")).toMatchObject({
+      execution: { status: definitive ? "FAILED" : "IN_PROGRESS", refundOutcome: definitive ? "NOT_EXECUTED" : "UNKNOWN" },
+      verification: { status: "NOT_RUN", issue, source: null, observed: null },
+    });
+    const [balance] = await instance.ok<MerchantCapture[]>({ action: "find", kind: "capture", reference: "DEMOCAPTURE100" });
+    expect(balance).toMatchObject({ remainingCents: definitive ? 1899 : 1140 });
+    expect(balance?.outstanding).toHaveLength(definitive ? 0 : 1);
+    expect((await instance.command({ action: "execute", ...intent })).status).toBe(409);
+    expect(refundPosts).toBe(1);
+  });
+
+  it("reconciles a known refund with exactly one refund GET", async () => {
+    let refundReads = 0;
+    const instance = app(database(), {
+      inject: (fake) => async (url, init) => {
+        if (url.includes("/refunds/")) refundReads++;
+        return fake(url, init);
+      },
+    });
+    const first = await approved(instance, "DEMOCAPTURE400", 631);
+    await instance.ok({ action: "execute", ...first });
+    const second = await approved(instance, "DEMOCAPTURE400", 733);
+    await instance.ok({ action: "execute", ...second });
+    refundReads = 0;
+    expect((await instance.ok<MerchantCaseDetail>({ action: "reconcile", id: second.id })).case.status).toBe("PENDING");
+    expect(refundReads).toBe(1);
+  });
+
+  it("ends a stalled refund-history scan at its overall deadline", async () => {
+    let attempted = 0;
+    const instance = app(database(), {
+      lookupTimeoutMs: 80,
+      inject: (fake) => async (url, init) => {
+        if (url.includes("/refunds/")) {
+          attempted++;
+          return new Promise(() => {});
+        }
+        const response = await fake(url, init);
+        if (!url.includes("/orders/") || !response.ok) return response;
+        const result = await response.json();
+        result.purchase_units[0].payments.refunds = Array.from({ length: 25 }, (_, index) => ({ id: "DEMOREF" + index }));
+        return Response.json(result);
+      },
+    });
+    const [snapshot] = await instance.ok<MerchantCapture[]>({ action: "find", kind: "capture", reference: "DEMOCAPTURE100" });
+    expect(snapshot).toMatchObject({ historyComplete: false, remainingCents: null });
+    expect(attempted).toBe(4);
+  });
+
+  it("blocks provider submission when disabled and exposes only seven inspect/propose WebMCP tools", async () => {
+    const instance = app(database(), { execute: false });
+    const intent = await approved(instance, "DEMOCAPTURE100", 529);
+    expect(await (await instance.command({ action: "execute", ...intent })).json()).toEqual({
+      error: "SANDBOX_EXECUTION_DISABLED",
+    });
+    const tools = merchantWebMcp((input) => instance.ok(input), { maxRefundCents: 10_000 });
+    expect(tools.map(({ name }) => name)).toEqual(GATE_2_TOOL_NAMES);
+    const tool = tools.find(({ name }) => name === "propose_change");
+    if (!tool) throw Error("Missing proposal tool");
+    const context = { signal: new AbortController().signal };
+    expect(await tool.execute({ captureId: "DEMOCAPTURE100", amountCents: 577, approved: true }, context))
+      .toEqual({ status: "INVALID_INPUT" });
+    expect(await tool.execute({ captureId: "DEMOCAPTURE100", amountCents: 577 }, context))
+      .toMatchObject({ status: "SUCCESS", data: { case: { status: "PROPOSED", decision: null } } });
+  });
+});

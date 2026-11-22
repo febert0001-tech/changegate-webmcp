@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { SYNTHETIC_ENVIRONMENT_LABEL } from "./decision-receipt";
+import { merchantEnvironments } from "../merchant/contracts";
 
 const receiptSummarySchema = z.object({
   schemaVersion: z.literal(1),
-  environment: z.literal(SYNTHETIC_ENVIRONMENT_LABEL),
+  environment: z.enum([SYNTHETIC_ENVIRONMENT_LABEL, ...merchantEnvironments]),
   decision: z.object({
     status: z.enum(["NOT_REQUESTED", "PENDING", "APPROVED", "REJECTED", "EXPIRED"]).nullable(),
   }),
@@ -56,7 +57,10 @@ export function checkDecisionReceiptConsistency(receipt: DecisionReceiptSummary)
   }
 
   const compatible = compatibleStatuses[execution];
-  if (verification !== null && !compatible.verification.includes(verification)) {
+  // Merchant readback can fail while the execution outcome is still unknown.
+  const failedMerchantReadback = receipt.environment !== SYNTHETIC_ENVIRONMENT_LABEL &&
+    execution === "IN_PROGRESS" && verification === "FAILED";
+  if (verification !== null && !failedMerchantReadback && !compatible.verification.includes(verification)) {
     return {
       status: "inconsistent",
       explanation: execution === "PENDING_EXECUTE"
