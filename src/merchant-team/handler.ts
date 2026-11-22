@@ -178,9 +178,9 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
               store.refundRequests.open(employee,command.id);
               return json(store.alerts.status(employee,command.id));
             case "lookupOriginalSale": {
-              if (!command.source || command.source === "test") return json(store.refundRequests.lookup(employee,command.reference));
+              if (!command.source || command.source === "test") return json(store.lookupRefundSale(employee,token,command.reference));
               const evidence = await providerFor(employee,command.source).lookup(command.reference);
-              return json(store.refundRequests.lookup(employee,command.reference,evidence));
+              return json(store.lookupRefundSale(employee,token,command.reference,evidence));
             }
             case "refundPolicy": return json(store.refundRequests.policy(employee));
             case "setRefundPolicy": return json(store.setRefundPolicy(employee,token,command.thresholdCents));
