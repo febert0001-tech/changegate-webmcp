@@ -10,6 +10,7 @@
       "feat/merchant-refund-import": false,
       "feat/merchant-refund-comparison": false,
       "feat/merchant-review-summary": false,
+      "feat/merchant-transactions": false,
       "main": false
     }
   }

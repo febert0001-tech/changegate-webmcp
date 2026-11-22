@@ -6,6 +6,9 @@ import type { CaseComparison, CaseEvidence, ComparisonEvidence, ImportSummary, R
 
 import { summarizeComparison, type ReviewDisposition, type ReviewFindingState } from "./review-summary";
 
+import { RefundRequestStore } from "./refund-request-store";
+import type { RefundDecision, RefundTerms } from "./refund-requests";
+
 type ImportRow = ImportSummary & { rejections: string };
 type FindingRow = { id: string; importId: string; evidence: string; caseId: string | null };
 const importColumns = `id, imported_at AS importedAt, accepted_count AS acceptedCount,
@@ -30,6 +33,7 @@ const caseColumns = `id, reference, revision, assignee, assignee_name AS assigne
 
 export class TeamStore {
   private readonly db: DatabaseSync;
+  readonly refundRequests: RefundRequestStore;
 
   constructor(path: string, private readonly now = () => new Date().toISOString()) {
     this.db = new DatabaseSync(path, { enableForeignKeyConstraints: true });
@@ -97,6 +101,7 @@ export class TeamStore {
           replacement_hash TEXT NOT NULL
         );
       `);
+      this.refundRequests = new RefundRequestStore(this.db, this.now);
     } catch (error) {
       this.db.close();
       throw error;
@@ -105,6 +110,34 @@ export class TeamStore {
 
   close() {
     this.db.close();
+  }
+
+  createRefundRequest(employee: Employee, token: string, submissionId: string, terms: RefundTerms) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      return this.refundRequests.create(employee, submissionId, terms);
+    });
+  }
+
+  decideRefundRequest(employee: Employee, token: string, id: string, decision: RefundDecision) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      return this.refundRequests.decide(employee, id, decision);
+    });
+  }
+
+  setRefundPolicy(employee: Employee, token: string, thresholdCents: number) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      return this.refundRequests.setPolicy(employee, thresholdCents);
+    });
+  }
+
+  reportCashPayout(employee: Employee, token: string, id: string) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      return this.refundRequests.reportCash(employee,id);
+    });
   }
 
   private atomic<T>(work: () => T): T {
