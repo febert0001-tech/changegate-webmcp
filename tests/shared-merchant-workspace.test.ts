@@ -258,6 +258,20 @@ describe("authenticated synthetic shift", () => {
     expect(final.inbox).toContainEqual({ requestId: held.id, phase: 0 });
     expect((await backup!.send<View>({ action: "demoShift" })).inbox).not.toContainEqual({ requestId: held.id, phase: 1 });
     expect((await jordan!.request(replayHeld)).status).toBe(409);
+    const decisions = await Promise.all([
+      jordan!.request({ action: "decideRefundRequest", id: held.id, decision: "Rejected", password }),
+      backup!.request({ action: "decideRefundRequest", id: held.id, decision: "Approved", password }),
+    ]);
+    expect(decisions.map(result => result.status).sort()).toEqual([200, 409]);
+    const won = decisions[0]!.ok ? { decision: "Rejected", actor: "Jordan Lee", reviewer: jordan! }
+      : { decision: "Approved", actor: "Backup Supervisor", reviewer: backup! };
+    const decisionEvents = async () => (await jordan!.send<RefundRequest>({ action: "openRefundRequest", id: held.id }))
+      .events.filter(event => event.kind === "Decision recorded");
+    const recorded = await decisionEvents();
+    expect(recorded).toEqual([{ kind: "Decision recorded", decision: won.decision, actor: won.actor,
+      occurredAt: final.state.event.at }]);
+    expect((await won.reviewer.request({ action: "decideRefundRequest", id: held.id, decision: won.decision, password })).status).toBe(200);
+    expect(await decisionEvents()).toEqual(recorded);
     expect((await jordan!.request({ action: "openRefundRequest", id: secondHeld.id })).status).toBe(404);
     expect((await maya!.send<RefundRequest[]>({ action: "listRefundRequests" })).map(row => row.id)).toContain(sameMerchant.id);
     expect(await alex!.send<RefundRequest[]>({ action: "listRefundRequests" })).toEqual([other]);

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { TeamCommand, TeamSession } from "../../merchant-team/contracts";
 import type { DemoState } from "../../merchant-team/demo-shift";
 import type { DemoExplanation } from "../../merchant-team/refund-ai-explanation";
@@ -54,6 +54,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   const [lookup,setLookup]=useState<Lookup>();
   const [formId,setFormId]=useState("");
   const [busy,setBusy]=useState(false);
+  const decisionPending=useRef(false);
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState("");
   const [notice,setNotice]=useState("");
@@ -336,10 +337,13 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
           <div><dt>Original sale</dt><dd>{record.sale?money(record.sale.originalCents):"Unavailable"}</dd></div>
           <div><dt>Register</dt><dd>{record.sale?.register??"Unavailable"}</dd></div>
         </dl>
-        <p><strong>Reason</strong> {record.terms.reason}</p><p><strong>Why it stopped</strong> {check.explanation}</p>
-        {includeExplanation&&alertStatus[0]?.explanation&&<section className={styles.importSection}>
+        <p><strong>Reason</strong> {record.terms.reason}</p>
+        {check.monitoring?.reasons.length ? <>
           <h4>Rule evidence</h4>
-          <ul className={styles.rejections}>{check.monitoring?.reasons.map(reason=><li key={reason}>{reason}</li>)}</ul>
+          <ul className={styles.rejections}>{check.monitoring.reasons.map(reason=><li key={reason}>{reason}</li>)}</ul>
+          {!check.monitoring.reasons.includes(check.explanation)&&<p><strong>Why it stopped</strong> {check.explanation}</p>}
+        </> : <p><strong>Why it stopped</strong> {check.explanation}</p>}
+        {includeExplanation&&alertStatus[0]?.explanation&&<section className={styles.importSection}>
           <h4>AI explanation</h4>
           {alertStatus[0].explanation.status==="complete" ? <>
             <p>{alertStatus[0].explanation.summary}</p>
@@ -355,17 +359,19 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
         {review?<p><strong>{review.decision}</strong> by {review.actor} · {time(review.occurredAt)}</p>:
           status==="Needs manager decision"&&manager ? <form onSubmit={event=>{
             event.preventDefault();
+            if(decisionPending.current)return;
             const native=event.nativeEvent as SubmitEvent;
             const decision=(native.submitter as HTMLButtonElement|null)?.value;
             if(decision!=="Approved"&&decision!=="Rejected")return;
             const form = event.currentTarget;
             const password = String(new FormData(form).get("supervisorPassword") ?? "");
             form.reset();
+            decisionPending.current=true;
             void run(async()=>{
               const result=await api<RefundRequest>({action:"decideRefundRequest",id:record.id,decision,password});
               setRecord(result);setNotice("Decision saved.");
               router.push(url(record.id,currentStep(result)));
-            });
+            }).finally(()=>{decisionPending.current=false;});
           }}>
             <label>Confirm with your password<input name="supervisorPassword" type="password" autoComplete="current-password" required /></label>
             <div className={styles.actions}><button className={styles.primary} value="Approved" disabled={busy}>Approve</button>

@@ -111,6 +111,7 @@
 .shiftAttentionList, .shiftRecords { display: grid; gap: 8px; list-style: none; margin-top: 8px; }
 .shiftAttentionLink { display: grid; gap: 3px; padding: 10px 13px; background: #f4f8f9; border: 1px solid var(--line); border-left: 3px solid #13796e; border-radius: 8px; text-decoration: none; color: inherit; overflow-wrap: anywhere; }
 .shiftAttentionLink:hover { border-color: #13796e; }
+.shiftReviewLink { display: inline-block; margin: 6px 13px 2px; }
 .shiftAttentionHeading, .shiftRecords li > div { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
 .shiftAttentionHeading span, .shiftRecords li span { color: var(--muted); font-size: .86rem; }
 .shiftMetricGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 8px; margin: 9px 0; }

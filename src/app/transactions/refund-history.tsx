@@ -37,6 +37,9 @@ export function RefundHistory({ request, alerts }: { request: RefundRequest; ale
   const receipt = requestReceipt(request);
   const lastCheck = request.events.findLastIndex(event => event.kind === "Checks recorded");
   const outcome = receipt.verification.status === "Verified" ? "Provider independently verified the refund" : receipt.execution.status;
+  const decision = receipt.decision.status;
+  const outcomeLabel = outcome === "Not submitted" && (decision === "Approved" || decision === "Rejected")
+    ? `${decision} / Not submitted` : outcome;
   return <section aria-label="Transaction history" className={styles.history}>
     <h3>Transaction history</h3>
     <ol>
@@ -55,7 +58,7 @@ export function RefundHistory({ request, alerts }: { request: RefundRequest; ale
       </li>)}
       <li>
         <strong>Recorded payment outcome</strong>
-        <p>{outcome === "Not submitted" && receipt.decision.status === "Approved" ? "Approved / Not submitted" : outcome}</p>
+        <p>{outcomeLabel}</p>
       </li>
     </ol>
   </section>;

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { TeamCommand, TeamSession } from "../../merchant-team/contracts";
-import { money } from "../../merchant-team/refund-requests";
+import { canReview, money } from "../../merchant-team/refund-requests";
 import { shiftGroups, shiftMetrics, type ShiftMetric, type ShiftOverview, type ShiftRefund } from "../../merchant-team/shift-overview";
 import styles from "./merchant.module.css";
 
@@ -12,7 +12,7 @@ type Send = <T>(command: TeamCommand, options?: { signal?: AbortSignal; sessionV
 const total = (rows: { amountCents: number }[]) => rows.reduce((sum, row) => sum + row.amountCents, 0);
 const receipt = (id: string) => `/transactions/${id}/receipt`;
 
-function Attention({ row }: { row: ShiftRefund }) {
+function Attention({ row, canDecide }: { row: ShiftRefund; canDecide: boolean }) {
   return <li>
     <Link href={receipt(row.id)} prefetch={false} className={styles.shiftAttentionLink}>
       <div className={styles.shiftAttentionHeading}>
@@ -22,6 +22,9 @@ function Attention({ row }: { row: ShiftRefund }) {
       <p>{row.reason}</p>
       <p className={styles.fieldHint}>{row.nextAction} · Open receipt</p>
     </Link>
+    {canDecide && row.awaitingApproval &&
+      <Link href={`/transactions/${row.id}/approval`} prefetch={false} className={styles.shiftReviewLink}
+        aria-label={`Review decision for ${row.location} ${money(row.amountCents)} refund`}>Review decision</Link>}
   </li>;
 }
 
@@ -53,8 +56,15 @@ export function ShiftOverviewPanel({ session, send, onSessionError }: {
     }
     void load();
     const timer = window.setInterval(() => { if (document.visibilityState === "visible") void load(); }, 3000);
+    const refreshWhenVisible = () => { if (document.visibilityState === "visible") void load(); };
     window.addEventListener("focus", load);
-    return () => { controller.abort(); window.clearInterval(timer); window.removeEventListener("focus", load); };
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+      window.removeEventListener("focus", load);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
   }, [demoShift, onSessionError, send, sessionVersion]);
 
   function updateFilter(key: "location" | "metric", value: string) {
@@ -114,7 +124,8 @@ export function ShiftOverviewPanel({ session, send, onSessionError }: {
     {error && <p role="alert">{error}</p>}
     <section aria-labelledby="shift-attention">
       <h3 id="shift-attention">Needs attention</h3>
-      {attention.length ? <ul className={styles.shiftAttentionList}>{attention.map(row => <Attention key={row.id} row={row}/>)}</ul>
+      {attention.length ? <ul className={styles.shiftAttentionList}>{attention.map(row =>
+        <Attention key={row.id} row={row} canDecide={canReview(session.role)}/>)}</ul>
         : <p className={styles.emptyState}>No refunds need attention in this view.</p>}
     </section>
     <section aria-labelledby="shift-totals">
