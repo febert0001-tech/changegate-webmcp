@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, type FormEvent } from "react";
+import { flushSync } from "react-dom";
 import styles from "./merchant.module.css";
 
 type Plan = { startsAt: number; expiresAt: number };
@@ -166,62 +167,119 @@ export function DemoInviteEntry() {
 }
 
 type Snapshot = { expiresAt: number; remainingMs: number; walkthrough: { title: string; facts: string[] }[] };
+type Deadline = { wall: number; monotonic: number };
+const guestPollMs = 1000;
+const guestLeaseMs = 4000;
+const clockNow = (): Deadline => ({ wall: Date.now(), monotonic: performance.now() });
+const remaining = (until: Deadline) => Math.min(until.wall - Date.now(), until.monotonic - performance.now());
+const after = (start: Deadline, ms: number): Deadline => ({ wall: start.wall + ms, monotonic: start.monotonic + ms });
+const earlier = (first: Deadline, second: Deadline): Deadline => ({
+  wall: Math.min(first.wall, second.wall),
+  monotonic: Math.min(first.monotonic, second.monotonic),
+});
 
 export function DemoGuestWalkthrough() {
   const [content, setContent] = useState<Snapshot>();
   const [locked, setLocked] = useState(false);
 
   useEffect(() => {
-    const controller = new AbortController();
-    let pending = false;
-    let denied = false;
-    let deadline = Number.POSITIVE_INFINITY;
-    let expiryTimer: number | undefined;
+    let request: AbortController | undefined;
+    let expiry: Deadline | undefined;
+    let lease: Deadline | undefined;
+    let timer: number | undefined;
+    let paused = document.visibilityState !== "visible";
+    let ended = false;
+
+    function cancelRequest() {
+      const previous = request;
+      request = undefined;
+      previous?.abort();
+    }
     function lock() {
-      denied = true;
+      ended = true;
+      window.clearTimeout(timer);
+      cancelRequest();
       setContent(undefined);
       setLocked(true);
     }
+
+    function watch(until: Deadline) {
+      lease = until;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(lock, remaining(until));
+    }
+
     async function check() {
-      if (denied || pending || controller.signal.aborted) return;
-      if (performance.now() >= deadline) { lock(); return; }
-      pending = true;
-      const start = performance.now();
+      if (ended || paused) return;
+      if ((expiry && remaining(expiry) <= 0) || (lease && remaining(lease) <= 0)) { lock(); return; }
+      if (request) return;
+      const controller = new AbortController();
+      request = controller;
+      const sent = clockNow();
+      if (!lease) watch(after(sent, guestLeaseMs));
       try {
         const response = await fetch("/api/demo-access", { cache: "no-store", signal: controller.signal });
-        if (controller.signal.aborted) return;
+        if (request !== controller) return;
         if (!response.ok) { lock(); return; }
         const current = await response.json() as Snapshot;
-        deadline = Math.min(deadline, start + current.remainingMs);
-        if (controller.signal.aborted || denied) return;
-        if (performance.now() >= deadline) { lock(); return; }
-        window.clearTimeout(expiryTimer);
-        expiryTimer = window.setTimeout(lock, deadline - performance.now());
-        if (document.visibilityState === "visible") setContent(current);
+        if (request !== controller) return;
+        if (!lease || remaining(lease) <= 0 || !Number.isFinite(current.remainingMs)) { lock(); return; }
+        const reportedExpiry = after(sent, current.remainingMs);
+        expiry = expiry ? earlier(expiry, reportedExpiry) : reportedExpiry;
+        const nextLease = earlier(expiry, after(sent, guestLeaseMs));
+        if (remaining(nextLease) <= 0) { lock(); return; }
+        watch(nextLease);
+        setContent(current);
       } catch {
-        if (!controller.signal.aborted) lock();
-      } finally { pending = false; }
+        if (request === controller) lock();
+      } finally {
+        if (request === controller) request = undefined;
+      }
     }
-    const hide = () => setContent(undefined);
-    const visibility = () => { if (document.visibilityState === "hidden") hide(); else void check(); };
-    window.addEventListener("pagehide", hide);
-    window.addEventListener("pageshow", check);
+
+    function pause() {
+      if (paused || ended) return;
+      paused = true;
+      cancelRequest();
+      window.clearTimeout(timer);
+      lease = undefined;
+      // Clear the DOM before the browser can suspend or snapshot the page.
+      flushSync(() => setContent(undefined));
+    }
+
+    function resume() {
+      if (!paused || ended || document.visibilityState !== "visible") return;
+      paused = false;
+      void check();
+    }
+
+    const visibility = () => { if (document.visibilityState === "visible") resume(); else pause(); };
+    window.addEventListener("pagehide", pause);
+    window.addEventListener("pageshow", resume);
+    window.addEventListener("blur", pause);
+    window.addEventListener("focus", resume);
+    document.addEventListener("freeze", pause);
+    document.addEventListener("resume", resume);
     document.addEventListener("visibilitychange", visibility);
-    const poll = window.setInterval(() => void check(), 1000);
+    const poll = window.setInterval(() => void check(), guestPollMs);
     void check();
     return () => {
-      controller.abort();
-      window.removeEventListener("pagehide", hide);
-      window.removeEventListener("pageshow", check);
+      cancelRequest();
+      window.removeEventListener("pagehide", pause);
+      window.removeEventListener("pageshow", resume);
+      window.removeEventListener("blur", pause);
+      window.removeEventListener("focus", resume);
+      document.removeEventListener("freeze", pause);
+      document.removeEventListener("resume", resume);
       document.removeEventListener("visibilitychange", visibility);
       window.clearInterval(poll);
-      window.clearTimeout(expiryTimer);
+      window.clearTimeout(timer);
     };
   }, []);
 
   return <main className={styles.shell} aria-label="Synthetic investor walkthrough">
     <header className={styles.header}><div><p className={styles.brand}>ChangeGate</p><h1>Investor walkthrough</h1></div></header>
-    {locked && <section className={styles.card}><h2>Demo access ended</h2><p>A new invitation is required to continue.</p></section>}
+    {locked && <section className={styles.card} role="status"><h2>Access ended</h2><p>Contact the presenter if you need access.</p></section>}
     {!locked && !content && <p role="status">Checking demo access…</p>}
     {content && <section className={styles.card + " " + styles.overnightPanel}>
       <p>Read-only synthetic examples · Access ends at {when(content.expiresAt)}</p>
