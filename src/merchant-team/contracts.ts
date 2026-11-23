@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { drawerDispositions } from "./weekly-cash-review";
 import { csvText, refundMapping, type CaseEvidence } from "./refund-csv";
 import { dispositionOptions } from "./review-summary";
 import { comparisonInput } from "./refund-comparison";
@@ -48,7 +49,7 @@ export const teamCommand = z.discriminatedUnion("action", [
     status: z.enum(activeStatuses) }),
   z.strictObject({ action: z.literal("assign"), id, revision, assignee: slug }),
   z.strictObject({ action: z.literal("note"), id, revision, note: text(1600) }),
-  z.strictObject({ action: z.literal("resolve"), id, revision }),
+  z.strictObject({ action: z.literal("resolve"), id, revision, drawerDisposition: z.enum(drawerDispositions).optional() }),
   z.strictObject({ action: z.literal("inspectCsv"), text: csvText }),
   z.strictObject({ action: z.literal("previewCsv"), text: csvText, mapping: refundMapping }),
   z.strictObject({ action: z.literal("importCsv"), text: csvText, mapping: refundMapping }),
@@ -70,6 +71,7 @@ export const teamCommand = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("setRefundPolicy"), thresholdCents: z.number().int().min(0).max(999999999999) }),
   z.strictObject({ action: z.literal("reportCashPayout"), id }),
   z.strictObject({ action: z.literal("cashDrawers"), id: id.optional() }),
+  z.strictObject({ action: z.literal("weeklyCashReview"), week: z.iso.date().optional(), location: text(120).optional() }),
   z.strictObject({ action: z.literal("openCashDrawer"), id, cents: drawerCount }),
   z.strictObject({ action: z.literal("closeCashDrawer"), id, cents: drawerCount }),
   z.strictObject({ action: z.literal("recordDrawerMovement"), id, entryId: id,

@@ -10,6 +10,7 @@ export const demoAccounts = accounts;
 
 const fuel = { location: "Harbor Fuel", register: "Register 1" };
 const bar = { location: "Harbor Bar", register: "Bar 1" };
+export const demoLocations = [fuel.location, bar.location];
 const start = Date.parse("2026-11-22T18:00:00Z");
 export const demoEscalationMs = 120_000;
 export const demoReferencePrefix = "DEMO-SHIFT-";

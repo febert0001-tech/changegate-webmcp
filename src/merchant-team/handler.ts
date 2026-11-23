@@ -52,6 +52,7 @@ const hostedDemoActions = new Set([
   "recordDemoSale", "openDemoSale", "lookupOriginalSale",
   "refundAlertStatus", "listRefundRequests", "openRefundRequest", "createRefundRequest", "decideRefundRequest",
   "reportCashPayout", "cashDrawers", "openCashDrawer", "closeCashDrawer", "recordDrawerMovement",
+  "weeklyCashReview",
   "recordDrawerFollowUp", "openDrawerCase", "record", "assign", "note", "resolve",
 ]);
 
@@ -218,6 +219,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "recordDrawerMovement":
             case "recordDrawerFollowUp":
             case "openDrawerCase": return json(store.cashDrawer(employee, token, command));
+            case "weeklyCashReview": return json(store.weeklyCashReview(employee, token, command.week, command.location));
             case "listRefundRequests": return json(store.refundRequests.list(employee));
             case "shiftOverview": return json(store.shiftOverview(employee,token,command.manual));
             case "recordDemoSale": return json(store.recordDemoSale(employee,token,command));

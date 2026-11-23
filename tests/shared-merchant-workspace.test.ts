@@ -13,6 +13,7 @@ import { demoAccounts, generateDemoEvents, type DemoState } from "../src/merchan
 import { demoExplanation } from "../src/merchant-team/refund-ai-explanation";
 import type { Employee, TeamCase, TeamCaseDetail, TeamSession, TeamWorkspaceView } from "../src/merchant-team/contracts";
 import type { CashDrawerView } from "../src/merchant-team/cash-drawers";
+import { cashWeekGroups, originalVarianceTotal, type CashWeek } from "../src/merchant-team/weekly-cash-review";
 import { createTeamWorkspace } from "../src/merchant-team/handler";
 import { reviewSummaryCsv, type ReviewSummary } from "../src/merchant-team/review-summary";
 import { TeamStore } from "../src/merchant-team/store";
@@ -138,7 +139,7 @@ describe("authenticated synthetic shift", () => {
     expect((await cashier.request({ action: "note", id: caseId, revision: 1, note: "Unauthorized review" })).status).toBe(403);
     await supervisor.send({ action: "recordDrawerFollowUp", id, entryId: randomUUID(), cents: 16400, note: "Recount recorded" });
     await supervisor.send({ action: "record", id: caseId, revision: 1, finding: "Recount reviewed", nextAction: "Reconcile cash log", status: "Investigating" });
-    await supervisor.send({ action: "resolve", id: caseId, revision: 2 });
+    await supervisor.send({ action: "resolve", id: caseId, revision: 2, drawerDisposition: "Closed with difference unexplained" });
     server.stop();
     const reopened = app(server.path, users, undefined, undefined, undefined, true, true);
     const reviewer = await signIn(reopened, "jordan");
@@ -148,6 +149,74 @@ describe("authenticated synthetic shift", () => {
     const workspace = await reviewer.send<TeamWorkspaceView>({ action: "workspace", id: caseId });
     expect(workspace.detail).toMatchObject({ drawerId: id, case: { id: caseId, status: "Resolved" } });
     expect(workspace.detail?.history.at(-1)).toMatchObject({ kind: "Resolved", actor: "Jordan Lee" });
+  });
+
+  it("keeps weekly shortages and overages separate when a supervisor resolves a drawer case", async () => {
+    let now = "2026-11-09T04:59:59.000Z";
+    const users = roster.map(employee => ({ ...employee, role: employee.username === "maya" ? "cashier" as const : "manager" as const }));
+    const openApp = (path?: string) => app(path, users, () => now, undefined, undefined, true, true);
+    const server = openApp();
+    const cashier = await signIn(server, "maya");
+    const supervisor = await signIn(server, "jordan");
+    const outsider = await signIn(server, "alex");
+    const shift = async (cents?: number) => {
+      const id = randomUUID();
+      await cashier.send({ action: "openCashDrawer", id, cents: 10000 });
+      if (cents !== undefined) await cashier.send({ action: "closeCashDrawer", id, cents });
+      return id;
+    };
+    await shift(9000);
+    now = "2026-11-09T05:00:00.000Z";
+    const first = await shift(9500);
+    now = "2026-11-10T22:00:00.000Z";
+    const second = await shift(9300);
+    now = "2026-11-11T22:00:00.000Z";
+    const over = await shift(10400);
+    now = "2026-11-12T22:00:00.000Z";
+    await shift(10000);
+    now = "2026-11-13T22:00:00.000Z";
+    await shift();
+    async function openReview(id: string) {
+      const result = await supervisor.send<CashDrawerView>({ action: "openDrawerCase", id });
+      return result.drawer!.report!.caseId!;
+    }
+    const [firstCase, , overCase] = await Promise.all([openReview(first), openReview(second), openReview(over)]);
+    const read = { action: "weeklyCashReview", week: "2026-11-12" };
+    expect((await cashier.request(read)).status).toBe(403);
+    expect((await outsider.request(read)).status).toBe(404);
+    expect((await supervisor.send<CashWeek>({ ...read, location: "Harbor Bar" })).rows).toEqual([]);
+    const initial = await supervisor.send<CashWeek>({ ...read, location: "Harbor Fuel" });
+    expect(initial).toMatchObject({ start: "2026-11-09", end: "2026-11-15", timeZone: "America/New_York" });
+    const before = cashWeekGroups(initial.rows);
+    expect(Object.values(before).map(rows => rows.length)).toEqual([4, 2, 1, 1, 3, 1]);
+    expect([originalVarianceTotal(before.short), originalVarianceTotal(before.over)]).toEqual([1200, 400]);
+    async function document(id: string) {
+      await supervisor.send({ action: "record", id, revision: 1, finding: "Reviewed the drawer count",
+        nextAction: "Document the disposition", status: "Investigating" });
+    }
+    await document(firstCase);
+    await supervisor.send({ action: "resolve", id: firstCase, revision: 2, drawerDisposition: "Closed with difference unexplained" });
+    let rows = (await supervisor.send<CashWeek>(read)).rows;
+    expect(cashWeekGroups(rows).unresolved).toHaveLength(2);
+    expect(originalVarianceTotal(cashWeekGroups(rows).short)).toBe(1200);
+    await document(overCase);
+    const correction = { action: "resolve", id: overCase, revision: 2, drawerDisposition: "Recount corrected the count" };
+    expect((await supervisor.request(correction)).status).toBe(422);
+    await supervisor.send({ action: "recordDrawerFollowUp", id: over, cents: 10000, entryId: randomUUID(), note: "Recount matched expected" });
+    await supervisor.send(correction);
+    await cashier.send({ action: "closeCashDrawer", id: first, cents: 10000 });
+    server.stop();
+    const restarted = openApp(server.path);
+    rows = (await (await signIn(restarted, "jordan")).send<CashWeek>(read)).rows;
+    const after = cashWeekGroups(rows);
+    expect(Object.values(after).map(items => items.length)).toEqual([4, 2, 1, 1, 1, 1]);
+    expect([originalVarianceTotal(after.short), originalVarianceTotal(after.over)]).toEqual([1200, 400]);
+    expect(rows.find(row => row.id === first)?.close).toMatchObject({
+      firstCount: { cents: 9500 }, review: { reviewer: "Jordan Lee", disposition: "Closed with difference unexplained" },
+    });
+    expect(rows.find(row => row.id === over)?.close).toMatchObject({
+      firstCount: { cents: 10400 }, recount: { cents: 10000 }, review: { disposition: "Recount corrected the count" },
+    });
   });
   it("uses the HTTPS staging session boundary and accepts only synthetic writes on Railway", async () => {
     const demoOrigin = "https://changegate-demo.up.railway.app";

@@ -186,6 +186,14 @@ export class TeamStore {
     });
   }
 
+  weeklyCashReview(employee: Employee, token: string, week?: string, location?: string) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      if (!this.drawers) throw new TeamError("DRAWER_NOT_FOUND", 404);
+      return this.drawers.week(employee, week, location, id => this.open(employee, id));
+    });
+  }
+
   private requireDemoSale(employee: Employee, reference: string) {
     if (!this.demoSales) throw new TeamError("TRANSACTION_NOT_FOUND", 404);
     return this.demoSales.open(employee, reference);
@@ -759,7 +767,8 @@ export class TeamStore {
   change(employee: Employee, command: Change, roster: readonly Employee[], token: string) {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
-      if (this.isDrawerCase(employee, command.id) && !canReview(employee.role))
+      const drawerId = this.drawers?.forCase(employee, command.id);
+      if (drawerId && !canReview(employee.role))
         throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
       const current = this.open(employee, command.id).case;
       if (current.revision !== command.revision) throw new TeamError("CASE_CHANGED", 409);
@@ -792,7 +801,7 @@ export class TeamStore {
           if (!current.finding || !current.nextAction) throw new TeamError("FINDING_REQUIRED", 422);
           next.status = "Resolved";
           kind = "Resolved";
-          detail = "Case marked resolved.";
+          detail = drawerId ? this.drawers!.resolution(employee, drawerId, command.drawerDisposition) : "Case marked resolved.";
           break;
       }
       const time = this.now();

@@ -9,6 +9,8 @@ import { StoreEntry } from "./store-entry";
 import { TransactionWorkspace } from "../transactions/transaction-workspace";
 import { ShiftOverviewPanel } from "./shift-overview-panel";
 import { CashDrawerPanel } from "./cash-drawer-panel";
+import { WeeklyCashReviewPanel } from "./weekly-cash-review-panel";
+import { drawerDispositions } from "../../merchant-team/weekly-cash-review";
 import { DemoSalesPanel } from "./demo-sales-panel";
 import type { TransactionStep } from "../../merchant-team/refund-requests";
 import { ReviewSummaryPanel } from "./review-summary-panel";
@@ -17,6 +19,8 @@ import { EvidenceRows, findingTitle } from "./refund-evidence";
 import { formatUsd } from "../../merchant-team/refund-comparison";
 
 const errors: Record<string, string> = {
+  DRAWER_DISPOSITION_REQUIRED: "Choose how the drawer discrepancy was resolved.",
+  DRAWER_RECOUNT_MISMATCH: "Record a recount that matches expected cash before choosing that disposition.",
   SIGN_IN_FAILED: "Check your username and password.",
   SIGN_IN_LIMIT: "Too many sign-in attempts. Try again in a few minutes.",
   SIGN_IN_RECOVERY_REQUIRED: "This browser kept an old session cookie. Re-enter your password to recover sign-in.",
@@ -102,11 +106,12 @@ function notifySessionChange() {
   channel.close();
 }
 
-export function MerchantConsole({ caseId, imports, importId, reviewSummary, transaction, overview, demoSale, cashDrawer }: {
+export function MerchantConsole({ caseId, imports, importId, reviewSummary, transaction, overview, demoSale, cashDrawer, cashWeek }: {
   caseId?: string; imports?: boolean; importId?: string; reviewSummary?: boolean; overview?: boolean;
   transaction?: { id: string; step: TransactionStep } | "list";
   demoSale?: string | true;
   cashDrawer?: string | true;
+  cashWeek?: { week?: string; location?: string };
 }) {
   const router = useRouter();
   const [ready, setReady] = useState(false);
@@ -231,7 +236,9 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
       </div>}
     </header>
     {(notice || busy) && <p className={styles.inlineNotice} role="status">{notice || "Working…"}</p>}
-    {cashDrawer ? (
+    {cashWeek ? (
+      <WeeklyCashReviewPanel key={session.sessionVersion} initial={cashWeek} session={session} send={send} onSessionError={clearOnSessionError} />
+    ) : cashDrawer ? (
       <CashDrawerPanel key={session.sessionVersion} {...(typeof cashDrawer === "string" && { id: cashDrawer })}
         session={session} send={send} onSessionError={clearOnSessionError} />
     ) : overview ? (
@@ -350,6 +357,12 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
                   <button>Add note</button>
                 </form>
               </details>
+              {canResolve && detail.drawerId && <label>Drawer disposition
+                <select name="drawerDisposition" defaultValue="">
+                  <option value="" disabled>Select a disposition</option>
+                  {drawerDispositions.map(option => <option key={option}>{option}</option>)}
+                </select>
+              </label>}
               {canResolve && <button type="button" className={styles.primary} onClick={event => {
                 const controls = event.currentTarget.closest("fieldset")?.elements;
                 const value = (name: string) => {
@@ -361,7 +374,10 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
                   setNotice("Save your edits or restore the saved values before resolving.");
                   return;
                 }
-                change({ action: "resolve", id: item.id, revision: item.revision }, "Case resolved.");
+                const drawerDisposition = drawerDispositions.find(option => option === value("drawerDisposition"));
+                if (detail.drawerId && !drawerDisposition) { setNotice(errors.DRAWER_DISPOSITION_REQUIRED!); return; }
+                change({ action: "resolve", id: item.id, revision: item.revision,
+                  ...(drawerDisposition && { drawerDisposition }) }, "Case resolved.");
               }}>Resolve case</button>}
             </fieldset>
           )}

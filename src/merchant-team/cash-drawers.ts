@@ -1,9 +1,10 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { Employee } from "./contracts";
-import { demoMerchant } from "./demo-shift";
+import type { Employee, TeamCaseDetail } from "./contracts";
+import { demoLocations, demoMerchant } from "./demo-shift";
 import { demoRegister } from "./demo-sales";
 import { TeamError } from "./error";
 import { canReview } from "./refund-requests";
+import { addCashWeekDays, cashStoreDate, cashTimeZone, cashWeekMonday, drawerDispositions, type CashWeek, type DrawerDisposition } from "./weekly-cash-review";
 
 type Register = { location: string; register: string };
 type Stamp = { actor: string; at: string };
@@ -22,6 +23,14 @@ export type CashDrawerView = {
 
 const summary = ({ id, location, register, opened, firstCount }: DrawerRow): DrawerSummary =>
   ({ id, location, register, openedAt: (JSON.parse(opened) as Count).at, isClosed: firstCount !== null });
+const latestRecount = (entries: FollowUp[]) =>
+  entries.findLast((entry): entry is FollowUp & { cents: number } => entry.cents !== null) ?? null;
+
+function caseReview(detail: TeamCaseDetail) {
+  const event = detail.history.findLast(({ kind }) => kind === "Resolved" || kind === "Recorded finding" || kind === "Added note");
+  const disposition = event?.kind === "Resolved" ? drawerDispositions.find(value => value === event.detail) : undefined;
+  return { id: detail.case.id, status: detail.case.status, reviewer: event?.actor ?? null, disposition: disposition ?? null };
+}
 
 export class CashDrawers {
   constructor(private readonly db: DatabaseSync, private readonly now: () => string) {
@@ -105,6 +114,37 @@ export class CashDrawers {
     return { drawers: rows.map(summary), activeId: active?.id ?? null, drawer: row ? {
       ...summary(row), opening: JSON.parse(row.opened) as Count, report: this.report(employee, row),
     } : null };
+  }
+
+  week(employee: Employee, week: string | undefined, location: string | undefined,
+    openCase: (id: string) => TeamCaseDetail): CashWeek {
+    this.assertAccess(employee);
+    if (!canReview(employee.role)) throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
+    const start = cashWeekMonday(week ?? cashStoreDate(this.now()));
+    const end = addCashWeekDays(start, 6);
+    const records = this.db.prepare(`SELECT ${this.columns} FROM team_cash_drawers
+      WHERE merchant_id=? AND json_extract(opened, '$.at')>=? AND json_extract(opened, '$.at')<?
+      ORDER BY json_extract(opened, '$.at') DESC, id`).all(employee.merchantId,
+        addCashWeekDays(start, -1), addCashWeekDays(end, 2)) as unknown as DrawerRow[];
+    const rows = records.flatMap(row => {
+      const item = summary(row);
+      const day = cashStoreDate(item.openedAt);
+      if (day < start || day > end || (location && item.location !== location)) return [];
+      const report = this.report(employee, row);
+      return [{ ...item, close: report ? { expected: report.expected, variance: report.variance, firstCount: report.firstCount,
+        recount: latestRecount(report.followUps), review: row.caseId ? caseReview(openCase(row.caseId)) : null } : null }];
+    });
+    return { start, end, timeZone: cashTimeZone, locations: [...new Set([...demoLocations, ...records.map(row => row.location)])], rows };
+  }
+
+  resolution(employee: Employee, drawerId: string, disposition: DrawerDisposition | undefined) {
+    if (!disposition) throw new TeamError("DRAWER_DISPOSITION_REQUIRED", 422);
+    if (disposition === "Recount corrected the count") {
+      const report = this.report(employee, this.get(employee, drawerId));
+      if (!report || latestRecount(report.followUps)?.cents !== report.expected)
+        throw new TeamError("DRAWER_RECOUNT_MISMATCH", 422);
+    }
+    return disposition;
   }
 
   open(employee: Employee, id: string, cents: number) {
