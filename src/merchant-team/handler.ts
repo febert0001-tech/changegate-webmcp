@@ -47,6 +47,7 @@ async function readCommand(request: Request): Promise<unknown> {
 }
 
 const hostedDemoActions = new Set([
+  "overnightDesk", "overnightOwner", "setOvernightCoverage", "claimOvernightCase", "requestOvernightFollowUp", "replyOvernight",
   "signIn", "signOut", "session", "workspace", "demoShift", "shiftOverview", "startDemoShift", "nextDemoEvent", "replayDemoShift",
   "replayHeldDemoRefund",
   "recordDemoSale", "openDemoSale", "lookupOriginalSale",
@@ -55,6 +56,12 @@ const hostedDemoActions = new Set([
   "weeklyCashReview",
   "recordDrawerFollowUp", "openDrawerCase", "record", "assign", "note", "resolve",
 ]);
+
+const reviewerActions = new Set(["workspace", "session", "signOut", "overnightDesk", "claimOvernightCase", "requestOvernightFollowUp"]);
+
+function merchantAccess(employee: Employee) {
+  if (employee.role === "reviewer") throw new TeamError("CASE_NOT_FOUND", 404);
+}
 
 export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[], origin: string,
   { staging = false, hostedDemo = false, ...providers }:
@@ -108,10 +115,10 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
       ...(employee.role && { role: employee.role }),
       reviewerConfigured: roster.some(member=>member.merchantId===employee.merchantId&&canReview(member.role)),
       paypalConnected: providers.paypal?.supports(employee.merchantId) ?? false,
-      ...(store.demo?.includes(employee) && { demoShift: true }),
+      ...(employee.role !== "reviewer" && store.demo?.includes(employee) && { demoShift: true }),
       ...(assignment && { demoRegister: assignment }),
       ...(hostedDemo && { syntheticOnly: true }),
-      coworkers: roster.filter((member) => member.merchantId === employee.merchantId)
+      coworkers: roster.filter((member) => employee.role !== "reviewer" && member.role !== "reviewer" && member.merchantId === employee.merchantId)
         .map(({ username, name }) => ({ username, name })),
     };
   }
@@ -149,10 +156,11 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
       const identity = authenticate(request.headers);
       if (!identity) return json({ error: "SIGN_IN_REQUIRED" }, 401);
       const { employee, token, version } = identity;
+      if (employee.role === "reviewer" && !reviewerActions.has(command.action)) throw new TeamError("COVERAGE_DENIED", 403);
       switch (command.action) {
         case "session": return json(projectSession(employee, version));
         case "workspace": {
-          const cases = store.list(employee);
+          const cases = employee.role === "reviewer" ? [] : store.list(employee);
           const detail = command.id && cases.some(({ id }) => id === command.id)
             ? store.open(employee, command.id) : null;
           return json({ session: projectSession(employee, version), cases, detail });
@@ -164,6 +172,13 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             return json({ error: "SESSION_CHANGED" }, 409);
           }
           switch (command.action) {
+            case "overnightDesk":
+            case "overnightOwner":
+            case "setOvernightCoverage":
+            case "claimOvernightCase":
+            case "requestOvernightFollowUp":
+            case "replyOvernight":
+              return json(store.overnightCommand(employee, token, command));
             case "signOut":
               store.revokeSession(token);
               return json(null, 200, cookie("", 0));
@@ -259,14 +274,14 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "openImport": return json(store.openImport(employee, command.id));
             case "assignFinding": {
               const assignee = employees.get(command.assignee);
-              if (!assignee || assignee.merchantId !== employee.merchantId) {
+              if (!assignee || assignee.role === "reviewer" || assignee.merchantId !== employee.merchantId) {
                 return json({ error: "ASSIGNEE_UNAVAILABLE" }, 422);
               }
               return json(store.assignFinding(employee, token, command.id, assignee));
             }
             default:
               if (hostedDemo && !store.isDrawerCase(employee, command.id)) throw new TeamError("CASE_NOT_FOUND", 404);
-              return json(store.change(employee, command, roster, token));
+              return json(store.change(employee, command, roster.filter(member => member.role !== "reviewer"), token));
           }
       }
     } catch (error) {
@@ -279,9 +294,9 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
     handle,
     alerts:store.alerts,
     roster,
-    openRefundRequest: (employee: Employee, id: string) => store.refundRequests.open(employee,id),
-    openImport: (employee: Employee, id: string) => store.openImport(employee, id),
+    openRefundRequest: (employee: Employee, id: string) => { merchantAccess(employee); return store.refundRequests.open(employee, id); },
+    openImport: (employee: Employee, id: string) => { merchantAccess(employee); return store.openImport(employee, id); },
     employeeFor: (headers: Pick<Headers, "get">) => authenticate(headers)?.employee,
-    open: (employee: Employee, id: string) => store.open(employee, id),
+    open: (employee: Employee, id: string) => { merchantAccess(employee); return store.open(employee, id); },
   };
 }

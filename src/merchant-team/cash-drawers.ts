@@ -100,6 +100,13 @@ export class CashDrawers {
       followUps: this.rows<FollowUp>("team_cash_drawer_followups", employee, row.id), caseId: row.caseId };
   }
 
+  coverageEvidence(employee: Employee, id: string) {
+    const row = this.db.prepare(`SELECT ${this.columns} FROM team_cash_drawers WHERE merchant_id=? AND id=?`)
+      .get(employee.merchantId, id) as DrawerRow | undefined;
+    if (!row || !row.firstCount) throw new TeamError("DRAWER_NOT_FOUND", 404);
+    return { ...summary(row), opening: JSON.parse(row.opened) as Count, report: this.report(employee, row)! };
+  }
+
   view(employee: Employee, id?: string): CashDrawerView {
     this.assertAccess(employee);
     const scope = demoRegister(employee);

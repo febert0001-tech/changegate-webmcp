@@ -14,7 +14,7 @@ export const refundTerms = z.strictObject({
 });
 export type RefundTerms = z.infer<typeof refundTerms>;
 export type RefundDecision = "Approved" | "Rejected";
-export type MerchantRole = "cashier" | "manager" | "owner";
+export type MerchantRole = "cashier" | "manager" | "owner" | "reviewer";
 export interface TestSale {
   reference: string;
   location: string;

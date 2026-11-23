@@ -5,7 +5,8 @@ import { createTeamWorkspace } from "./handler";
 import { configuredSquareSandbox } from "./square-sandbox";
 import { configuredPayPalSandbox } from "./paypal-provider";
 import { TeamStore } from "./store";
-import { demoAccounts } from "./demo-shift";
+import { demoAccounts, demoMerchant } from "./demo-shift";
+import { overnightAccounts } from "./overnight";
 
 let workspace: ReturnType<typeof createTeamWorkspace> | undefined;
 
@@ -52,10 +53,22 @@ export function teamWorkspace() {
       config = JSON.parse(readFileSync(users, "utf8"));
     }
 
-    const roster = rosterSchema.parse(config);
+    let roster = rosterSchema.parse(config);
+    if (roster.some(employee => employee.role === "reviewer")) return undefined;
     if (demo && (roster.length !== demoAccounts.length || !demoAccounts.every(account => roster.some(member =>
       member.username === account.username && member.role === account.role && member.merchantId === account.merchantId &&
       member.merchantName === account.merchantName)))) return undefined;
+    if (demo) {
+      const raw = env.CHANGEGATE_COVERAGE_ROSTER_JSON;
+      if (raw) {
+        const extra = rosterSchema.parse(JSON.parse(raw) as unknown);
+        const merchant = roster.find(member => member.merchantId === demoMerchant);
+        if (extra.length !== overnightAccounts.length || !extra.every(member =>
+          member.role === "reviewer" && member.merchantId === demoMerchant && member.merchantName === merchant?.merchantName &&
+          overnightAccounts.some(account => account.username === member.username && account.name === member.name))) return undefined;
+        roster = rosterSchema.parse([...roster, ...extra]);
+      }
+    }
     const store = new TeamStore(db, undefined, demo);
     try {
       const square = demo ? undefined : configuredSquareSandbox();

@@ -15,7 +15,7 @@ export default async function VerifiedSquareExamplePage() {
   if (mode !== "demo" && mode !== "railway-demo") notFound();
   const employee = teamWorkspace()?.employeeFor(await headers());
   if (!employee) redirect("/shift-overview");
-  if (employee.merchantId !== demoMerchant) notFound();
+  if (employee.merchantId !== demoMerchant || employee.role === "reviewer") notFound();
 
   return <main className={styles.shell}>
     <header className={styles.header}>

@@ -20,7 +20,7 @@ export const rosterSchema = z.array(z.strictObject({
   name: text(120),
   merchantId: slug,
   merchantName: text(120),
-  role: z.enum(["cashier","manager","owner"]).optional(),
+  role: z.enum(["cashier","manager","owner","reviewer"]).optional(),
   salt: z.string().regex(/^[0-9a-f]{32}$/),
   passwordHash: z.string().regex(/^[0-9a-f]{64}$/),
 })).min(1).max(500).superRefine((roster, ctx) => {
@@ -71,6 +71,12 @@ export const teamCommand = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("setRefundPolicy"), thresholdCents: z.number().int().min(0).max(999999999999) }),
   z.strictObject({ action: z.literal("reportCashPayout"), id }),
   z.strictObject({ action: z.literal("cashDrawers"), id: id.optional() }),
+  z.strictObject({ action: z.literal("overnightDesk"), id: id.optional() }),
+  z.strictObject({ action: z.literal("overnightOwner") }),
+  z.strictObject({ action: z.literal("setOvernightCoverage"), active: z.boolean() }),
+  z.strictObject({ action: z.literal("claimOvernightCase"), id }),
+  z.strictObject({ action: z.literal("requestOvernightFollowUp"), id, requestId: id, checked: text(1200), question: text(1200) }),
+  z.strictObject({ action: z.literal("replyOvernight"), id, requestId: id, text: text(1200) }),
   z.strictObject({ action: z.literal("weeklyCashReview"), week: z.iso.date().optional(), location: text(120).optional() }),
   z.strictObject({ action: z.literal("openCashDrawer"), id, cents: drawerCount }),
   z.strictObject({ action: z.literal("closeCashDrawer"), id, cents: drawerCount }),
@@ -97,7 +103,8 @@ export const teamCommand = z.discriminatedUnion("action", [
 ]);
 export type TeamCommand = z.infer<typeof teamCommand>;
 
-export type HistoryKind = "Opened" | "Recorded finding" | "Assigned" | "Added note" | "Resolved" | "Imported evidence";
+export type HistoryKind = "Opened" | "Recorded finding" | "Assigned" | "Added note" | "Resolved" | "Imported evidence" |
+  "Coverage claimed" | "Owner follow-up requested" | "Owner replied";
 export interface CaseHistory {
   sequence: number;
   actor: string;

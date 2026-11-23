@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory)][string]$StateDirectory,
   [ValidateRange(1024,65535)][int]$Port = 3193,
   [switch]$PrepareOnly,
-  [ValidateSet('maya','qa-cashier-b','jordan','pay-backup','alex')][string]$CopyPasswordFor
+  [ValidateSet('maya','qa-cashier-b','jordan','pay-backup','alex','ivy-night','noah-night','sam-night')][string]$CopyPasswordFor
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,7 +12,10 @@ $demoRoster = Join-Path $demoState 'staff.json'
 $demoPasswords = Join-Path $demoState 'staff-passwords.xml'
 
 if ($CopyPasswordFor) {
-  $demoSaved = Import-Clixml -LiteralPath $demoPasswords
+  $demoPasswordFile = if ($CopyPasswordFor.EndsWith('-night')) {
+    Join-Path $demoState 'coverage-passwords.xml'
+  } else { $demoPasswords }
+  $demoSaved = Import-Clixml -LiteralPath $demoPasswordFile
   $demoSecret = $demoSaved[$CopyPasswordFor]
   if ($null -eq $demoSecret) { throw 'No password was saved for this demo login.' }
   Set-Clipboard -Value ([Net.NetworkCredential]::new('', $demoSecret).Password)
@@ -61,6 +64,10 @@ $env:CHANGEGATE_TEAM_MODE = 'demo'
 $env:CHANGEGATE_TEAM_ORIGIN = "http://127.0.0.1:$Port"
 $env:CHANGEGATE_TEAM_DB = Join-Path $demoState 'synthetic-demo.sqlite'
 $env:CHANGEGATE_TEAM_USERS_FILE = $demoRoster
+$coverageRoster = Join-Path $demoState 'coverage-staff.json'
+$env:CHANGEGATE_COVERAGE_ROSTER_JSON = if (Test-Path -LiteralPath $coverageRoster -PathType Leaf) {
+  Get-Content -LiteralPath $coverageRoster -Raw
+} else { $null }
 Push-Location $demoRoot
 try { & node node_modules/next/dist/bin/next start --hostname 127.0.0.1 --port $Port }
 finally { Pop-Location }

@@ -184,3 +184,10 @@
   .moneySummary { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .moneySummary>div:last-child { grid-column: 1/-1; }
 }
+
+.overnightPanel, .overnightDetails { display: grid; gap: 12px; overflow-wrap: anywhere; }
+.overnightPanel { margin-bottom: 16px; }
+.overnightDetails { background: #f4f8f9; border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+.overnightDetails details > ul { padding-left: 20px; margin-top: 6px; }
+.overnightPanel > button { justify-self: start; }
+.overnightDetails form { max-width: 580px; }

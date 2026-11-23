@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { OvernightDesk } from "./overnight";
 import { TeamError, type CaseHistory, type Employee, type HistoryKind, type TeamCase, type TeamCaseDetail, type TeamCommand } from "./contracts";
 
 import type { CaseComparison, CaseEvidence, ComparisonEvidence, ImportSummary, RefundFinding, RefundImport, RefundImportResult, Rejection, SavedFinding } from "./refund-csv";
@@ -48,6 +49,7 @@ export class TeamStore {
   readonly refundRequests: RefundRequestStore;
   readonly alerts: RefundAlertStore;
   readonly demo?: DemoShift;
+  private readonly overnight?: OvernightDesk;
   private readonly demoSales?: DemoSales;
   private readonly drawers?: CashDrawers;
 
@@ -127,6 +129,7 @@ export class TeamStore {
         this.demo = new DemoShift(this.db);
         this.demoSales = new DemoSales(this.db, this.now);
         this.drawers = new CashDrawers(this.db, this.now);
+        this.overnight = new OvernightDesk(this.db, this.drawers, this.now);
       }
     } catch (error) {
       this.db.close();
@@ -501,6 +504,25 @@ export class TeamStore {
         this.drawers?.recordActivity(employee, sale, id, "payout", -cents(before.terms.amount));
       }
       return result;
+    });
+  }
+
+  overnightCommand(employee: Employee, token: string, command: Extract<TeamCommand, {
+    action: "overnightDesk" | "overnightOwner" | "setOvernightCoverage" | "claimOvernightCase" |
+      "requestOvernightFollowUp" | "replyOvernight";
+  }>) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      const desk = this.overnight;
+      if (!desk) throw new TeamError("COVERAGE_DENIED", 404);
+      switch (command.action) {
+        case "overnightDesk": return desk.desk(employee, command.id);
+        case "overnightOwner": return desk.owner(employee);
+        case "setOvernightCoverage": return desk.setCoverage(employee, command.active);
+        case "claimOvernightCase": return desk.claim(employee, command.id);
+        case "requestOvernightFollowUp": return desk.handoff(employee, command.id, command.requestId, command.checked, command.question);
+        case "replyOvernight": return desk.reply(employee, command.id, command.requestId, command.text);
+      }
     });
   }
 
