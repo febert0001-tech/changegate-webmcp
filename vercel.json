@@ -16,6 +16,7 @@
       "feat/square-sandbox-refunds": false,
       "feat/paypal-disabled-provider": false,
       "feat/changegate-cloudflare-access": false,
+      "feat/changegate-guest-revocation": false,
       "main": false
     }
   }

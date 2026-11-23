@@ -64,8 +64,9 @@ export class DemoInvites {
   }
 
   revoke(id: string) {
-    this.db.prepare("UPDATE demo_invites SET revoked_at=? WHERE id=? AND revoked_at IS NULL AND expires_at>?")
-      .run(this.clock(), id, this.clock());
+    const now = this.clock();
+    this.db.prepare("UPDATE demo_invites SET revoked_at=?, session_hash=NULL WHERE id=? AND revoked_at IS NULL AND expires_at>?")
+      .run(now, id, now);
   }
 
   redeem(recipient: string, token: string, code: string, identity?: AccessIdentity) {
