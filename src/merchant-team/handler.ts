@@ -47,7 +47,7 @@ async function readCommand(request: Request): Promise<unknown> {
 }
 
 const hostedDemoActions = new Set([
-  "listPilots", "openPilot", "startPilot", "inspectPilotCsv", "attachPilotFile", "savePilotBaseline", "revealPilot", "decidePilotIssue", "addPilotMiss", "savePilotTime", "savePilotDecision",
+  "listPilots", "openPilot", "startPilot", "loadFictionalPilotFile", "savePilotBaseline", "revealPilot", "decidePilotIssue", "addPilotMiss", "savePilotTime", "savePilotDecision",
   "overnightDesk", "overnightOwner", "coverageSettings", "grantCoverage", "startDemoCoverage", "revokeCoverage", "claimOvernightCase", "requestOvernightFollowUp", "replyOvernight", "reassignOvernightCase",
   "signIn", "signOut", "session", "workspace", "demoShift", "shiftOverview", "startDemoShift", "nextDemoEvent", "replayDemoShift",
   "replayHeldDemoRefund",
@@ -130,7 +130,12 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
       return json({ error: "ORIGIN_DENIED" }, 403);
     }
     try {
-      const parsed = teamCommand.safeParse(await readCommand(request));
+      const input = await readCommand(request);
+      if (hostedDemo && input && typeof input === "object" && "action" in input &&
+          (input.action === "inspectPilotCsv" || input.action === "attachPilotFile")) {
+        return json({ error: "PILOT_SYNTHETIC_ONLY" }, 403);
+      }
+      const parsed = teamCommand.safeParse(input);
       if (!parsed.success) return json({ error: "INVALID_COMMAND" }, 400);
       const command = parsed.data;
       if (hostedDemo && (!hostedDemoActions.has(command.action) ||
@@ -177,6 +182,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "listPilots":
             case "openPilot":
             case "startPilot":
+            case "loadFictionalPilotFile":
             case "inspectPilotCsv":
             case "attachPilotFile":
             case "savePilotBaseline":

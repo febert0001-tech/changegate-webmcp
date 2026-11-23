@@ -60,6 +60,7 @@ if (-not ((Test-Path -LiteralPath $demoRoster -PathType Leaf) -and (Test-Path -L
 }
 if ($PrepareOnly) { return }
 
+$env:NEXT_TELEMETRY_DISABLED = '1'
 $env:CHANGEGATE_TEAM_MODE = 'demo'
 $env:CHANGEGATE_TEAM_ORIGIN = "http://127.0.0.1:$Port"
 $env:CHANGEGATE_TEAM_DB = Join-Path $demoState 'synthetic-demo.sqlite'

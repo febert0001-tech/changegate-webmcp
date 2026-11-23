@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 import type { TeamCommand, TeamSession } from "../../merchant-team/contracts";
 import { pilotDecisions, pilotOutcomes, pilotSides } from "../../merchant-team/pilot-contracts";
+import { pilotSummaryText } from "../../merchant-team/pilot-summary";
 import type { PilotScope, PilotView } from "../../merchant-team/pilot-review";
 import { formatUsd } from "../../merchant-team/refund-comparison";
 import { refundMapping, type ExportSide } from "../../merchant-team/refund-csv";
@@ -30,7 +31,7 @@ function Minutes({ label, name, value }: {label: string; name: string; value?: n
   return <label>{label}<input type="number" name={name} min="0" max="10080" step="any" defaultValue={value ?? ""} placeholder="Unmeasured" /></label>;
 }
 
-function PilotSource({ side, view, busy, request, run, save }: { side: Mode; view: PilotView; busy: boolean;
+function PilotSource({ side, view, busy, request, run, save, fictionalOnly }: { side: Mode; view: PilotView; busy: boolean; fictionalOnly: boolean;
   request: Request; run: Run; save: Save }) {
   const [file, setFile] = useState<FileSelection>();
   const source = view.sources.find(item => item.side === side);
@@ -51,7 +52,10 @@ function PilotSource({ side, view, busy, request, run, save }: { side: Mode; vie
         {row.rejected && <p>{rejections.get(row.line)?.join(" ")}</p>}
       </li>)}</ul>
     </details>}
-    <form onSubmit={form(() => {
+    {fictionalOnly ? !source && <button type="button" disabled={busy} onClick={() =>
+      save({ action: "loadFictionalPilotFile", id: view.scope.id, source: side })}>
+      Load fictional {sourceLabel(side).toLowerCase()} export
+    </button> : <form onSubmit={form(() => {
       if (mapping.success && file) save({ action: "attachPilotFile", id: view.scope.id, source: side, scopeConfirmed: true,
         file: { text: file.text, name: file.name, mapping: mapping.data } }, () => setFile(undefined));
     })}>
@@ -74,7 +78,7 @@ function PilotSource({ side, view, busy, request, run, save }: { side: Mode; vie
           I verified the redacted USD export matches this location, register, week, and time zone.</label>
         <button type="submit" disabled={busy || !mapping.success}>{source ? "Reimport " : "Attach "}{sourceLabel(side).toLowerCase()} export</button>
       </>}
-    </form>
+    </form>}
   </section>;
 }
 
@@ -129,7 +133,30 @@ function PilotIssue({ issue, view, busy, save }: { issue: PilotView["issues"][nu
   </article>;
 }
 
-function Scorecard({ view, save, busy }: {view: PilotView; save: Save; busy: boolean}) {
+function PilotSummaryExport({ view }: { view: PilotView }) {
+  const [showPreview, setShowPreview] = useState(false);
+  const report = pilotSummaryText(view);
+  function download() {
+    const url = URL.createObjectURL(new Blob([report], { type: "text/plain;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "changegate-pilot-summary-" + view.scope.week + ".txt";
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  return <section className={styles.overnightDetails} aria-label="Pilot summary export">
+    <button type="button" aria-expanded={showPreview} onClick={() => setShowPreview(!showPreview)}>
+      {showPreview ? "Hide export preview" : "Export pilot summary"}
+    </button>
+    {showPreview && <>
+      <h3>Export preview</h3>
+      <pre aria-label="Pilot summary preview" className={styles.pilotExportPreview}>{report}</pre>
+      <button type="button" className={styles.primary} onClick={download}>Download summary</button>
+    </>}
+  </section>;
+}
+
+function Scorecard({ view, save, busy, exportAllowed }: {view: PilotView; save: Save; busy: boolean; exportAllowed: boolean}) {
   const score = view.score;
   return <section className={styles.overnightPanel} aria-label="Pilot scorecard">
     <h2>Pilot scorecard</h2>
@@ -148,6 +175,7 @@ function Scorecard({ view, save, busy }: {view: PilotView; save: Save; busy: boo
       <p><strong>{minutesText(view.time.waiting)}</strong><br />Waiting</p>
       <p><strong>{view.decision?.value ?? "Undecided"}</strong><br />Owner decision</p>
     </div>
+    {exportAllowed && <PilotSummaryExport view={view} />}
     {view.decision && <p>{view.decision.actor} · {view.decision.at}{view.decision.note && " · " + view.decision.note}</p>}
     <div className={styles.pilotGrid}>
       <form className={styles.overnightDetails} onSubmit={form(data=>save({action:"savePilotTime",id:view.scope.id,
@@ -212,7 +240,7 @@ export function PilotReviewPanel({ id, session, send, onSessionError }: { id?: s
       {id && <Link href="/pilot-review" prefetch={false}>All pilot reviews</Link>}</header>
     {error && <p role="alert" className={styles.formError}>{error}</p>}
     {!id && <>
-      <p>{session.syntheticOnly ? "Synthetic demo only. Use fictional exports." : "Use merchant-authorized, redacted exports or label a synthetic run."} Pilot reviews read exports and save review records.</p>
+      <p>{session.syntheticOnly ? "The online demo uses bundled fictional exports." : "Use merchant-authorized, redacted exports or label a synthetic run."} Pilot reviews read exports and save review records.</p>
       <form className={styles.overnightDetails} onSubmit={form(data => run(async () => {
         const saved = await request<PilotView>({action:"startPilot",location:field(data,"location"),register:field(data,"register"),
           week:field(data,"week"),timeZone:field(data,"timeZone"),synthetic:Boolean(session.syntheticOnly || data.has("synthetic"))});
@@ -238,15 +266,22 @@ export function PilotReviewPanel({ id, session, send, onSessionError }: { id?: s
     </>}
     {id && !view && !error && <p role="status">Loading pilot review…</p>}
     {view && <>
-      <p><strong>{view.scope.location} · {view.scope.register}</strong> · {view.scope.week} through {view.scope.end} · {view.scope.timeZone}{view.scope.synthetic ? " · Synthetic acceptance run" : ""}</p>
-      <div className={styles.pilotGrid}>{pilotSides.map(side=><PilotSource key={side} side={side} view={view} busy={busy} request={request} run={run} save={save} />)}</div>
+      <section className={styles.overnightDetails} aria-label="Pilot import scope">
+        <h3>Pilot import scope</h3>
+        <p><strong>{session.merchantName} · {view.scope.location} · {view.scope.register}</strong></p>
+        <p>{view.scope.week} through {view.scope.end} · {view.scope.timeZone}{view.scope.synthetic ? " · Synthetic acceptance run" : ""}</p>
+        <p>{session.syntheticOnly ? "Load either fictional export to begin. Load both to compare the week."
+          : "Use redacted USD exports for this scope. Source rows and review notes stay on this laptop."}</p>
+      </section>
+      <div className={styles.pilotGrid}>{pilotSides.map(side=><PilotSource key={side} side={side} view={view} busy={busy}
+        request={request} run={run} save={save} fictionalOnly={Boolean(session.syntheticOnly)} />)}</div>
       <p>{view.comparisonReady ? "Both exports present. Comparison uses exact refund references and USD amounts." : view.sources.length
         ? "Worksheet only. Review available rows and validation errors. Cross-source discrepancies and matches remain unmeasured."
         : "Attach either export to start worksheet review."}</p>
       <PilotBaseline view={view} save={save} busy={busy} />
       {view.comparisonReady && !view.revealedAt && <button type="button" className={styles.primary} disabled={busy}
         onClick={()=>save({action:"revealPilot",id:view.scope.id})}>Show ChangeGate findings</button>}
-      <Scorecard view={view} save={save} busy={busy} />
+      <Scorecard view={view} save={save} busy={busy} exportAllowed={!session.syntheticOnly} />
       {view.revealedAt && <>
         <h3>Exception review</h3>
         {view.issues.map(issue=><PilotIssue key={issue.id} issue={issue} view={view} busy={busy} save={save} />)}

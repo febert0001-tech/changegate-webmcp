@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
+import type { z } from "zod";
 import type { DatabaseSync } from "node:sqlite";
 import type { CaseHistory, Employee, HistoryKind } from "./contracts";
-import type { PilotCommand, pilotDecisions, pilotOutcomes } from "./pilot-contracts";
+import { fictionalPilotFile } from "./pilot-fixtures";
+import type { PilotCommand, pilotFile, pilotDecisions, pilotOutcomes } from "./pilot-contracts";
 import { TeamError } from "./error";
 import { canReview } from "./refund-requests";
 import { compareReviewedRefunds } from "./refund-comparison";
@@ -104,8 +106,7 @@ export class PilotReviews {
     return { ...issue, id, revision: 0 };
   }
 
-  private attach(state: State, command: Extract<PilotCommand,{action:"attachPilotFile"}>) {
-    const { file, source } = command;
+  private attach(state: State, source: ExportSide, file: z.infer<typeof pilotFile>) {
     const key = createHash("sha256").update(file.text).update(JSON.stringify(file.mapping)).digest("hex");
     const prior = state.files[source];
     if (prior?.key === key) return;
@@ -150,6 +151,9 @@ export class PilotReviews {
 
   handle(employee: Employee, command: PilotCommand, syntheticOnly: boolean) {
     if (!canReview(employee.role)) throw new TeamError("PILOT_ROLE_REQUIRED", 403);
+    if (syntheticOnly && (command.action === "inspectPilotCsv" || command.action === "attachPilotFile")) {
+      throw new TeamError("PILOT_SYNTHETIC_ONLY", 403);
+    }
     switch (command.action) {
       case "listPilots": return this.db.prepare(`SELECT ${fields} FROM team_pilot_reviews
         WHERE merchant_id=? AND (?=0 OR synthetic=1) ORDER BY week DESC, rowid DESC`).all(employee.merchantId, Number(syntheticOnly)) as unknown as Scope[];
@@ -165,7 +169,11 @@ export class PilotReviews {
     const stamp = { actor: employee.name, at: now };
     switch (command.action) {
       case "openPilot": return this.project(employee, scope, state);
-      case "attachPilotFile": this.attach(state, command); break;
+      case "attachPilotFile": this.attach(state, command.source, command.file); break;
+      case "loadFictionalPilotFile":
+        if (!syntheticOnly) throw new TeamError("PILOT_NOT_FOUND", 404);
+        this.attach(state, command.source, fictionalPilotFile(command.source));
+        break;
       case "savePilotBaseline":
         if (state.baseline) throw new TeamError("PILOT_BASELINE_RECORDED", 409);
         if (command.minutes === null && command.exceptions === null) throw new TeamError("PILOT_BASELINE_EMPTY", 422);

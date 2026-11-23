@@ -1,3 +1,4 @@
+import { pilotSummaryText } from "../src/merchant-team/pilot-summary";
 import type { PilotView } from "../src/merchant-team/pilot-review";
 import { coverageInstant } from "../src/merchant-team/coverage-time";
 import { overnightAccounts, type OvernightQueue, type OvernightOwner, type CoverageSettingsView } from "../src/merchant-team/overnight";
@@ -2251,7 +2252,7 @@ describe("read-only closed-week pilot", () => {
   it("scores three flags and one missed issue and deduplicates uploads across reset and restart", async () => {
     const users: Employee[] = roster.map(member => ({ ...member, role: member.username === "maya" ? "cashier" : "manager" }));
     const clock = () => "2026-11-23T15:00:00.000Z";
-    const server = app(undefined, users, clock, undefined, undefined, true, true);
+    const server = app(undefined, users, clock, undefined, undefined, true);
     const owner = await signIn(server,"jordan");
     const outsider = await signIn(server,"alex");
     const cashier = await signIn(server,"maya");
@@ -2313,6 +2314,14 @@ describe("read-only closed-week pilot", () => {
     expect(saved.savedMinutes).toBe(12);
     expect(saved.issues.find(item=>item.outcome==="missed")?.rows.map(row=>row.side)).toEqual(["Merchant","Processor"]);
     expect(saved.decision?.value).toBe("continue");
+    const report = pilotSummaryText({ ...saved, time: { ...saved.time, waiting: null } });
+    expect(report).toContain("SYNTHETIC ACCEPTANCE RUN");
+    expect(report).toContain("Confirmed among decided ChangeGate flags: 1 of 2");
+    expect(report).toContain("Waiting: Unmeasured");
+    expect(report).toContain("Owner decision: continue");
+    for (const privateValue of ["P-missed", "P-amount", "Jordan Lee", "Reviewed by finance", "Harbor Fuel", "Repeat independently."]) {
+      expect(report).not.toContain(privateValue);
+    }
     await owner.send(file("Merchant",merchant));
     await owner.send(file("Processor",processor));
     await owner.send({action:"revealPilot",id});
@@ -2329,7 +2338,7 @@ describe("read-only closed-week pilot", () => {
 
   it("labels a late baseline and leaves time savings unmeasured", async () => {
     const users: Employee[] = roster.map(member => ({ ...member, role:"manager" }));
-    const server = app(undefined, users, () => "2026-11-23T15:00:00.000Z", undefined, undefined, true, true);
+    const server = app(undefined, users, () => "2026-11-23T15:00:00.000Z", undefined, undefined, true);
     const owner=await signIn(server,"jordan");
     const pilot=await owner.send<PilotView>({action:"startPilot",location:"Harbor Fuel",register:"Register 1",
       week:"2026-11-16",timeZone:"America/New_York",synthetic:true});
@@ -2341,5 +2350,45 @@ describe("read-only closed-week pilot", () => {
     const saved=await owner.send<PilotView>({action:"savePilotTime",id,review:10,setup:null,waiting:null});
     expect(saved.baseline?.beforeFindings).toBe(false);
     expect(saved.savedMinutes).toBeNull();
+    expect(pilotSummaryText(saved)).toContain("Confirmed among decided ChangeGate flags: Unmeasured");
+    expect(pilotSummaryText(saved)).toContain("ChangeGate setup: Unmeasured");
   });
+});
+
+it("hosted pilot accepts only server-bundled fictional files", async () => {
+  const users: Employee[] = roster.map(user => ({...user, role:"manager"}));
+  const server = app(undefined, users, () => "2026-11-23T15:00:00.000Z", undefined, undefined, true, true);
+  const owner = await signIn(server,"jordan");
+  const {scope} = await owner.send<PilotView>({action:"startPilot",location:"Harbor Fuel",register:"Register 1",week:"2026-11-16",
+    timeZone:"America/New_York",synthetic:true});
+  const marker = "LOCAL-BOUNDARY-UNIT-CHECK";
+  const file = {name:"source.csv",text:"reference,amount,currency\n"+marker+",10,USD",mapping:{reference:0,amount:1,currency:2}};
+  const open = {action:"openPilot",id:scope.id};
+  const raw = [
+    {action:"inspectPilotCsv",text:file.text},
+    {action:"attachPilotFile",id:scope.id,source:"Merchant",scopeConfirmed:true,file},
+  ];
+  for(const command of raw) {
+    const denied = await owner.request(command);
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toEqual({error:"PILOT_SYNTHETIC_ONLY"});
+  }
+  const legacy = [
+    {action:"inspectCsv",text:file.text},
+    {action:"previewCsv",text:file.text,mapping:file.mapping},
+    {action:"importCsv",text:file.text,mapping:file.mapping},
+    ...["previewComparison","saveComparison"].map(action=>({action,input:{merchant:file,processor:file,
+      period:{start:scope.week,end:scope.end}}})),
+  ];
+  for(const command of legacy) expect((await owner.request(command)).status).toBe(404);
+  const load = {action:"loadFictionalPilotFile",id:scope.id,source:"Merchant"};
+  expect((await owner.request({...load,file})).status).toBe(400);
+  expect((await owner.send<PilotView>(open)).sources).toEqual([]);
+  const register = await owner.send<PilotView>(load);
+  expect(register.sources).toMatchObject([{name:"fictional-register.csv",accepted:4}]);
+  expect(register.comparisonReady).toBe(false);
+  await owner.send({...load,source:"Processor"});
+  const compared = await owner.send<PilotView>({action:"revealPilot",id:scope.id});
+  expect(compared.score).toMatchObject({flags:3,unresolved:3});
+  expect(JSON.stringify(compared)).not.toContain(marker);
 });

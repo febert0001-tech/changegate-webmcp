@@ -15,6 +15,7 @@ export const pilotCommands = [
   z.strictObject({ action: z.literal("openPilot"), id }),
   z.strictObject({ action: z.literal("startPilot"), location: text(120), register: text(120),
     week: z.iso.date(), timeZone: text(100), synthetic: z.boolean() }),
+  z.strictObject({ action: z.literal("loadFictionalPilotFile"), id, source: z.enum(pilotSides) }),
   z.strictObject({ action: z.literal("inspectPilotCsv"), text: csvText }),
   z.strictObject({ action: z.literal("attachPilotFile"), id, source: z.enum(pilotSides), scopeConfirmed: z.literal(true), file: pilotFile }),
   z.strictObject({ action: z.literal("savePilotBaseline"), id, minutes,

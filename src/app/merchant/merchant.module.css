@@ -203,3 +203,4 @@
 .pilotRows li:target { border-left: 4px solid var(--teal); padding-left: 8px; }
 .shell .pilotCheck { display: flex; align-items: start; gap: 8px; }
 .shell .pilotCheck input { width: auto; min-height: 0; }
+.pilotExportPreview { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9rem; }
