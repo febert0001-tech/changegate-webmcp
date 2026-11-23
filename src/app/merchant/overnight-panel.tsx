@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
 import type { TeamCommand, TeamSession } from "../../merchant-team/contracts";
 import type { OvernightOwner, OvernightQueue } from "../../merchant-team/overnight";
+import { coverageUpdated } from "../../merchant-team/coverage-time";
 import { money } from "../../merchant-team/refund-requests";
 import styles from "./merchant.module.css";
 
@@ -77,7 +78,8 @@ export function OvernightReviewer({ id, session, send, onSessionError }: Props &
 
   const item = view?.detail;
   const claimant = item?.progress?.claimant;
-  const canAsk = claimant?.username === session.username && (!item?.progress?.handoff || item.progress.handoff.reply);
+  const grantId = claimant?.grantId;
+  const canAsk = grantId && claimant?.username === session.username && (!item?.progress?.handoff || item.progress.handoff.reply);
   return <section className={styles.card + " " + styles.overnightPanel} aria-label="Overnight review desk">
     <h2>Overnight review desk</h2>
     <p className={styles.fieldHint}>Managed-service demonstration · Simulated coverage</p>
@@ -90,9 +92,7 @@ export function OvernightReviewer({ id, session, send, onSessionError }: Props &
         <Link className={styles.shiftAttentionLink} href={`/overnight-review?id=${row.id}`} prefetch={false}>
           <strong>{row.location} · {amount(row)}</strong>
           <p>{row.reason || "Drawer discrepancy requires review"}</p>
-          <p className={styles.fieldHint}>Waiting {waiting(row.openedAt)} · Next action: {
-            followUp(row) && !followUp(row)?.reply ? "Owner" : row.progress?.claimant.actor ?? "Available to claim"
-          }</p>
+          <p className={styles.fieldHint}>Waiting {waiting(row.openedAt)} · Next action: {row.responsible}</p>
         </Link></li>)}
     </ul>}
     {item && <div className={styles.overnightDetails}>
@@ -109,14 +109,15 @@ export function OvernightReviewer({ id, session, send, onSessionError }: Props &
             entry.cents === null ? "Explanation" : "Recount " + money(entry.cents)} · {entry.note}</li>)}
         </ul>
       </details>
-      {claimant && <p>Claimed by {claimant.actor} · {when(claimant.at)}</p>}
+      <p>Responsible now: {item.responsible}</p>
+      {claimant && <p>Assigned to {claimant.actor} · {when(claimant.at)}</p>}
       {item.canClaim && <button type="button" className={styles.primary} disabled={busy}
-        onClick={() => void write({ action: "claimOvernightCase", id: item.id })}>{claimant ? "Take over case" : "Claim case"}</button>}
+        onClick={() => void write({ action: "claimOvernightCase", id: item.id })}>Claim case</button>}
       <Handoff item={item} />
-      {canAsk && <form onSubmit={(event: FormEvent<HTMLFormElement>) => {
+      {canAsk && <form key={grantId} onSubmit={(event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
         const fields = new FormData(event.currentTarget);
-        void write({ action: "requestOvernightFollowUp", id: item.id, requestId: crypto.randomUUID(),
+        void write({ action: "requestOvernightFollowUp", id: item.id, grantId, requestId: crypto.randomUUID(),
           checked: String(fields.get("checked")), question: String(fields.get("question")) });
       }}>
         <label>What you checked<textarea name="checked" maxLength={1200} required /></label>
@@ -146,8 +147,14 @@ export function OvernightOwnerPanel({ session, send, onSessionError }: Props) {
       } finally { loading = false; }
     }
     void load();
-    const timer = window.setInterval(() => { if (!busy && document.visibilityState === "visible") void load(); }, 5000);
-    return () => { controller.abort(); window.clearInterval(timer); };
+    const refresh = () => { if (!busy) void load(); };
+    window.addEventListener(coverageUpdated, refresh);
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 2000);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+      window.removeEventListener(coverageUpdated, refresh);
+    };
   }, [sessionVersion, send, onSessionError, busy]);
 
   async function write(command: TeamCommand) {
@@ -166,12 +173,20 @@ export function OvernightOwnerPanel({ session, send, onSessionError }: Props) {
     {view && <>
       {!view.cases.length && <p>No overnight handoffs yet.</p>}
       {view.cases.map(item => {
-        const handoff = followUp(item)!;
+        const handoff = followUp(item);
+        const pending = handoff && !handoff.reply;
+        const ended = item.progress?.shiftEnd;
         return <article key={item.id} className={styles.overnightDetails}>
-          <h3>{item.location} · {handoff.reply ? amount(item) : money(Math.abs(item.variance)) + " awaiting your follow-up"}</h3>
+          <h3>{item.location} · {pending ? money(Math.abs(item.variance)) + " awaiting your follow-up" : amount(item)}</h3>
+          <p><strong>Responsible now: {item.responsible}</strong></p>
+          {ended && <>
+            {!pending && <p><strong>Reviewer shift ended — needs reassignment</strong></p>}
+            <p>{ended.reviewer.actor} · {ended.reason} · {when(ended.at)}</p>
+          </>}
+          {item.lastAction && <p>Last completed action: {item.lastAction.kind} · {item.lastAction.actor} · {when(item.lastAction.occurredAt)}</p>}
           <Handoff item={item} />
           <Link href={`/merchant/${item.id}`} prefetch={false}>Open same case and full history</Link>
-          {!handoff.reply && <form onSubmit={(event: FormEvent<HTMLFormElement>) => {
+          {pending && <form onSubmit={(event: FormEvent<HTMLFormElement>) => {
             event.preventDefault();
             const fields = new FormData(event.currentTarget);
             void write({ action: "replyOvernight", id: item.id, requestId: handoff.requestId, text: String(fields.get("reply")) });
@@ -179,6 +194,18 @@ export function OvernightOwnerPanel({ session, send, onSessionError }: Props) {
             <label>Your reply<textarea name="reply" maxLength={1200} required /></label>
             <button type="submit" className={styles.primary} disabled={busy}>Reply on case</button>
           </form>}
+          {ended && !pending && (item.eligible.length ? <form onSubmit={(event: FormEvent<HTMLFormElement>) => {
+            event.preventDefault();
+            const fields = new FormData(event.currentTarget);
+            void write({ action: "reassignOvernightCase", id: item.id, endedAt: ended.at,
+              reviewer: String(fields.get("nextReviewer")) });
+          }}>
+            <label>Next reviewer<select name="nextReviewer" required defaultValue="">
+              <option value="">Select a reviewer with active coverage</option>
+              {item.eligible.map(reviewer => <option value={reviewer.username} key={reviewer.username}>{reviewer.name}</option>)}
+            </select></label>
+            <button type="submit" className={styles.primary} disabled={busy}>Assign next reviewer</button>
+          </form> : <p>Grant another reviewer active coverage for this store to reassign the case.</p>)}
         </article>;
       })}
     </>}

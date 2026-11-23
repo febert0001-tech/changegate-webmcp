@@ -2122,9 +2122,9 @@ describe("managed-service demonstration", () => {
     const results = await Promise.all(racers.map(user => user.request(claim)));
     expect(results.map(result => result.status).sort()).toEqual([200, 409]);
     const winner = racers[results.findIndex(result => result.ok)]!;
-    await winner.send(claim);
+    const claimed = await winner.send<NonNullable<OvernightQueue["detail"]>>(claim);
     const requestId = randomUUID();
-    const ask = { action: "requestOvernightFollowUp", id, requestId, checked: "Compared drawer entries with the first count.",
+    const ask = { action: "requestOvernightFollowUp", id, grantId: claimed.progress?.claimant?.grantId, requestId, checked: "Compared drawer entries with the first count.",
       question: "Can you verify the closing count?" };
     await winner.send(ask);
     await winner.send(ask);
@@ -2156,7 +2156,7 @@ describe("managed-service demonstration", () => {
     const { detail } = await original.json() as TeamWorkspaceView;
     expect(detail?.case.status).toBe("Investigating");
     expect(detail?.history.map(event => event.kind)).toEqual([
-      "Opened", "Coverage claimed", "Owner follow-up requested", "Owner replied", "Owner follow-up requested", "Owner replied",
+      "Opened", "Coverage claimed", "Owner follow-up requested", "Owner replied", "Owner follow-up requested", "Reviewer shift ended", "Owner replied",
     ]);
     const restoredOwner = await restored.request({ action: "overnightOwner" }, owner.key,
       { sessionVersion: owner.user.sessionVersion });
@@ -2169,4 +2169,79 @@ describe("managed-service demonstration", () => {
       { id, progress: { handoff: { question: nextAsk.question, reply: { text: reply.text } } } },
     ] });
   });
+
+  it("returns an investigation exactly once on startup and reassigns the same open case", async () => {
+    let now = "2026-11-24T10:59:00.000Z";
+    const clock = () => now;
+    const users: Employee[] = roster.map(member => ({ ...member, role: member.username === "maya" ? "cashier" : "manager" }));
+    for (const account of overnightAccounts) {
+      const salt = randomBytes(16);
+      users.push({ ...account, merchantName: "Harbor Goods", merchantId: "harbor", role: "reviewer",
+        salt: salt.toString("hex"), passwordHash: scryptSync(password, salt, 32).toString("hex") });
+    }
+    const server = app(undefined, users, clock, undefined, undefined, true, true);
+    const owner = await signIn(server, "jordan");
+    const cashier = await signIn(server, "maya");
+    const first = await signIn(server, "ivy-night");
+    const next = await signIn(server, "noah-night");
+    const drawerCase = async (cents: number) => {
+      const drawer = randomUUID();
+      await cashier.send({ action: "openCashDrawer", id: drawer, cents: 10000 });
+      await cashier.send({ action: "closeCashDrawer", id: drawer, cents });
+      const item = await owner.send<CashDrawerView>({ action: "openDrawerCase", id: drawer });
+      return item.drawer!.report!.caseId!;
+    };
+    const id = await drawerCase(9300);
+    const closed = await drawerCase(9500);
+    const ending = randomUUID();
+    await owner.send({ action: "grantCoverage", id: ending, location: "Harbor Fuel", reviewer: "ivy-night",
+      start: "2026-11-23T22:00", end: "2026-11-24T06:00" });
+    await owner.send({ action: "grantCoverage", id: randomUUID(), location: "Harbor Fuel", reviewer: "noah-night",
+      start: "2026-11-24T06:00", end: "2026-11-24T14:00" });
+    await owner.send({ action: "startDemoCoverage", id: randomUUID(), location: "Harbor Bar", reviewer: "sam-night" });
+    await first.send({ action: "claimOvernightCase", id });
+    await first.send({ action: "claimOvernightCase", id: closed });
+    await owner.send({ action: "record", id: closed, revision: 1, finding: "Reviewed count", nextAction: "Close as unexplained",
+      status: "Investigating" });
+    await owner.send({ action: "resolve", id: closed, revision: 2, drawerDisposition: "Closed with difference unexplained" });
+    const ownerCommand = { action: "overnightOwner" };
+    const before = await owner.send<OvernightOwner>(ownerCommand);
+    expect(before.cases).toHaveLength(1);
+    expect(before.cases[0]).toMatchObject({ id, responsible: "Ivy Brooks", variance: -700 });
+    expect((await next.request({ action: "overnightDesk", id })).status).toBe(403);
+    server.stop();
+
+    now = "2026-11-24T11:00:00.000Z";
+    const restarted = app(server.path, users, clock, undefined, undefined, true, true);
+    const send = (command: unknown, person = owner) =>
+      restarted.request(command, person.key, { sessionVersion: person.user.sessionVersion });
+    const readCase = async (caseId: string) => {
+      const response = await send({ action: "workspace", id: caseId });
+      return (await response.json() as TeamWorkspaceView).detail!;
+    };
+    const handoff = (await readCase(id)).history.filter(event => event.kind === "Reviewer shift ended");
+    expect(handoff).toHaveLength(1);
+    expect(handoff[0]).toMatchObject({ occurredAt: now, detail: expect.stringContaining("Ivy Brooks") });
+    const after = await (await send(ownerCommand)).json() as OvernightOwner;
+    expect(after.cases).toHaveLength(1);
+    expect(after.cases[0]).toMatchObject({ id, responsible: "Store owner", lastAction: { kind: "Coverage claimed" },
+      eligible: [{ username: "noah-night", name: "Noah Reed" }] });
+    expect((await readCase(closed)).case.status).toBe("Resolved");
+    expect((await readCase(closed)).history.some(event => event.kind === "Reviewer shift ended")).toBe(false);
+    const stale = { action: "requestOvernightFollowUp", id, grantId: ending, requestId: randomUUID(), checked: "Count",
+      question: "Please verify $93" };
+    expect((await send(stale, first)).status).toBe(403);
+    expect((await send({ action: "claimOvernightCase", id }, next)).status).toBe(409);
+    const assign = { action: "reassignOvernightCase", id, endedAt: now, reviewer: "noah-night" };
+    expect((await send({ ...assign, reviewer: "sam-night" })).status).toBe(409);
+    expect((await send({ ...assign, reviewer: "ivy-night" })).status).toBe(409);
+    const assigned = await (await send(assign)).json() as OvernightOwner;
+    expect(assigned.cases[0]).toMatchObject({ id, responsible: "Noah Reed", lastAction: { kind: "Coverage reassigned" } });
+    expect((await send(assign)).status).toBe(409);
+    expect((await readCase(id)).history.filter(event => event.kind === "Reviewer shift ended")).toHaveLength(1);
+    expect((await readCase(id)).history.filter(event => event.kind === "Coverage reassigned")).toHaveLength(1);
+    const week = await (await send({ action: "weeklyCashReview", week: "2026-11-23" })).json() as CashWeek;
+    expect(week.rows.map(row => row.close?.variance).sort()).toEqual([-500, -700]);
+  });
+
 });

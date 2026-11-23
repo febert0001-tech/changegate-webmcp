@@ -32,10 +32,10 @@ export class CoverageGrants {
       .all(merchant, reviewer, now, now, now).map(row => row.location as string);
   }
 
-  list(employee: Employee): CoverageGrant[] {
+  list(merchantId: string): CoverageGrant[] {
     const now = this.now();
     const rows = this.db.prepare(`SELECT ${columns} FROM team_coverage_grants
-      WHERE merchant_id=? ORDER BY granted_at DESC, rowid DESC`).all(employee.merchantId) as unknown as SavedGrant[];
+      WHERE merchant_id=? ORDER BY granted_at DESC, rowid DESC`).all(merchantId) as unknown as SavedGrant[];
     return rows.map(row => ({
       ...row, status: row.revokedAt ? "Revoked" : row.endsAt <= now ? "Ended" : row.startsAt > now ? "Scheduled" : "Active",
     }));

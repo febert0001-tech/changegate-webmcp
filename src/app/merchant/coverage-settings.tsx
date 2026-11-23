@@ -3,7 +3,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import type { TeamCommand, TeamSession } from "../../merchant-team/contracts";
 import type { CoverageSettingsView } from "../../merchant-team/overnight";
-import { coverageDateTime, coverageInstant, coveragePermissions } from "../../merchant-team/coverage-time";
+import { coverageDateTime, coverageInstant, coveragePermissions, coverageUpdated } from "../../merchant-team/coverage-time";
 import styles from "./merchant.module.css";
 
 type Props = {
@@ -80,6 +80,7 @@ export function CoverageSettings({ session, send, onSessionError }: Props) {
     try {
       setView(await send<CoverageSettingsView>(command, { sessionVersion }));
       setPreview(undefined);
+      window.dispatchEvent(new Event(coverageUpdated));
     } catch (error) { if (!onSessionError(error)) setError(errorMessage(error)); }
     finally { setBusy(false); }
   }

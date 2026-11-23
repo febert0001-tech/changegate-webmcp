@@ -47,7 +47,7 @@ async function readCommand(request: Request): Promise<unknown> {
 }
 
 const hostedDemoActions = new Set([
-  "overnightDesk", "overnightOwner", "coverageSettings", "grantCoverage", "startDemoCoverage", "revokeCoverage", "claimOvernightCase", "requestOvernightFollowUp", "replyOvernight",
+  "overnightDesk", "overnightOwner", "coverageSettings", "grantCoverage", "startDemoCoverage", "revokeCoverage", "claimOvernightCase", "requestOvernightFollowUp", "replyOvernight", "reassignOvernightCase",
   "signIn", "signOut", "session", "workspace", "demoShift", "shiftOverview", "startDemoShift", "nextDemoEvent", "replayDemoShift",
   "replayHeldDemoRefund",
   "recordDemoSale", "openDemoSale", "lookupOriginalSale",
@@ -178,6 +178,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "grantCoverage":
             case "startDemoCoverage":
             case "revokeCoverage":
+            case "reassignOvernightCase":
             case "claimOvernightCase":
             case "requestOvernightFollowUp":
             case "replyOvernight":

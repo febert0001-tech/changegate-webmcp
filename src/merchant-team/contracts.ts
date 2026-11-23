@@ -79,7 +79,8 @@ export const teamCommand = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("startDemoCoverage"), id, location: text(120), reviewer: slug }),
   z.strictObject({ action: z.literal("revokeCoverage"), id }),
   z.strictObject({ action: z.literal("claimOvernightCase"), id }),
-  z.strictObject({ action: z.literal("requestOvernightFollowUp"), id, requestId: id, checked: text(1200), question: text(1200) }),
+  z.strictObject({ action: z.literal("reassignOvernightCase"), id, reviewer: slug, endedAt: z.iso.datetime() }),
+  z.strictObject({ action: z.literal("requestOvernightFollowUp"), id, grantId: id, requestId: id, checked: text(1200), question: text(1200) }),
   z.strictObject({ action: z.literal("replyOvernight"), id, requestId: id, text: text(1200) }),
   z.strictObject({ action: z.literal("weeklyCashReview"), week: z.iso.date().optional(), location: text(120).optional() }),
   z.strictObject({ action: z.literal("openCashDrawer"), id, cents: drawerCount }),
@@ -108,7 +109,7 @@ export const teamCommand = z.discriminatedUnion("action", [
 export type TeamCommand = z.infer<typeof teamCommand>;
 
 export type HistoryKind = "Opened" | "Recorded finding" | "Assigned" | "Added note" | "Resolved" | "Imported evidence" |
-  "Coverage claimed" | "Owner follow-up requested" | "Owner replied";
+  "Coverage claimed" | "Owner follow-up requested" | "Owner replied" | "Reviewer shift ended" | "Coverage reassigned";
 export interface CaseHistory {
   sequence: number;
   actor: string;

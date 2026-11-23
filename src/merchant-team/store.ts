@@ -14,7 +14,7 @@ import { canReview, cents, checks, executionStopped, isDemoSaleReference, money,
 import { SquareSubmissionBlocked, type SquareSandbox } from "./square-sandbox";
 import type { PayPalProvider } from "./paypal-provider";
 import { RefundNotSubmitted, RefundSubmissionRejected } from "./paypal-contracts";
-import { DemoShift, demoEscalationMs, demoReferencePrefix } from "./demo-shift";
+import { DemoShift, demoEscalationMs, demoReferencePrefix, demoMerchant } from "./demo-shift";
 import { DemoSales, demoRegister } from "./demo-sales";
 import { summarizeShift } from "./shift-overview";
 import { CashDrawers } from "./cash-drawers";
@@ -129,7 +129,9 @@ export class TeamStore {
         this.demo = new DemoShift(this.db);
         this.demoSales = new DemoSales(this.db, this.now);
         this.drawers = new CashDrawers(this.db, this.now);
-        this.overnight = new OvernightDesk(this.db, this.drawers, this.now);
+        const overnight = new OvernightDesk(this.db, this.drawers, this.now);
+        this.overnight = overnight;
+        this.atomic(() => overnight.settle(demoMerchant));
       }
     } catch (error) {
       this.db.close();
@@ -509,22 +511,24 @@ export class TeamStore {
 
   overnightCommand(employee: Employee, token: string, roster: readonly Employee[], command: Extract<TeamCommand, {
     action: "overnightDesk" | "overnightOwner" | "coverageSettings" | "grantCoverage" | "startDemoCoverage" | "revokeCoverage" | "claimOvernightCase" |
-      "requestOvernightFollowUp" | "replyOvernight";
+      "requestOvernightFollowUp" | "replyOvernight" | "reassignOvernightCase";
   }>) {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
       const desk = this.overnight;
       if (!desk) throw new TeamError("COVERAGE_DENIED", 404);
+      desk.settle(employee.merchantId);
       switch (command.action) {
         case "overnightDesk": return desk.desk(employee, command.id);
-        case "overnightOwner": return desk.owner(employee);
+        case "overnightOwner": return desk.owner(employee, roster);
         case "coverageSettings": return desk.settings(employee, roster);
         case "grantCoverage": return desk.grant(employee, roster, command.id, command.location, command.reviewer, command);
         case "startDemoCoverage": return desk.grant(employee, roster, command.id, command.location, command.reviewer);
         case "revokeCoverage": return desk.revoke(employee, roster, command.id);
         case "claimOvernightCase": return desk.claim(employee, command.id);
-        case "requestOvernightFollowUp": return desk.handoff(employee, command.id, command.requestId, command.checked, command.question);
-        case "replyOvernight": return desk.reply(employee, command.id, command.requestId, command.text);
+        case "requestOvernightFollowUp": return desk.handoff(employee, command.id, command.grantId, command.requestId, command.checked, command.question);
+        case "replyOvernight": return desk.reply(employee, roster, command.id, command.requestId, command.text);
+        case "reassignOvernightCase": return desk.reassign(employee, roster, command.id, command.reviewer, command.endedAt);
       }
     });
   }

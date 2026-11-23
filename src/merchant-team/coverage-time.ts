@@ -1,5 +1,6 @@
 import { cashTimeZone } from "./weekly-cash-review";
 
+export const coverageUpdated = "changegate-coverage-updated";
 export const coverageTimeZone = cashTimeZone;
 export const coveragePermissions = ["Review drawer discrepancies", "Request owner follow-up"] as const;
 export type CoverageGrant = {

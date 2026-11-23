@@ -22,6 +22,8 @@ import { EvidenceRows, findingTitle } from "./refund-evidence";
 import { formatUsd } from "../../merchant-team/refund-comparison";
 
 const errors: Record<string, string> = {
+  COVERAGE_CASE_CHANGED: "The case changed. Refresh the handoff before assigning a reviewer.",
+  COVERAGE_REASSIGN_UNAVAILABLE: "Choose another reviewer with active coverage for this store.",
   COVERAGE_DENIED: "You do not have access to this overnight case or queue.",
   COVERAGE_EXPIRED: "You have no active coverage for this shift.",
   COVERAGE_INVALID_WINDOW: "Enter a valid Atlanta-time window with an end in the future.",
