@@ -9,6 +9,7 @@ import { StoreEntry } from "./store-entry";
 import { TransactionWorkspace } from "../transactions/transaction-workspace";
 import { ShiftOverviewPanel } from "./shift-overview-panel";
 import { CashDrawerPanel } from "./cash-drawer-panel";
+import { CoverageSettings } from "./coverage-settings";
 import { OvernightOwnerPanel, OvernightReviewer } from "./overnight-panel";
 import { canReview } from "../../merchant-team/refund-requests";
 import { WeeklyCashReviewPanel } from "./weekly-cash-review-panel";
@@ -22,7 +23,9 @@ import { formatUsd } from "../../merchant-team/refund-comparison";
 
 const errors: Record<string, string> = {
   COVERAGE_DENIED: "You do not have access to this overnight case or queue.",
-  COVERAGE_EXPIRED: "The coverage window has ended.",
+  COVERAGE_EXPIRED: "You have no active coverage for this shift.",
+  COVERAGE_INVALID_WINDOW: "Enter a valid Atlanta-time window with an end in the future.",
+  COVERAGE_GRANT_CONFLICT: "An overlapping grant already covers this reviewer and store.",
   COVERAGE_ALREADY_CLAIMED: "Another reviewer has claimed this case.",
   COVERAGE_CLAIM_REQUIRED: "Claim the case before asking the owner a question.",
   COVERAGE_REPLY_PENDING: "The current question is awaiting an owner reply.",
@@ -260,8 +263,10 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
       </div>}
     </header>
     {(notice || busy) && <p className={styles.inlineNotice} role="status">{notice || "Working…"}</p>}
-    {overview && session.demoShift && canReview(session.role) &&
-      <OvernightOwnerPanel key={session.sessionVersion} session={session} send={send} onSessionError={clearOnSessionError} />}
+    {overview && session.demoShift && canReview(session.role) && <>
+      <OvernightOwnerPanel key={session.sessionVersion} session={session} send={send} onSessionError={clearOnSessionError} />
+      <CoverageSettings key={session.sessionVersion} session={session} send={send} onSessionError={clearOnSessionError} />
+    </>}
     {overnight ? <section className={styles.card}><h2>Overnight review desk</h2>
       <p>Sign in with your assigned reviewer account to open the desk.</p></section> : cashWeek ? (
       <WeeklyCashReviewPanel key={session.sessionVersion} initial={cashWeek} session={session} send={send} onSessionError={clearOnSessionError} />

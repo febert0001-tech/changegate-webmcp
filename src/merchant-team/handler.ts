@@ -47,7 +47,7 @@ async function readCommand(request: Request): Promise<unknown> {
 }
 
 const hostedDemoActions = new Set([
-  "overnightDesk", "overnightOwner", "setOvernightCoverage", "claimOvernightCase", "requestOvernightFollowUp", "replyOvernight",
+  "overnightDesk", "overnightOwner", "coverageSettings", "grantCoverage", "startDemoCoverage", "revokeCoverage", "claimOvernightCase", "requestOvernightFollowUp", "replyOvernight",
   "signIn", "signOut", "session", "workspace", "demoShift", "shiftOverview", "startDemoShift", "nextDemoEvent", "replayDemoShift",
   "replayHeldDemoRefund",
   "recordDemoSale", "openDemoSale", "lookupOriginalSale",
@@ -174,11 +174,14 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
           switch (command.action) {
             case "overnightDesk":
             case "overnightOwner":
-            case "setOvernightCoverage":
+            case "coverageSettings":
+            case "grantCoverage":
+            case "startDemoCoverage":
+            case "revokeCoverage":
             case "claimOvernightCase":
             case "requestOvernightFollowUp":
             case "replyOvernight":
-              return json(store.overnightCommand(employee, token, command));
+              return json(store.overnightCommand(employee, token, roster, command));
             case "signOut":
               store.revokeSession(token);
               return json(null, 200, cookie("", 0));

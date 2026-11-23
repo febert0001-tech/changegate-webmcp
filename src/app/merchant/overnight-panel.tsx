@@ -60,7 +60,7 @@ export function OvernightReviewer({ id, session, send, onSessionError }: Props &
       } finally { loading = false; }
     }
     void load();
-    const timer = window.setInterval(() => { if (!busy) void load(); }, 5000);
+    const timer = window.setInterval(() => { if (!busy) void load(); }, 2000);
     return () => { controller.abort(); window.clearInterval(timer); };
   }, [sessionVersion, id, send, onSessionError, busy]);
 
@@ -80,7 +80,7 @@ export function OvernightReviewer({ id, session, send, onSessionError }: Props &
   const canAsk = claimant?.username === session.username && (!item?.progress?.handoff || item.progress.handoff.reply);
   return <section className={styles.card + " " + styles.overnightPanel} aria-label="Overnight review desk">
     <h2>Overnight review desk</h2>
-    <p className={styles.fieldHint}>Managed-service demonstration · Fictional coverage 10 p.m.–6 a.m. Eastern</p>
+    <p className={styles.fieldHint}>Managed-service demonstration · Simulated coverage</p>
     {error && <p className={styles.formError} role="alert">{error}</p>}
     {id && <Link href="/overnight-review" prefetch={false}>Back to work queue</Link>}
     {!view && !error && <p role="status">Loading cases…</p>}
@@ -109,8 +109,9 @@ export function OvernightReviewer({ id, session, send, onSessionError }: Props &
             entry.cents === null ? "Explanation" : "Recount " + money(entry.cents)} · {entry.note}</li>)}
         </ul>
       </details>
-      {claimant ? <p>Claimed by {claimant.actor} · {when(claimant.at)}</p>
-        : <button className={styles.primary} disabled={busy} onClick={() => void write({ action: "claimOvernightCase", id: item.id })}>Claim case</button>}
+      {claimant && <p>Claimed by {claimant.actor} · {when(claimant.at)}</p>}
+      {item.canClaim && <button type="button" className={styles.primary} disabled={busy}
+        onClick={() => void write({ action: "claimOvernightCase", id: item.id })}>{claimant ? "Take over case" : "Claim case"}</button>}
       <Handoff item={item} />
       {canAsk && <form onSubmit={(event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
@@ -159,13 +160,10 @@ export function OvernightOwnerPanel({ session, send, onSessionError }: Props) {
 
   return <section className={styles.card + " " + styles.overnightPanel} aria-label="Overnight handoff">
     <h2>Overnight handoff</h2>
-    <p className={styles.fieldHint}>Managed-service demonstration · Fictional coverage 10 p.m.–6 a.m. Eastern</p>
+    <p className={styles.fieldHint}>Managed-service demonstration · Simulated coverage</p>
     {error && <p className={styles.formError} role="alert">{error}</p>}
     {!view && !error && <p role="status">Loading handoffs…</p>}
     {view && <>
-      <button type="button" disabled={busy} onClick={() => void write({ action: "setOvernightCoverage", active: !view.until })}>
-        {view.until ? "End demo coverage" : "Start demo coverage"}
-      </button>
       {!view.cases.length && <p>No overnight handoffs yet.</p>}
       {view.cases.map(item => {
         const handoff = followUp(item)!;

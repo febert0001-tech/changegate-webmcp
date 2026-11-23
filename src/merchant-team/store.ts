@@ -507,8 +507,8 @@ export class TeamStore {
     });
   }
 
-  overnightCommand(employee: Employee, token: string, command: Extract<TeamCommand, {
-    action: "overnightDesk" | "overnightOwner" | "setOvernightCoverage" | "claimOvernightCase" |
+  overnightCommand(employee: Employee, token: string, roster: readonly Employee[], command: Extract<TeamCommand, {
+    action: "overnightDesk" | "overnightOwner" | "coverageSettings" | "grantCoverage" | "startDemoCoverage" | "revokeCoverage" | "claimOvernightCase" |
       "requestOvernightFollowUp" | "replyOvernight";
   }>) {
     return this.atomic(() => {
@@ -518,7 +518,10 @@ export class TeamStore {
       switch (command.action) {
         case "overnightDesk": return desk.desk(employee, command.id);
         case "overnightOwner": return desk.owner(employee);
-        case "setOvernightCoverage": return desk.setCoverage(employee, command.active);
+        case "coverageSettings": return desk.settings(employee, roster);
+        case "grantCoverage": return desk.grant(employee, roster, command.id, command.location, command.reviewer, command);
+        case "startDemoCoverage": return desk.grant(employee, roster, command.id, command.location, command.reviewer);
+        case "revokeCoverage": return desk.revoke(employee, roster, command.id);
         case "claimOvernightCase": return desk.claim(employee, command.id);
         case "requestOvernightFollowUp": return desk.handoff(employee, command.id, command.requestId, command.checked, command.question);
         case "replyOvernight": return desk.reply(employee, command.id, command.requestId, command.text);

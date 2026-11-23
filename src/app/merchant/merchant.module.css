@@ -191,3 +191,8 @@
 .overnightDetails details > ul { padding-left: 20px; margin-top: 6px; }
 .overnightPanel > button { justify-self: start; }
 .overnightDetails form { max-width: 580px; }
+
+.coverageFields { min-width: 0; border: 0; display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
+.coverageGrants { list-style: none; display: grid; gap: 10px; }
+.coverageGrants button { justify-self: start; }
+.overnightDetails > ul { padding-left: 20px; }

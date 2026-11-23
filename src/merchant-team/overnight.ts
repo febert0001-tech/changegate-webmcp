@@ -1,28 +1,28 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Employee } from "./contracts";
 import type { CashDrawers } from "./cash-drawers";
-import { demoMerchant } from "./demo-shift";
+import { CoverageGrants } from "./coverage-grants";
+import { coverageTimeZone } from "./coverage-time";
+import { demoLocations, demoMerchant } from "./demo-shift";
 import { TeamError } from "./error";
 import { canReview } from "./refund-requests";
 
 export const overnightAccounts = [
-  { username: "ivy-night", name: "Ivy Brooks", location: "Harbor Fuel" },
-  { username: "noah-night", name: "Noah Reed", location: "Harbor Fuel" },
-  { username: "sam-night", name: "Sam Ellis", location: null },
+  { username: "ivy-night", name: "Ivy Brooks" },
+  { username: "noah-night", name: "Noah Reed" },
+  { username: "sam-night", name: "Sam Ellis" },
 ] as const;
 
 type Stamp = { actor: string; at: string };
 type Handoff = Stamp & { requestId: string; checked: string; question: string; reply?: Stamp & { text: string } };
 type Progress = { claimant: Stamp & { username: string }; handoff?: Handoff };
 type CaseRow = { id: string; location: string; drawerId: string; reason: string; openedAt: string; progress: string | null };
-const coverageLength = 8 * 60 * 60 * 1000;
 
 export class OvernightDesk {
+  private readonly grants: CoverageGrants;
   constructor(private readonly db: DatabaseSync, private readonly drawers: CashDrawers, private readonly now: () => string) {
+    this.grants = new CoverageGrants(db, now);
     db.exec(`
-      CREATE TABLE IF NOT EXISTS team_overnight_coverage (
-        merchant_id TEXT PRIMARY KEY, expires_at TEXT NOT NULL
-      );
       CREATE TABLE IF NOT EXISTS team_overnight_cases (
         merchant_id TEXT NOT NULL, case_id TEXT NOT NULL, progress TEXT NOT NULL,
         PRIMARY KEY (merchant_id, case_id),
@@ -31,23 +31,15 @@ export class OvernightDesk {
     `);
   }
 
-  private coverage(employee: Employee) {
-    const row = this.db.prepare("SELECT expires_at AS until FROM team_overnight_coverage WHERE merchant_id=?")
-      .get(employee.merchantId) as { until: string } | undefined;
-    return row && row.until > this.now() ? row.until : null;
-  }
-
   private requireOwner(employee: Employee) {
     if (employee.merchantId !== demoMerchant || !canReview(employee.role)) throw new TeamError("COVERAGE_DENIED", 403);
   }
 
-  private reviewerLocation(employee: Employee) {
-    const account = overnightAccounts.find(account => account.username === employee.username);
-    if (employee.role !== "reviewer" || employee.merchantId !== demoMerchant || !account?.location) {
-      throw new TeamError("COVERAGE_DENIED", 403);
-    }
-    if (!this.coverage(employee)) throw new TeamError("COVERAGE_EXPIRED", 403);
-    return account.location;
+  private reviewerLocations(employee: Employee) {
+    if (employee.role !== "reviewer" || employee.merchantId !== demoMerchant) throw new TeamError("COVERAGE_DENIED", 403);
+    const locations = this.grants.activeLocations(employee.merchantId, employee.username);
+    if (!locations.length) throw new TeamError("COVERAGE_EXPIRED", 403);
+    return locations;
   }
 
   private rows(employee: Employee, location: string) {
@@ -73,10 +65,14 @@ export class OvernightDesk {
   }
 
   private caseEvidence(employee: Employee, id: string) {
-    const row = this.rows(employee, this.reviewerLocation(employee)).find(row => row.id === id);
+    const row = this.reviewerLocations(employee).flatMap(location => this.rows(employee, location)).find(row => row.id === id);
     if (!row) throw new TeamError("CASE_NOT_FOUND", 404);
     const evidence = this.drawers.coverageEvidence(employee, row.drawerId);
-    return { ...this.summary(row, evidence.report.variance), evidence };
+    const item = this.summary(row, evidence.report.variance);
+    const claimant = item.progress?.claimant.username;
+    const canClaim = claimant !== employee.username && (!claimant ||
+      !this.grants.activeLocations(employee.merchantId, claimant).includes(row.location));
+    return { ...item, evidence, canClaim };
   }
 
   desk(employee: Employee, id?: string): {
@@ -84,24 +80,38 @@ export class OvernightDesk {
     detail: ReturnType<OvernightDesk["caseEvidence"]> | null;
   } {
     if (id) return { cases: [], detail: this.caseEvidence(employee, id) };
-    const location = this.reviewerLocation(employee);
-    return { cases: this.rows(employee, location).map(row => this.queueItem(employee, row)), detail: null };
+    const rows = this.reviewerLocations(employee).flatMap(location => this.rows(employee, location));
+    return { cases: rows.map(row => this.queueItem(employee, row)), detail: null };
   }
 
   owner(employee: Employee) {
     this.requireOwner(employee);
-    const cases = this.rows(employee, "Harbor Fuel").filter(row => row.progress)
+    const cases = demoLocations.flatMap(location => this.rows(employee, location)).filter(row => row.progress)
       .map(row => this.queueItem(employee, row)).filter(row => row.progress?.handoff);
-    return { until: this.coverage(employee), cases };
+    return { cases };
   }
 
-  setCoverage(employee: Employee, active: boolean) {
+  settings(employee: Employee, roster: readonly Employee[]) {
     this.requireOwner(employee);
-    const now = this.now();
-    this.db.prepare(`INSERT INTO team_overnight_coverage VALUES (?, ?)
-      ON CONFLICT(merchant_id) DO UPDATE SET expires_at=excluded.expires_at`)
-      .run(employee.merchantId, active ? new Date(Date.parse(now) + coverageLength).toISOString() : now);
-    return this.owner(employee);
+    return { locations: demoLocations, timeZone: coverageTimeZone, grants: this.grants.list(employee),
+      reviewers: roster.filter(member => member.role === "reviewer" && member.merchantId === employee.merchantId)
+        .map(({ username, name }) => ({ username, name })) };
+  }
+
+  grant(employee: Employee, roster: readonly Employee[], id: string, location: string, username: string,
+    schedule?: { start: string; end: string }) {
+    this.requireOwner(employee);
+    const reviewer = roster.find(member => member.username === username && member.role === "reviewer" &&
+      member.merchantId === employee.merchantId);
+    if (!reviewer) throw new TeamError("COVERAGE_DENIED", 403);
+    this.grants.grant(employee, reviewer, id, location, schedule);
+    return this.settings(employee, roster);
+  }
+
+  revoke(employee: Employee, roster: readonly Employee[], id: string) {
+    this.requireOwner(employee);
+    this.grants.revoke(employee, id);
+    return this.settings(employee, roster);
   }
 
   private save(employee: Employee, id: string, progress: Progress, kind: string, detail: string, at: string) {
@@ -114,14 +124,16 @@ export class OvernightDesk {
 
   claim(employee: Employee, id: string) {
     const item = this.caseEvidence(employee, id);
-    if (item.progress) {
-      if (item.progress.claimant.username !== employee.username) throw new TeamError("COVERAGE_ALREADY_CLAIMED", 409);
-      return item;
+    const previous = item.progress?.claimant.username;
+    if (previous === employee.username) return item;
+    if (!item.canClaim) {
+      throw new TeamError("COVERAGE_ALREADY_CLAIMED", 409);
     }
     const at = this.now();
     const claimant = { username: employee.username, actor: employee.name, at };
-    this.save(employee, id, { claimant }, "Coverage claimed", "Claimed for overnight drawer review.", at);
-    return { ...item, progress: { claimant } };
+    const progress = { ...item.progress, claimant };
+    this.save(employee, id, progress, "Coverage claimed", "Claimed for overnight drawer review.", at);
+    return { ...item, progress, canClaim: false };
   }
 
   handoff(employee: Employee, id: string, requestId: string, checked: string, question: string) {
@@ -154,5 +166,6 @@ export class OvernightDesk {
 }
 
 export type OvernightQueue = ReturnType<OvernightDesk["desk"]>;
+export type CoverageSettingsView = ReturnType<OvernightDesk["settings"]>;
 export type OvernightOwner = ReturnType<OvernightDesk["owner"]>;
 
