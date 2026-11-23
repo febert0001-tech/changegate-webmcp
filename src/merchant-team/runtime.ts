@@ -16,7 +16,8 @@ export function teamWorkspace() {
     const env = process.env;
     const staging = env.CHANGEGATE_TEAM_MODE === "staging";
     const hostedDemo = env.CHANGEGATE_TEAM_MODE === "railway-demo";
-    const demo = hostedDemo || env.CHANGEGATE_TEAM_MODE === "demo";
+    const invitePreview = env.CHANGEGATE_TEAM_MODE === "invite-preview";
+    const demo = hostedDemo || invitePreview || env.CHANGEGATE_TEAM_MODE === "demo";
     if (env.CHANGEGATE_TEAM_MODE && !staging && !demo) return undefined;
     const origin = hostedDemo ? `https://${env.RAILWAY_PUBLIC_DOMAIN ?? ""}` :
       env.CHANGEGATE_TEAM_ORIGIN ?? (staging ? "" : "http://127.0.0.1:3190");
@@ -48,7 +49,7 @@ export function teamWorkspace() {
       const users = env.CHANGEGATE_TEAM_USERS_FILE;
       if (!/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(origin) || !localDb || !users ||
           !isAbsolute(localDb) || !isAbsolute(users) || localDb === users) return undefined;
-      if (demo && basename(localDb) !== "synthetic-demo.sqlite") return undefined;
+      if (demo && basename(localDb) !== (invitePreview ? "invite-preview.sqlite" : "synthetic-demo.sqlite")) return undefined;
       db = localDb;
       config = JSON.parse(readFileSync(users, "utf8"));
     }
@@ -74,7 +75,7 @@ export function teamWorkspace() {
       const square = demo ? undefined : configuredSquareSandbox();
       const paypal = demo ? undefined : configuredPayPalSandbox();
       return workspace = createTeamWorkspace(store, roster, origin, {
-        staging: staging || hostedDemo, hostedDemo, ...(square && { square }), ...(paypal && { paypal }),
+        staging: staging || hostedDemo, hostedDemo: hostedDemo || invitePreview, ...(square && { square }), ...(paypal && { paypal }),
       });
     } catch (error) {
       store.close();

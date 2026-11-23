@@ -3,8 +3,11 @@ import { StoreEntry } from "./merchant/store-entry";
 import styles from "./page.module.css";
 import { ChangeGateWebMcp } from "./changegate-webmcp";
 
+export const dynamic = "force-dynamic";
+
 export default function Home() {
-  if (process.env.CHANGEGATE_STAGING_BUILD === "1") return <StoreEntry />;
+  if (process.env.CHANGEGATE_STAGING_BUILD === "1" || process.env.CHANGEGATE_TEAM_MODE === "railway-demo" ||
+    process.env.CHANGEGATE_TEAM_MODE === "invite-preview") return <StoreEntry />;
   return (
     <div className={styles.page}>
       <a className={styles.skipLink} href="#console">Skip to control console</a>

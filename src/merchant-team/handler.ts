@@ -2,6 +2,7 @@ import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 import { promisify } from "node:util";
 import { TeamError, teamCommand, type Employee, type TeamSession } from "./contracts";
+import { canManageDemoInvites, createDemoAccess } from "./demo-access";
 import type { TeamStore } from "./store";
 import { alertPublicKey } from "./refund-alerts";
 import { canReview, isDemoSaleReference } from "./refund-requests";
@@ -120,6 +121,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
       ...(assignment && { demoRegister: assignment }),
       ...(store.demo && canReview(employee.role) && { pilotEnabled: true }),
       ...(hostedDemo && { syntheticOnly: true }),
+      ...(hostedDemo && canManageDemoInvites(employee) && { demoInviteAdmin: true }),
       coworkers: roster.filter((member) => employee.role !== "reviewer" && member.role !== "reviewer" && member.merchantId === employee.merchantId)
         .map(({ username, name }) => ({ username, name })),
     };
@@ -316,6 +318,8 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
 
   return {
     handle,
+    demoAccess: hostedDemo && store.demoInvites ? createDemoAccess(store.demoInvites, origin, staging, validIngress,
+      headers => authenticate(headers)?.employee) : undefined,
     alerts:store.alerts,
     roster,
     openRefundRequest: (employee: Employee, id: string) => { merchantAccess(employee); return store.refundRequests.open(employee, id); },

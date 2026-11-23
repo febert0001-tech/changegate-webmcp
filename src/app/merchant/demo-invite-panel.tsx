@@ -1,0 +1,230 @@
+"use client";
+
+import { useEffect, useState, type FormEvent } from "react";
+import styles from "./merchant.module.css";
+
+type Plan = { startsAt: number; expiresAt: number };
+type Invite = Plan & { id: string; recipient: string; status: string };
+type Issued = Plan & { token: string; code: string };
+const clock = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York", dateStyle: "medium", timeStyle: "medium",
+});
+const when = (value: number) => clock.format(new Date(value)) + " Eastern";
+const messages: Record<string, string> = {
+  INVITE_UNAVAILABLE: "This invitation is unavailable. Verify the name, separate code, and access window.",
+  INVITE_PLAN_EXPIRED: "That issue time passed. Preview a new deadline.",
+  INVITE_ALREADY_ISSUED: "This invite was already issued. Check the invite list.",
+  INVITE_ADMIN_REQUIRED: "Sign in as the demo administrator.",
+};
+
+async function post<T>(command: object): Promise<T> {
+  const response = await fetch("/api/demo-access", {
+    method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify(command),
+  });
+  const data = await response.json();
+  if (!response.ok) throw Error(messages[data.error] ?? "Demo access is unavailable.");
+  return data as T;
+}
+
+export function DemoInviteAdmin() {
+  const [list, setList] = useState<Invite[]>([]);
+  const [prepared, setPrepared] = useState<Plan & { id: string; recipient: string; minutes: number }>();
+  const [issued, setIssued] = useState<Issued>();
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let current = true;
+    let loading = false;
+    async function load() {
+      if (loading || !current || busy) return;
+      loading = true;
+      try {
+        const result = await post<Invite[]>({ action: "list" });
+        if (current) setList(result);
+      } catch (failure) {
+        if (current) setError(failure instanceof Error ? failure.message : "Demo access is unavailable.");
+      } finally { loading = false; }
+    }
+    void load();
+    const timer = window.setInterval(() => { void load(); }, 3000);
+    return () => { current = false; window.clearInterval(timer); };
+  }, [busy]);
+
+  async function run(operation: () => Promise<void>) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try { await operation(); }
+    catch (failure) { setError(failure instanceof Error ? failure.message : "Demo access is unavailable."); }
+    finally { setBusy(false); }
+  }
+
+  function prepare(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const recipient = String(data.get("recipient") ?? "").trim();
+    const minutes = Number(data.get("minutes"));
+    void run(async () => {
+      const plan = await post<Plan>({ action: "plan", recipient, minutes });
+      setPrepared({ ...plan, id: crypto.randomUUID(), recipient, minutes });
+      setIssued(undefined);
+    });
+  }
+
+  function issue() {
+    if (!prepared) return;
+    const { recipient, minutes, id, startsAt } = prepared;
+    void run(async () => {
+      setIssued(await post<Issued>({ action: "issue", recipient, minutes, id, startsAt }));
+      setPrepared(undefined);
+    });
+  }
+
+  return <section className={styles.card + " " + styles.overnightPanel} aria-label="Demo invitations">
+    <h2>Create demo invite</h2>
+    <p>Access starts at the displayed issue time and ends at the fixed deadline.</p>
+    {error && <p className={styles.formError} role="alert">{error}</p>}
+    <form onSubmit={prepare} className={styles.overnightDetails}>
+      <label>Recipient name<input name="recipient" required maxLength={100} autoComplete="off" /></label>
+      <label>Access minutes<input name="minutes" type="number" min={30} max={60} defaultValue={30} required /></label>
+      <button type="submit" disabled={busy}>Preview expiration</button>
+    </form>
+    {prepared && <section className={styles.overnightDetails} aria-label="Confirm demo invite">
+      <h3>Confirm demo invite for {prepared.recipient}</h3>
+      <p>Issues at {when(prepared.startsAt)}</p>
+      <p><strong>Expires at {when(prepared.expiresAt)}</strong></p>
+      <button type="button" className={styles.primary} disabled={busy} onClick={issue}>Confirm invite</button>
+    </section>}
+    {issued && <section className={styles.overnightDetails} aria-label="Private invite details">
+      <h3>Private invite details</h3>
+      <p>Verify the named recipient through a trusted channel. Give the verification code separately from the link.</p>
+      <label>Invite link<input name="invite-link" readOnly value={window.location.origin + "/demo-invite#" + issued.token} /></label>
+      <label>Separate verification code<input name="invite-code" readOnly value={issued.code} /></label>
+      <p>Expires at {when(issued.expiresAt)}</p>
+      <button type="button" onClick={() => setIssued(undefined)}>Hide private details</button>
+    </section>}
+    <h3>Issued invites</h3>
+    {list.length ? <ul className={styles.coverageGrants}>{list.map(invite => <li key={invite.id} className={styles.overnightDetails}>
+      <h4>{invite.recipient} · {invite.status}</h4>
+      <p>{when(invite.startsAt)} through {when(invite.expiresAt)}</p>
+      {invite.status !== "Expired" && invite.status !== "Revoked" && <button type="button" disabled={busy}
+        aria-label={"Revoke invite for " + invite.recipient}
+        onClick={() => void run(async () => { setList(await post<Invite[]>({ action: "revoke", id: invite.id })); setIssued(undefined); })}>
+        Revoke invite
+      </button>}
+    </li>)}</ul> : <p>No invites issued.</p>}
+  </section>;
+}
+
+export function DemoInviteEntry() {
+  const [token, setToken] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    function acceptLink() {
+      const fragment = window.location.hash.slice(1);
+      if (fragment) window.history.replaceState(null, "", window.location.pathname);
+      if (/^[A-Za-z0-9_-]{43}$/.test(fragment)) { setToken(fragment); setError(""); }
+    }
+    const frame = window.requestAnimationFrame(acceptLink);
+    window.addEventListener("hashchange", acceptLink);
+    return () => { window.cancelAnimationFrame(frame); window.removeEventListener("hashchange", acceptLink); };
+  }, []);
+
+  async function redeem(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    setBusy(true);
+    setError("");
+    try {
+      await post({ action: "redeem", token, recipient: data.get("recipient"), code: data.get("code") });
+      window.location.replace("/demo-guest");
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "Demo access is unavailable.");
+    } finally { setBusy(false); }
+  }
+
+  return <main className={styles.shell}>
+    <section className={styles.card + " " + styles.overnightPanel} aria-label="Redeem demo invitation">
+      <p className={styles.brand}>ChangeGate</p>
+      <h1>Investor demo access</h1>
+      <p>Enter your invited name and the verification code provided separately.</p>
+      {error && <p className={styles.formError} role="alert">{error}</p>}
+      {token ? <form onSubmit={event => void redeem(event)}>
+        <label>Invited name<input name="recipient" required maxLength={100} autoComplete="off" /></label>
+        <label>Verification code<input name="code" type="password" required autoComplete="off" maxLength={24} /></label>
+        <button type="submit" className={styles.primary} disabled={busy}>Open walkthrough</button>
+      </form> : <p>Open the complete invitation link from the demo administrator.</p>}
+    </section>
+  </main>;
+}
+
+type Snapshot = { expiresAt: number; remainingMs: number; walkthrough: { title: string; facts: string[] }[] };
+
+export function DemoGuestWalkthrough() {
+  const [content, setContent] = useState<Snapshot>();
+  const [locked, setLocked] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let pending = false;
+    let denied = false;
+    let deadline = Number.POSITIVE_INFINITY;
+    let expiryTimer: number | undefined;
+    function lock() {
+      denied = true;
+      setContent(undefined);
+      setLocked(true);
+    }
+    async function check() {
+      if (denied || pending || controller.signal.aborted) return;
+      if (performance.now() >= deadline) { lock(); return; }
+      pending = true;
+      const start = performance.now();
+      try {
+        const response = await fetch("/api/demo-access", { cache: "no-store", signal: controller.signal });
+        if (controller.signal.aborted) return;
+        if (!response.ok) { lock(); return; }
+        const current = await response.json() as Snapshot;
+        deadline = Math.min(deadline, start + current.remainingMs);
+        if (controller.signal.aborted || denied) return;
+        if (performance.now() >= deadline) { lock(); return; }
+        window.clearTimeout(expiryTimer);
+        expiryTimer = window.setTimeout(lock, deadline - performance.now());
+        if (document.visibilityState === "visible") setContent(current);
+      } catch {
+        if (!controller.signal.aborted) lock();
+      } finally { pending = false; }
+    }
+    const hide = () => setContent(undefined);
+    const visibility = () => { if (document.visibilityState === "hidden") hide(); else void check(); };
+    window.addEventListener("pagehide", hide);
+    window.addEventListener("pageshow", check);
+    document.addEventListener("visibilitychange", visibility);
+    const poll = window.setInterval(() => void check(), 1000);
+    void check();
+    return () => {
+      controller.abort();
+      window.removeEventListener("pagehide", hide);
+      window.removeEventListener("pageshow", check);
+      document.removeEventListener("visibilitychange", visibility);
+      window.clearInterval(poll);
+      window.clearTimeout(expiryTimer);
+    };
+  }, []);
+
+  return <main className={styles.shell} aria-label="Synthetic investor walkthrough">
+    <header className={styles.header}><div><p className={styles.brand}>ChangeGate</p><h1>Investor walkthrough</h1></div></header>
+    {locked && <section className={styles.card}><h2>Demo access ended</h2><p>A new invitation is required to continue.</p></section>}
+    {!locked && !content && <p role="status">Checking demo access…</p>}
+    {content && <section className={styles.card + " " + styles.overnightPanel}>
+      <p>Read-only synthetic examples · Access ends at {when(content.expiresAt)}</p>
+      {content.walkthrough.map(item => <details open className={styles.overnightDetails} key={item.title}>
+        <summary><strong>{item.title}</strong></summary>
+        <ul>{item.facts.map(fact => <li key={fact}>{fact}</li>)}</ul>
+      </details>)}
+    </section>}
+  </main>;
+}

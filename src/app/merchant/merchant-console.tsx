@@ -9,6 +9,7 @@ import { StoreEntry } from "./store-entry";
 import { TransactionWorkspace } from "../transactions/transaction-workspace";
 import { ShiftOverviewPanel } from "./shift-overview-panel";
 import { CashDrawerPanel } from "./cash-drawer-panel";
+import { DemoInviteAdmin } from "./demo-invite-panel";
 import { PilotReviewPanel } from "./pilot-review-panel";
 import { CoverageSettings } from "./coverage-settings";
 import { OvernightOwnerPanel, OvernightReviewer } from "./overnight-panel";
@@ -130,7 +131,7 @@ function notifySessionChange() {
   channel.close();
 }
 
-export function MerchantConsole({ caseId, imports, importId, reviewSummary, transaction, overview, demoSale, cashDrawer, cashWeek, overnight, pilot }: {
+export function MerchantConsole({ caseId, imports, importId, reviewSummary, transaction, overview, demoSale, cashDrawer, cashWeek, overnight, pilot, inviteAdmin }: {
   caseId?: string; imports?: boolean; importId?: string; reviewSummary?: boolean; overview?: boolean;
   transaction?: { id: string; step: TransactionStep } | "list";
   demoSale?: string | true;
@@ -138,6 +139,7 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
   cashWeek?: { week?: string; location?: string };
   overnight?: string | true;
   pilot?: string | true;
+  inviteAdmin?: boolean;
 }) {
   const router = useRouter();
   const [ready, setReady] = useState(false);
@@ -262,6 +264,7 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
       {session && <div className={styles.profile}>
         {session.demoShift && <Link href="/shift-overview" prefetch={false} aria-current={overview ? "page" : undefined}>Shift Overview</Link>}
         {session.demoShift && <Link href="/verified-square-example" prefetch={false}>View verified Square Sandbox example</Link>}
+        {session.demoInviteAdmin && !inviteAdmin && <Link href="/demo-access" prefetch={false}>Create demo invite</Link>}
         {session.pilotEnabled && !pilot && <Link href="/pilot-review" prefetch={false}>Start pilot review</Link>}
         <Link href="/transactions" prefetch={false}>Transactions</Link>
         {session.demoRegister && <Link href="/demo-sales" prefetch={false}>Record sale</Link>}
@@ -282,7 +285,8 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
       <OvernightOwnerPanel key={session.sessionVersion} session={session} send={send} onSessionError={clearOnSessionError} />
       <CoverageSettings key={session.sessionVersion} session={session} send={send} onSessionError={clearOnSessionError} />
     </>}
-    {pilot ? <PilotReviewPanel key={String(pilot)} session={session} send={send} onSessionError={clearOnSessionError}
+    {inviteAdmin ? (session.demoInviteAdmin ? <DemoInviteAdmin key={session.sessionVersion} /> :
+      <section className={styles.card}><h2>Demo invitations</h2><p>A demo administrator manages invites.</p></section>) : pilot ? <PilotReviewPanel key={String(pilot)} session={session} send={send} onSessionError={clearOnSessionError}
       {...(typeof pilot === "string" && { id: pilot })} /> : overnight ? <section className={styles.card}><h2>Overnight review desk</h2>
       <p>Sign in with your assigned reviewer account to open the desk.</p></section> : cashWeek ? (
       <WeeklyCashReviewPanel key={session.sessionVersion} initial={cashWeek} session={session} send={send} onSessionError={clearOnSessionError} />

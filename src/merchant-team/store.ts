@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { PilotReviews } from "./pilot-review";
 import type { PilotCommand } from "./pilot-contracts";
+import { DemoInvites } from "./demo-invites";
 import { OvernightDesk } from "./overnight";
 import { TeamError, type CaseHistory, type Employee, type HistoryKind, type TeamCase, type TeamCaseDetail, type TeamCommand } from "./contracts";
 
@@ -51,6 +52,7 @@ export class TeamStore {
   readonly refundRequests: RefundRequestStore;
   readonly alerts: RefundAlertStore;
   readonly demo?: DemoShift;
+  readonly demoInvites?: DemoInvites;
   private readonly overnight?: OvernightDesk;
   private readonly pilots: PilotReviews;
   private readonly demoSales?: DemoSales;
@@ -132,6 +134,7 @@ export class TeamStore {
       this.alerts = new RefundAlertStore(this.db);
       if (demo) {
         this.demo = new DemoShift(this.db);
+        this.demoInvites = new DemoInvites(this.db);
         this.demoSales = new DemoSales(this.db, this.now);
         this.drawers = new CashDrawers(this.db, this.now);
         const overnight = new OvernightDesk(this.db, this.drawers, this.now);
