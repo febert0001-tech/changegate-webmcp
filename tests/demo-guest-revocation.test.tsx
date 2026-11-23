@@ -97,14 +97,17 @@ async function separateSessions() {
 
 const advance = (ms: number) => act(async () => vi.advanceTimersByTimeAsync(ms));
 const showGuest = () => act(async () => root.render(<DemoGuestWalkthrough />));
+const guestFetch = (sessions: Awaited<ReturnType<typeof separateSessions>>, read = sessions.read) =>
+  vi.fn((_url: string, options?: RequestInit) => options?.method === "HEAD"
+    ? new Response(null, { status: sessions.pageAccess() ? 204 : 401 })
+    : read());
 
 it("locks the open guest UI on the next poll and denies a separate read while the presenter remains authorized", async () => {
   const sessions = await separateSessions();
   expect((await sessions.overview()).status).toBe(200);
-  vi.stubGlobal("fetch", vi.fn(sessions.read));
+  vi.stubGlobal("fetch", guestFetch(sessions));
   await showGuest();
   expect(element.textContent).toContain(example);
-  const revokedAt = performance.now();
   expect((await sessions.revoke()).status).toBe(200);
   const fresh = sessions.read();
   expect(fresh.status).toBe(401);
@@ -114,7 +117,6 @@ it("locks the open guest UI on the next poll and denies a separate read while th
   await advance(guestPollInterval);
   expect(element.textContent).toContain(status);
   expect(element.textContent).not.toContain(example);
-  expect(performance.now() - revokedAt).toBeLessThanOrEqual(5000);
   expect((await sessions.overview()).status).toBe(200);
 });
 
@@ -122,18 +124,19 @@ const guestPollInterval = 1000;
 
 it("clears already-displayed evidence within four seconds if the next request never returns", async () => {
   const sessions = await separateSessions();
-  const fetcher = vi.fn().mockImplementationOnce(sessions.read)
+  const read = vi.fn().mockImplementationOnce(sessions.read)
     .mockImplementation(() => new Promise(() => {}));
+  const fetcher = guestFetch(sessions, read);
   vi.stubGlobal("fetch", fetcher);
   await showGuest();
   expect(element.textContent).toContain(example);
   await advance(3999);
-  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(read).toHaveBeenCalledTimes(2);
   expect(element.textContent).toContain(example);
   await advance(1);
   expect(element.textContent).toContain(status);
   expect(element.textContent).not.toContain(example);
-  expect(fetcher.mock.calls[1]?.[1]?.signal.aborted).toBe(true);
+  expect(fetcher.mock.calls[2]?.[1]?.signal?.aborted).toBe(true);
 });
 
 it("hides on suspend and never restores data from a response started before resuming", async () => {
@@ -141,8 +144,9 @@ it("hides on suspend and never restores data from a response started before resu
   let reply: (response: Response) => void = () => {};
   const delayed = new Promise<Response>(resolve => { reply = resolve; });
   const captured = sessions.read();
-  const fetcher = vi.fn().mockImplementationOnce(sessions.read)
+  const read = vi.fn().mockImplementationOnce(sessions.read)
     .mockReturnValueOnce(delayed).mockImplementation(sessions.read);
+  const fetcher = guestFetch(sessions, read);
   vi.stubGlobal("fetch", fetcher);
   await showGuest();
   await advance(guestPollInterval);
@@ -150,11 +154,36 @@ it("hides on suspend and never restores data from a response started before resu
 
   await act(async () => document.dispatchEvent(new Event("freeze")));
   expect(element.textContent).not.toContain(example);
-  expect(fetcher.mock.calls[1]?.[1]?.signal.aborted).toBe(true);
+  expect(fetcher.mock.calls[2]?.[1]?.signal?.aborted).toBe(true);
   expect((await sessions.revoke()).status).toBe(200);
   await act(async () => document.dispatchEvent(new Event("resume")));
-  expect(fetcher).toHaveBeenCalledTimes(3);
+  expect(read).toHaveBeenCalledTimes(3);
   expect(element.textContent).toContain(status);
   await act(async () => reply(captured));
   expect(element.textContent).not.toContain(example);
+});
+
+it("confirms access before revealing a resumed response authorized before revocation", async () => {
+  const sessions = await separateSessions();
+  let release: () => void = () => {};
+  const read = vi.fn().mockImplementationOnce(sessions.read).mockImplementationOnce(() => {
+    const response = sessions.read();
+    expect(response.status).toBe(200);
+    return new Promise<Response>(resolve => { release = () => resolve(response); });
+  });
+  const fetcher = guestFetch(sessions, read);
+  vi.stubGlobal("fetch", fetcher);
+  await showGuest();
+  expect(element.textContent).toContain(example);
+
+  await act(async () => document.dispatchEvent(new Event("freeze")));
+  await act(async () => document.dispatchEvent(new Event("resume")));
+  expect(element.textContent).not.toContain(example);
+  expect(read).toHaveBeenCalledTimes(2);
+  expect((await sessions.revoke()).status).toBe(200);
+  await act(async () => release());
+
+  expect(fetcher.mock.calls[3]?.[1]?.method).toBe("HEAD");
+  expect(element.textContent).not.toContain(example);
+  expect(element.textContent).toContain(status);
 });

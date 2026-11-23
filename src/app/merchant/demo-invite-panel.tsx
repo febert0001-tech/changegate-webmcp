@@ -189,6 +189,7 @@ export function DemoGuestWalkthrough() {
     let timer: number | undefined;
     let paused = document.visibilityState !== "visible";
     let ended = false;
+    let showingExamples = false;
 
     function cancelRequest() {
       const previous = request;
@@ -227,8 +228,18 @@ export function DemoGuestWalkthrough() {
         const reportedExpiry = after(sent, current.remainingMs);
         expiry = expiry ? earlier(expiry, reportedExpiry) : reportedExpiry;
         const nextLease = earlier(expiry, after(sent, guestLeaseMs));
+        if (!showingExamples) {
+          // A data response may have been authorized before revocation. Recheck
+          // after receiving it before putting hidden examples back in the DOM.
+          const confirmation = await fetch("/api/demo-access", {
+            method: "HEAD", cache: "no-store", signal: controller.signal,
+          });
+          if (request !== controller) return;
+          if (confirmation.status !== 204) { lock(); return; }
+        }
         if (remaining(nextLease) <= 0) { lock(); return; }
         watch(nextLease);
+        showingExamples = true;
         setContent(current);
       } catch {
         if (request === controller) lock();
@@ -243,6 +254,7 @@ export function DemoGuestWalkthrough() {
       cancelRequest();
       window.clearTimeout(timer);
       lease = undefined;
+      showingExamples = false;
       // Clear the DOM before the browser can suspend or snapshot the page.
       flushSync(() => setContent(undefined));
     }
