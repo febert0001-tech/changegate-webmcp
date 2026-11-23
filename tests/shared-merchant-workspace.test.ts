@@ -1,3 +1,4 @@
+import type { PilotView } from "../src/merchant-team/pilot-review";
 import { coverageInstant } from "../src/merchant-team/coverage-time";
 import { overnightAccounts, type OvernightQueue, type OvernightOwner, type CoverageSettingsView } from "../src/merchant-team/overnight";
 import { fork, type ChildProcess } from "node:child_process";
@@ -2244,4 +2245,101 @@ describe("managed-service demonstration", () => {
     expect(week.rows.map(row => row.close?.variance).sort()).toEqual([-500, -700]);
   });
 
+});
+
+describe("read-only closed-week pilot", () => {
+  it("scores three flags and one missed issue and deduplicates uploads across reset and restart", async () => {
+    const users: Employee[] = roster.map(member => ({ ...member, role: member.username === "maya" ? "cashier" : "manager" }));
+    const clock = () => "2026-11-23T15:00:00.000Z";
+    const server = app(undefined, users, clock, undefined, undefined, true, true);
+    const owner = await signIn(server,"jordan");
+    const outsider = await signIn(server,"alex");
+    const cashier = await signIn(server,"maya");
+    const start = { action:"startPilot", location:"Harbor Fuel", register:"Register 1", week:"2026-11-16",
+      timeZone:"America/New_York", synthetic:true };
+    expect((await cashier.request(start)).status).toBe(403);
+    expect((await owner.request({...start,week:"2026-11-23"})).status).toBe(422);
+    expect((await owner.request({...start,week:"2026-11-17"})).status).toBe(422);
+    expect((await owner.request({...start,timeZone:"Not a zone"})).status).toBe(422);
+    const pilot = await owner.send<PilotView>(start);
+    const id = pilot.scope.id;
+    const open = { action:"openPilot",id };
+    expect((await owner.send<PilotView>(start)).scope.id).toBe(id);
+    expect(pilot.scope.end).toBe("2026-11-22");
+    expect(pilot.savedMinutes).toBeNull();
+    expect((await outsider.request(open)).status).toBe(404);
+    expect(await outsider.send({action:"listPilots"})).toEqual([]);
+    const mapping={reference:0,amount:1,currency:2,status:3};
+    const header="refund_reference,refund_amount,currency,status";
+    const merchant=[header,"P-amount,15,USD,COMPLETED","P-timing,20,USD,COMPLETED",
+      "P-missed,8,USD,PENDING","P-unresolved,25,USD,COMPLETED",",5,USD,COMPLETED"].join("\n");
+    const processor=[header,"P-amount,17,USD,COMPLETED","P-missed,8,USD,COMPLETED","P-unresolved,22,USD,COMPLETED"].join("\n");
+    const file = (source:string,text:string) => ({action:"attachPilotFile",id,source,scopeConfirmed:true,
+      file:{name:source+".csv",text,mapping}});
+    const inspect = await owner.send<{rowCount:number}>({action:"inspectPilotCsv",text:merchant});
+    expect(inspect.rowCount).toBe(5);
+    const worksheet = await owner.send<PilotView>(file("Merchant",merchant));
+    expect(worksheet.sources).toMatchObject([{side:"Merchant",accepted:4,rejected:[{line:6}]}]);
+    expect(worksheet.comparisonReady).toBe(false);
+    expect(worksheet.score).toBeNull();
+    expect((await owner.request({action:"revealPilot",id})).status).toBe(409);
+    expect((await owner.request({action:"savePilotBaseline",id,minutes:null,exceptions:null})).status).toBe(422);
+    const baseline={action:"savePilotBaseline",id,minutes:24,exceptions:["P-amount amount differs","P-missed status differs"]};
+    expect((await owner.send<PilotView>(baseline)).baseline?.beforeFindings).toBe(true);
+    expect((await owner.request({...baseline,minutes:3})).status).toBe(409);
+    const ready=await owner.send<PilotView>(file("Processor",processor));
+    expect(ready.comparisonReady).toBe(true);
+    expect(ready.issues).toHaveLength(0);
+    const revealed=await owner.send<PilotView>({action:"revealPilot",id});
+    expect(revealed.score).toMatchObject({flags:3,decided:0,unresolved:3});
+    expect(revealed.exact).toBe(1);
+    const issue=(reference:string)=>revealed.issues.find(item=>item.rows[0]?.reference===reference)!;
+    expect((await cashier.request({action:"workspace",id:issue("P-amount").id})).status).toBe(200);
+    const hidden=await cashier.send<TeamWorkspaceView>({action:"workspace",id:issue("P-amount").id});
+    expect(hidden.detail).toBeNull();
+    expect(hidden.cases.some(item=>item.id===issue("P-amount").id)).toBe(false);
+    const decide=(caseId:string,outcome:string,revision=0)=>({action:"decidePilotIssue",id,caseId,outcome,note:"Reviewed by finance",revision});
+    await owner.send(decide(issue("P-amount").id,"confirmed"));
+    await owner.send(decide(issue("P-timing").id,"incorrect flag"));
+    await owner.send(decide(issue("P-unresolved").id,"unresolved"));
+    expect((await owner.request(decide(issue("P-amount").id,"incorrect flag"))).status).toBe(409);
+    const miss={action:"addPilotMiss",id,reference:"P-missed",note:"Register still showed pending."};
+    await owner.send(miss);
+    await owner.send(miss);
+    expect((await owner.request({...miss,reference:"unknown"})).status).toBe(422);
+    await owner.send({action:"savePilotTime",id,review:12,setup:5,waiting:30});
+    const saved = await owner.send<PilotView>({action:"savePilotDecision",id,decision:"continue",note:"Repeat independently."});
+    expect(saved.score).toEqual({confirmed:1,incorrect:1,unresolved:1,missed:1,flags:3,decided:2});
+    expect(saved.savedMinutes).toBe(12);
+    expect(saved.issues.find(item=>item.outcome==="missed")?.rows.map(row=>row.side)).toEqual(["Merchant","Processor"]);
+    expect(saved.decision?.value).toBe("continue");
+    await owner.send(file("Merchant",merchant));
+    await owner.send(file("Processor",processor));
+    await owner.send({action:"revealPilot",id});
+    expect((await owner.send<PilotView>(open)).issues).toEqual(saved.issues);
+    expect((await owner.request(file("Merchant",merchant.replace("15,USD","18,USD")))).status).toBe(409);
+    const demo = await cashier.send<{state:DemoState}>({action:"startDemoShift",seed:"harbor-evening"});
+    await cashier.send({action:"replayDemoShift",runId:demo.state.runId});
+    expect((await owner.send<PilotView>(open)).issues).toEqual(saved.issues);
+    server.stop();
+    const restarted=app(server.path,users,clock,undefined,undefined,true, true);
+    const restored=await restarted.request(open,owner.key,{sessionVersion:owner.user.sessionVersion});
+    expect(await restored.json()).toEqual(saved);
+  });
+
+  it("labels a late baseline and leaves time savings unmeasured", async () => {
+    const users: Employee[] = roster.map(member => ({ ...member, role:"manager" }));
+    const server = app(undefined, users, () => "2026-11-23T15:00:00.000Z", undefined, undefined, true, true);
+    const owner=await signIn(server,"jordan");
+    const pilot=await owner.send<PilotView>({action:"startPilot",location:"Harbor Fuel",register:"Register 1",
+      week:"2026-11-16",timeZone:"America/New_York",synthetic:true});
+    const id=pilot.scope.id;
+    for(const source of ["Merchant","Processor"]) await owner.send({action:"attachPilotFile",id,source,scopeConfirmed:true,
+      file:{name:source+".csv",text:"reference,amount,currency\nexact,4,USD",mapping:{reference:0,amount:1,currency:2}}});
+    await owner.send({action:"revealPilot",id});
+    await owner.send({action:"savePilotBaseline",id,minutes:25,exceptions:[]});
+    const saved=await owner.send<PilotView>({action:"savePilotTime",id,review:10,setup:null,waiting:null});
+    expect(saved.baseline?.beforeFindings).toBe(false);
+    expect(saved.savedMinutes).toBeNull();
+  });
 });

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { pilotCommands } from "./pilot-contracts";
 import { drawerDispositions } from "./weekly-cash-review";
 import { csvText, refundMapping, type CaseEvidence } from "./refund-csv";
 import { dispositionOptions } from "./review-summary";
@@ -38,6 +39,7 @@ export const rosterSchema = z.array(z.strictObject({
 export type Employee = z.infer<typeof rosterSchema>[number];
 
 export const teamCommand = z.discriminatedUnion("action", [
+  ...pilotCommands,
   z.strictObject({ action: z.literal("signIn"), username: slug, password: z.string().min(1).max(160), recoverSession: z.literal(true).optional() }),
   z.strictObject({ action: z.literal("signOut") }),
   z.strictObject({ action: z.literal("session") }),
@@ -109,7 +111,7 @@ export const teamCommand = z.discriminatedUnion("action", [
 export type TeamCommand = z.infer<typeof teamCommand>;
 
 export type HistoryKind = "Opened" | "Recorded finding" | "Assigned" | "Added note" | "Resolved" | "Imported evidence" |
-  "Coverage claimed" | "Owner follow-up requested" | "Owner replied" | "Reviewer shift ended" | "Coverage reassigned";
+  "Coverage claimed" | "Owner follow-up requested" | "Owner replied" | "Reviewer shift ended" | "Coverage reassigned" | "Pilot disposition" | "Pilot missed issue";
 export interface CaseHistory {
   sequence: number;
   actor: string;
@@ -147,6 +149,7 @@ export interface TeamSession {
   demoShift?: boolean;
   demoRegister?: { location: string; register: string };
   syntheticOnly?: boolean;
+  pilotEnabled?: boolean;
   coworkers: { username: string; name: string }[];
 }
 

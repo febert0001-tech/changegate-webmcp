@@ -196,3 +196,10 @@
 .coverageGrants { list-style: none; display: grid; gap: 10px; }
 .coverageGrants button { justify-self: start; }
 .overnightDetails > ul { padding-left: 20px; }
+
+.pilotGrid, .pilotMetrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 235px), 1fr)); gap: 12px; }
+.pilotMetrics > p { background: #f4f8f9; border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+.pilotRows, .pilotSourceLinks { list-style: none; display: grid; gap: 6px; margin-top: 8px; }
+.pilotRows li:target { border-left: 4px solid var(--teal); padding-left: 8px; }
+.shell .pilotCheck { display: flex; align-items: start; gap: 8px; }
+.shell .pilotCheck input { width: auto; min-height: 0; }

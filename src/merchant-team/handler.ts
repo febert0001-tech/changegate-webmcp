@@ -47,6 +47,7 @@ async function readCommand(request: Request): Promise<unknown> {
 }
 
 const hostedDemoActions = new Set([
+  "listPilots", "openPilot", "startPilot", "inspectPilotCsv", "attachPilotFile", "savePilotBaseline", "revealPilot", "decidePilotIssue", "addPilotMiss", "savePilotTime", "savePilotDecision",
   "overnightDesk", "overnightOwner", "coverageSettings", "grantCoverage", "startDemoCoverage", "revokeCoverage", "claimOvernightCase", "requestOvernightFollowUp", "replyOvernight", "reassignOvernightCase",
   "signIn", "signOut", "session", "workspace", "demoShift", "shiftOverview", "startDemoShift", "nextDemoEvent", "replayDemoShift",
   "replayHeldDemoRefund",
@@ -117,6 +118,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
       paypalConnected: providers.paypal?.supports(employee.merchantId) ?? false,
       ...(employee.role !== "reviewer" && store.demo?.includes(employee) && { demoShift: true }),
       ...(assignment && { demoRegister: assignment }),
+      ...(store.demo && canReview(employee.role) && { pilotEnabled: true }),
       ...(hostedDemo && { syntheticOnly: true }),
       coworkers: roster.filter((member) => employee.role !== "reviewer" && member.role !== "reviewer" && member.merchantId === employee.merchantId)
         .map(({ username, name }) => ({ username, name })),
@@ -172,6 +174,18 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             return json({ error: "SESSION_CHANGED" }, 409);
           }
           switch (command.action) {
+            case "listPilots":
+            case "openPilot":
+            case "startPilot":
+            case "inspectPilotCsv":
+            case "attachPilotFile":
+            case "savePilotBaseline":
+            case "revealPilot":
+            case "decidePilotIssue":
+            case "addPilotMiss":
+            case "savePilotTime":
+            case "savePilotDecision":
+              return json(store.pilotCommand(employee, token, command, hostedDemo));
             case "overnightDesk":
             case "overnightOwner":
             case "coverageSettings":

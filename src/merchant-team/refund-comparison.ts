@@ -20,8 +20,13 @@ export const formatUsd = (cents: number) => usd.format(cents / 100);
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 
 export function compareRefunds({ merchant, processor, period }: ComparisonInput) {
-  const register = reviewRefundCsv(merchant.text, merchant.mapping, true);
-  const exportReview = reviewRefundCsv(processor.text, processor.mapping, true);
+  return compareReviewedRefunds(reviewRefundCsv(merchant.text, merchant.mapping, true),
+    reviewRefundCsv(processor.text, processor.mapping, true),
+    { period, files: { Merchant: merchant.name, Processor: processor.name }, exact: [] });
+}
+
+export function compareReviewedRefunds(register: ReturnType<typeof reviewRefundCsv>,
+  exportReview: ReturnType<typeof reviewRefundCsv>, comparison: ComparisonEvidence) {
   const accepted = [...register.accepted, ...exportReview.accepted];
   const rejections = [
     ...register.rejections.map(row => ({ ...row, side: "Merchant" as const })),
@@ -35,7 +40,6 @@ export function compareRefunds({ merchant, processor, period }: ComparisonInput)
       grouped.set(row.reference, group);
     }
   }
-  const comparison: ComparisonEvidence = { period, files: { Merchant: merchant.name, Processor: processor.name }, exact: [] };
   const findings: RefundFinding[] = [];
   for (const group of grouped.values()) {
     const rows = [...group.Merchant, ...group.Processor];

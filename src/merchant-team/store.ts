@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { PilotReviews } from "./pilot-review";
+import type { PilotCommand } from "./pilot-contracts";
 import { OvernightDesk } from "./overnight";
 import { TeamError, type CaseHistory, type Employee, type HistoryKind, type TeamCase, type TeamCaseDetail, type TeamCommand } from "./contracts";
 
@@ -50,6 +52,7 @@ export class TeamStore {
   readonly alerts: RefundAlertStore;
   readonly demo?: DemoShift;
   private readonly overnight?: OvernightDesk;
+  private readonly pilots: PilotReviews;
   private readonly demoSales?: DemoSales;
   private readonly drawers?: CashDrawers;
 
@@ -123,6 +126,8 @@ export class TeamStore {
           replacement_hash TEXT NOT NULL
         );
       `);
+      this.pilots = new PilotReviews(this.db, this.now, (employee, id, kind, detail, at) =>
+        this.addEvent(employee, id, kind, detail, at), (merchant, id) => this.caseHistory(merchant, id));
       this.refundRequests = new RefundRequestStore(this.db, this.now, demo);
       this.alerts = new RefundAlertStore(this.db);
       if (demo) {
@@ -533,6 +538,14 @@ export class TeamStore {
     });
   }
 
+  pilotCommand(employee: Employee, token: string, command: PilotCommand, syntheticOnly: boolean) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      if (!this.demo) throw new TeamError("PILOT_NOT_FOUND", 404);
+      return this.pilots.handle(employee, command, syntheticOnly);
+    });
+  }
+
   private atomic<T>(work: () => T): T {
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -626,20 +639,18 @@ export class TeamStore {
     const rows = this.db.prepare(`SELECT ${caseColumns},
         (SELECT json_extract(evidence, '$.differenceCents') FROM team_refund_findings
          WHERE merchant_id=c.merchant_id AND case_id=c.id) AS differenceCents
-      FROM team_cases AS c WHERE merchant_id=? ORDER BY updated_at DESC, id`)
+      FROM team_cases AS c WHERE merchant_id=? AND NOT EXISTS (
+        SELECT 1 FROM team_pilot_cases p WHERE p.merchant_id=c.merchant_id AND p.case_id=c.id
+      ) ORDER BY updated_at DESC, id`)
       .all(employee.merchantId) as unknown as (Omit<TeamCase, "differenceCents"> & { differenceCents: number | null })[];
     return rows.map(({ differenceCents, ...item }) => ({ ...item, ...(differenceCents !== null && { differenceCents }) }));
   }
 
   open(employee: Employee, id: string): TeamCaseDetail {
-    const row = this.db.prepare(`SELECT ${caseColumns},
-        (SELECT json_group_array(json_object(
-          'sequence', sequence, 'actor', actor, 'username', username, 'kind', kind, 'detail', detail, 'occurredAt', occurred_at
-        )) FROM (SELECT * FROM team_history WHERE merchant_id=c.merchant_id AND case_id=c.id ORDER BY sequence)) AS history
-      FROM team_cases AS c WHERE merchant_id=? AND id=?`)
-      .get(employee.merchantId, id) as (TeamCase & { history: string }) | undefined;
-    if (!row) throw new TeamError("CASE_NOT_FOUND", 404);
-    const { history, ...item } = row;
+    const item = this.db.prepare(`SELECT ${caseColumns} FROM team_cases AS c WHERE merchant_id=? AND id=? AND NOT EXISTS (
+        SELECT 1 FROM team_pilot_cases p WHERE p.merchant_id=c.merchant_id AND p.case_id=c.id
+      )`).get(employee.merchantId, id) as TeamCase | undefined;
+    if (!item) throw new TeamError("CASE_NOT_FOUND", 404);
     const linked = this.db.prepare(`SELECT ${findingColumns} FROM team_refund_findings
       WHERE merchant_id=? AND case_id=?`).get(employee.merchantId, id) as FindingRow | undefined;
     const comparison = linked && this.db.prepare(`SELECT json_remove(evidence, '$.exact') AS evidence
@@ -649,7 +660,7 @@ export class TeamStore {
       ...(typeof comparison === "string" && { comparison: JSON.parse(comparison) as CaseComparison }),
     } : undefined;
     const drawerId = this.drawers?.forCase(employee, id);
-    return { case: item, history: JSON.parse(history) as CaseHistory[], ...(evidence && { evidence }), ...(drawerId && { drawerId }) };
+    return { case: item, history: this.caseHistory(employee.merchantId, id), ...(evidence && { evidence }), ...(drawerId && { drawerId }) };
   }
 
   isDrawerCase(employee: Employee, id: string) {
@@ -767,6 +778,11 @@ export class TeamStore {
       this.addEvent(employee, caseId, "Assigned", assignee.name, now);
       return this.open(employee, caseId);
     });
+  }
+
+  private caseHistory(merchantId: string, id: string) {
+    return this.db.prepare(`SELECT sequence, actor, username, kind, detail, occurred_at AS occurredAt
+      FROM team_history WHERE merchant_id=? AND case_id=? ORDER BY sequence`).all(merchantId, id) as unknown as CaseHistory[];
   }
 
   private addEvent(employee: Employee, id: string, kind: HistoryKind, detail: string, time: string) {
