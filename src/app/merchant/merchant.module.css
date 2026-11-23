@@ -104,6 +104,23 @@
 .previewFindings .evidenceRow { border-bottom: 1px solid var(--line); padding: 12px; }
 .importSection details > ul, .importSection summary + ul { margin-top: 10px; }
 
+.shiftOverview { display: grid; gap: 22px; }
+.shiftOverviewHeading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px 24px; align-items: end; }
+.shiftOverviewHeading label { min-width: min(100%, 190px); }
+.shiftOverviewActions { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; }
+.shiftAttentionList, .shiftRecords { display: grid; gap: 8px; list-style: none; margin-top: 8px; }
+.shiftAttentionLink { display: grid; gap: 3px; padding: 10px 13px; background: #f4f8f9; border: 1px solid var(--line); border-left: 3px solid #13796e; border-radius: 8px; text-decoration: none; color: inherit; overflow-wrap: anywhere; }
+.shiftAttentionLink:hover { border-color: #13796e; }
+.shiftReviewLink { display: inline-block; margin: 6px 13px 2px; }
+.shiftAttentionHeading, .shiftRecords li > div { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
+.shiftAttentionHeading span, .shiftRecords li span { color: var(--muted); font-size: .86rem; }
+.shiftMetricGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 8px; margin: 9px 0; }
+.shiftMetricGrid .shiftMetric { display: grid; align-content: start; gap: 4px; min-height: 105px; padding: 10px 12px; text-align: left; color: inherit; }
+.shiftMetric[aria-pressed="true"] { border-color: #13796e; background: #ecf6f3; }
+.shiftMetric strong { font-size: 1.28rem; font-variant-numeric: tabular-nums; }
+.shiftMetric small { color: var(--muted); }
+.shiftRecords li { padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }
+
 @media (max-width: 740px) {
   .shell { padding: 22px 14px 40px; }
   .card { padding: 16px; }
@@ -167,3 +184,23 @@
   .moneySummary { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .moneySummary>div:last-child { grid-column: 1/-1; }
 }
+
+.overnightPanel, .overnightDetails { display: grid; gap: 12px; overflow-wrap: anywhere; }
+.overnightPanel { margin-bottom: 16px; }
+.overnightDetails { background: #f4f8f9; border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+.overnightDetails details > ul { padding-left: 20px; margin-top: 6px; }
+.overnightPanel > button { justify-self: start; }
+.overnightDetails form { max-width: 580px; }
+
+.coverageFields { min-width: 0; border: 0; display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
+.coverageGrants { list-style: none; display: grid; gap: 10px; }
+.coverageGrants button { justify-self: start; }
+.overnightDetails > ul { padding-left: 20px; }
+
+.pilotGrid, .pilotMetrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 235px), 1fr)); gap: 12px; }
+.pilotMetrics > p { background: #f4f8f9; border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+.pilotRows, .pilotSourceLinks { list-style: none; display: grid; gap: 6px; margin-top: 8px; }
+.pilotRows li:target { border-left: 4px solid var(--teal); padding-left: 8px; }
+.shell .pilotCheck { display: flex; align-items: start; gap: 8px; }
+.shell .pilotCheck input { width: auto; min-height: 0; }
+.pilotExportPreview { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9rem; }

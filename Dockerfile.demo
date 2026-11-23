@@ -1,0 +1,17 @@
+FROM node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS build
+WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1 CHANGEGATE_STAGING_BUILD=1
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54
+WORKDIR /app
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 HOSTNAME=0.0.0.0 PORT=3000 CHANGEGATE_TEAM_MODE=railway-demo
+COPY --from=build /app/.next/standalone ./
+COPY --from=build /app/.next/static ./.next/static
+COPY --from=build /app/public ./public
+COPY scripts/start-railway-demo.mjs ./scripts/
+USER node
+CMD ["node", "scripts/start-railway-demo.mjs"]

@@ -1,0 +1,7 @@
+[
+  { "username": "maya", "name": "Maya Chen", "role": "cashier", "merchantId": "harbor", "merchantName": "Harbor Goods" },
+  { "username": "qa-cashier-b", "name": "Robin Davis", "role": "cashier", "merchantId": "harbor", "merchantName": "Harbor Goods" },
+  { "username": "jordan", "name": "Jordan Lee", "role": "manager", "merchantId": "harbor", "merchantName": "Harbor Goods" },
+  { "username": "pay-backup", "name": "Backup Supervisor", "role": "manager", "merchantId": "harbor", "merchantName": "Harbor Goods" },
+  { "username": "alex", "name": "Alex Rivera", "role": "owner", "merchantId": "ridge", "merchantName": "Ridge Market" }
+]

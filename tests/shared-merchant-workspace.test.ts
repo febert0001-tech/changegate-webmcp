@@ -1,3 +1,7 @@
+import { pilotSummaryText } from "../src/merchant-team/pilot-summary";
+import type { PilotView } from "../src/merchant-team/pilot-review";
+import { coverageInstant } from "../src/merchant-team/coverage-time";
+import { overnightAccounts, type OvernightQueue, type OvernightOwner, type CoverageSettingsView } from "../src/merchant-team/overnight";
 import { fork, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
@@ -8,12 +12,17 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assessSize, observeRefundShare } from "../src/merchant-team/refund-monitor-rules";
-import { requestStatus, requestReceipt, type RefundRequest } from "../src/merchant-team/refund-requests";
+import { checks, requestStatus, requestReceipt, type RefundRequest } from "../src/merchant-team/refund-requests";
+import { demoAccounts, generateDemoEvents, type DemoState } from "../src/merchant-team/demo-shift";
+import { demoExplanation } from "../src/merchant-team/refund-ai-explanation";
 import type { Employee, TeamCase, TeamCaseDetail, TeamSession, TeamWorkspaceView } from "../src/merchant-team/contracts";
+import type { CashDrawerView } from "../src/merchant-team/cash-drawers";
+import { cashWeekGroups, originalVarianceTotal, type CashWeek } from "../src/merchant-team/weekly-cash-review";
 import { createTeamWorkspace } from "../src/merchant-team/handler";
 import { reviewSummaryCsv, type ReviewSummary } from "../src/merchant-team/review-summary";
 import { TeamStore } from "../src/merchant-team/store";
 import { SquareSandbox } from "../src/merchant-team/square-sandbox";
+import { configuredPayPalSandbox, PayPalProvider } from "../src/merchant-team/paypal-provider";
 import { reviewRefundCsv, type ImportSummary, type RefundImport, type RefundImportResult } from "../src/merchant-team/refund-csv";
 
 const origin = "http://127.0.0.1:3190";
@@ -31,15 +40,15 @@ const folders: string[] = [];
 const stores = new Set<TeamStore>();
 const children = new Set<ChildProcess>();
 
-function app(path?: string, users = roster, clock?: () => string, square?: SquareSandbox) {
+function app(path?: string, users = roster, clock?: () => string, square?: SquareSandbox, paypal?: PayPalProvider, demo = false, hostedDemo = false) {
   if (!path) {
     const folder = mkdtempSync(join(tmpdir(), "changegate-team-"));
     folders.push(folder);
     path = join(folder, "merchant.sqlite");
   }
-  const store = new TeamStore(path, clock);
+  const store = new TeamStore(path, clock, demo);
   stores.add(store);
-  const workspace = createTeamWorkspace(store, users, origin, square ? { square } : {});
+  const workspace = createTeamWorkspace(store, users, origin, { hostedDemo, ...(square && { square }), ...(paypal && { paypal }) });
   return {
     path, store,
     stop() { store.close(); stores.delete(store); },
@@ -84,6 +93,368 @@ async function signIn(server: Pick<ReturnType<typeof app>, "request">, username:
     },
   };
 }
+
+describe("authenticated synthetic shift", () => {
+  it("freezes a blind cash count and reuses one variance case across restart", async () => {
+    const users = roster.map(employee => ({ ...employee, role: employee.username === "maya" ? "cashier" as const : "manager" as const }));
+    const server = app(undefined, users, undefined, undefined, undefined, true, true);
+    const cashier = await signIn(server, "maya");
+    const supervisor = await signIn(server, "jordan");
+    const otherMerchant = await signIn(server, "alex");
+    const id = randomUUID();
+    const open = { action: "openCashDrawer", id, cents: 10000 };
+    const close = { action: "closeCashDrawer", id, cents: 16300 };
+    const read = { action: "cashDrawers", id };
+    expect(await cashier.send<CashDrawerView>({ action: "cashDrawers" })).toMatchObject({ drawer: null });
+    expect(await cashier.send<CashDrawerView>(open)).toMatchObject({ activeId: id, drawer: { report: null } });
+    expect(await cashier.send<CashDrawerView>(open)).toMatchObject({ activeId: id });
+    const sale = { action: "recordDemoSale", submissionId: randomUUID(), amount: "80.00", tender: "Cash" };
+    const savedSale = await cashier.send<{ reference: string }>(sale);
+    expect(await cashier.send(sale)).toEqual(savedSale);
+    await cashier.send({ ...sale, submissionId: randomUUID(), amount: "25.00", tender: "Electronic" });
+    const refund = await cashier.send<RefundRequest>({ action: "createRefundRequest", submissionId: randomUUID(),
+      terms: { reference: savedSale.reference, amount: "12.00", currency: "USD", reason: "Test cash payout" } });
+    const payout = { action: "reportCashPayout", id: refund.id };
+    await cashier.send(payout);
+    await cashier.send(payout);
+    const held = await cashier.send<RefundRequest>({ action: "createRefundRequest", submissionId: randomUUID(),
+      terms: { reference: savedSale.reference, amount: "50.00", currency: "USD", reason: "Held in this drawer" } });
+    const heldPayout = { action: "reportCashPayout", id: held.id };
+    expect((await cashier.request(heldPayout)).status).toBe(409);
+    await supervisor.send({ action: "decideRefundRequest", id: held.id, decision: "Approved", password });
+    const movement = { action: "recordDrawerMovement", id, entryId: randomUUID(), kind: "addition", cents: 200, note: "Change added" };
+    await cashier.send(movement);
+    await cashier.send(movement);
+    expect((await cashier.request({ ...movement, kind: "removal" })).status).toBe(409);
+    await cashier.send({ ...movement, entryId: randomUUID(), kind: "removal", note: "Change removed" });
+    expect((await otherMerchant.request(read)).status).toBe(404);
+    expect(await supervisor.send<CashDrawerView>(read)).toMatchObject({ drawer: { report: null } });
+    const closed = await cashier.send<CashDrawerView>(close);
+    expect(closed.drawer?.report).toMatchObject({ expected: 16800, variance: -500, firstCount: { cents: 16300, actor: "Maya Chen" } });
+    expect(closed.drawer?.report?.entries.map(({ cents }) => cents)).toEqual([8000, -1200, 200, -200]);
+    expect(await cashier.send(close)).toEqual(closed);
+    await cashier.send({ ...sale, submissionId: randomUUID(), amount: "31.00", tender: "Electronic" });
+    expect(await cashier.send(read)).toEqual(closed);
+    const review = { action: "openDrawerCase", id };
+    const cases = await Promise.all([supervisor.send<CashDrawerView>(review), supervisor.send<CashDrawerView>(review)]);
+    const caseId = cases[0].drawer?.report?.caseId;
+    expect(caseId).toBeTruthy();
+    expect(cases[1].drawer?.report?.caseId).toBe(caseId);
+    expect((await cashier.request({ action: "note", id: caseId, revision: 1, note: "Unauthorized review" })).status).toBe(403);
+    await supervisor.send({ action: "recordDrawerFollowUp", id, entryId: randomUUID(), cents: 16400, note: "Recount recorded" });
+    await supervisor.send({ action: "record", id: caseId, revision: 1, finding: "Recount reviewed", nextAction: "Reconcile cash log", status: "Investigating" });
+    await supervisor.send({ action: "resolve", id: caseId, revision: 2, drawerDisposition: "Closed with difference unexplained" });
+    server.stop();
+    const reopened = app(server.path, users, undefined, undefined, undefined, true, true);
+    const reviewer = await signIn(reopened, "jordan");
+    const result = await reviewer.send<CashDrawerView>(review);
+    expect(result.drawer?.report).toMatchObject({ caseId, expected: 16800, variance: -500,
+      firstCount: { cents: 16300 }, followUps: [{ cents: 16400, actor: "Jordan Lee" }] });
+    const workspace = await reviewer.send<TeamWorkspaceView>({ action: "workspace", id: caseId });
+    expect(workspace.detail).toMatchObject({ drawerId: id, case: { id: caseId, status: "Resolved" } });
+    expect(workspace.detail?.history.at(-1)).toMatchObject({ kind: "Resolved", actor: "Jordan Lee" });
+  });
+
+  it("keeps weekly shortages and overages separate when a supervisor resolves a drawer case", async () => {
+    let now = "2026-11-09T04:59:59.000Z";
+    const users = roster.map(employee => ({ ...employee, role: employee.username === "maya" ? "cashier" as const : "manager" as const }));
+    const openApp = (path?: string) => app(path, users, () => now, undefined, undefined, true, true);
+    const server = openApp();
+    const cashier = await signIn(server, "maya");
+    const supervisor = await signIn(server, "jordan");
+    const outsider = await signIn(server, "alex");
+    const shift = async (cents?: number) => {
+      const id = randomUUID();
+      await cashier.send({ action: "openCashDrawer", id, cents: 10000 });
+      if (cents !== undefined) await cashier.send({ action: "closeCashDrawer", id, cents });
+      return id;
+    };
+    await shift(9000);
+    now = "2026-11-09T05:00:00.000Z";
+    const first = await shift(9500);
+    now = "2026-11-10T22:00:00.000Z";
+    const second = await shift(9300);
+    now = "2026-11-11T22:00:00.000Z";
+    const over = await shift(10400);
+    now = "2026-11-12T22:00:00.000Z";
+    await shift(10000);
+    now = "2026-11-13T22:00:00.000Z";
+    await shift();
+    async function openReview(id: string) {
+      const result = await supervisor.send<CashDrawerView>({ action: "openDrawerCase", id });
+      return result.drawer!.report!.caseId!;
+    }
+    const [firstCase, , overCase] = await Promise.all([openReview(first), openReview(second), openReview(over)]);
+    const read = { action: "weeklyCashReview", week: "2026-11-12" };
+    expect((await cashier.request(read)).status).toBe(403);
+    expect((await outsider.request(read)).status).toBe(404);
+    expect((await supervisor.send<CashWeek>({ ...read, location: "Harbor Bar" })).rows).toEqual([]);
+    const initial = await supervisor.send<CashWeek>({ ...read, location: "Harbor Fuel" });
+    expect(initial).toMatchObject({ start: "2026-11-09", end: "2026-11-15", timeZone: "America/New_York" });
+    const before = cashWeekGroups(initial.rows);
+    expect(Object.values(before).map(rows => rows.length)).toEqual([4, 2, 1, 1, 3, 1]);
+    expect([originalVarianceTotal(before.short), originalVarianceTotal(before.over)]).toEqual([1200, 400]);
+    async function document(id: string) {
+      await supervisor.send({ action: "record", id, revision: 1, finding: "Reviewed the drawer count",
+        nextAction: "Document the disposition", status: "Investigating" });
+    }
+    await document(firstCase);
+    await supervisor.send({ action: "resolve", id: firstCase, revision: 2, drawerDisposition: "Closed with difference unexplained" });
+    let rows = (await supervisor.send<CashWeek>(read)).rows;
+    expect(cashWeekGroups(rows).unresolved).toHaveLength(2);
+    expect(originalVarianceTotal(cashWeekGroups(rows).short)).toBe(1200);
+    await document(overCase);
+    const correction = { action: "resolve", id: overCase, revision: 2, drawerDisposition: "Recount corrected the count" };
+    expect((await supervisor.request(correction)).status).toBe(422);
+    await supervisor.send({ action: "recordDrawerFollowUp", id: over, cents: 10000, entryId: randomUUID(), note: "Recount matched expected" });
+    await supervisor.send(correction);
+    await cashier.send({ action: "closeCashDrawer", id: first, cents: 10000 });
+    server.stop();
+    const restarted = openApp(server.path);
+    rows = (await (await signIn(restarted, "jordan")).send<CashWeek>(read)).rows;
+    const after = cashWeekGroups(rows);
+    expect(Object.values(after).map(items => items.length)).toEqual([4, 2, 1, 1, 1, 1]);
+    expect([originalVarianceTotal(after.short), originalVarianceTotal(after.over)]).toEqual([1200, 400]);
+    expect(rows.find(row => row.id === first)?.close).toMatchObject({
+      firstCount: { cents: 9500 }, review: { reviewer: "Jordan Lee", disposition: "Closed with difference unexplained" },
+    });
+    expect(rows.find(row => row.id === over)?.close).toMatchObject({
+      firstCount: { cents: 10400 }, recount: { cents: 10000 }, review: { disposition: "Recount corrected the count" },
+    });
+  });
+  it("uses the HTTPS staging session boundary and accepts only synthetic writes on Railway", async () => {
+    const demoOrigin = "https://changegate-demo.up.railway.app";
+    const host = new URL(demoOrigin).host;
+    const users = roster.map(employee => ({ ...employee, role: "cashier" as const }));
+    const store = new TeamStore(":memory:", undefined, true);
+    stores.add(store);
+    const app = createTeamWorkspace(store, users, demoOrigin, { staging: true, hostedDemo: true });
+    const request = (body: object, extra: Record<string,string> = {}) => app.handle(new Request(demoOrigin+"/api/merchant", {
+      method: "POST", body: JSON.stringify(body), headers: { Host:host, Origin:demoOrigin, "Content-Type":"application/json",
+        "X-Forwarded-Host":host, "X-Forwarded-Proto":"https", "X-Real-IP":"192.0.2.1", ...extra },
+    }));
+    const login = { action:"signIn", username:"maya", password };
+    expect((await request(login, { "X-Forwarded-Proto":"http" })).status).toBe(403);
+    expect((await request(login, { Origin:"https://unrelated.example" })).status).toBe(403);
+    expect((await request({action:"demoShift"})).status).toBe(401);
+    const signed = await request(login);
+    expect(signed.status).toBe(200);
+    const cookie = signed.headers.get("set-cookie")!;
+    expect(cookie).toMatch(/^__Host-changegate_team_session=.*; HttpOnly; SameSite=Strict; Path=\/;.*; Secure$/);
+    const session = await signed.json() as TeamSession;
+    const credentials = { Cookie:cookie.split(";")[0]!, "X-ChangeGate-Session":session.sessionVersion };
+    expect(session).toMatchObject({ syntheticOnly:true, demoShift:true, paypalConnected:false });
+    expect((await request({action:"importCsv",text:"reference,amount,currency",mapping:{reference:0,amount:1,currency:2}}, credentials)).status).toBe(404);
+    expect((await request({action:"lookupOriginalSale",reference:"sandbox-sale",source:"square"}, credentials)).status).toBe(404);
+    expect((await request({action:"createRefundRequest",submissionId:randomUUID(),terms:{reference:"TEST-SALE-CASH",amount:"50.00",currency:"USD",reason:"Test"}}, credentials)).status).toBe(404);
+    expect((await request({action:"startDemoShift",seed:"harbor-evening"}, credentials)).status).toBe(200);
+  });
+
+  it("replays the same scope, decisions and holds without touching other records", async () => {
+    const users = demoAccounts.map(account => {
+      const salt = randomBytes(16);
+      return { ...account, role: account.role as Employee["role"], salt: salt.toString("hex"),
+        passwordHash: scryptSync(password, salt, 32).toString("hex") } as Employee;
+    });
+    const server = app(undefined, users, undefined, undefined, undefined, true);
+    const [maya, robin, jordan, backup, alex] = await Promise.all(users.map(user => signIn(server,user.username)));
+    type View = { state: DemoState; inbox: { requestId: string; phase: number }[] };
+    const seed = "harbor-evening";
+    let { state } = await maya!.send<View>({ action: "startDemoShift", seed });
+    const otherTerms = { reference: "TEST-SALE-ELECTRONIC", currency: "USD", amount: "5.00", reason: "Unrelated fixture" };
+    const other = await alex!.send<RefundRequest>({ action: "createRefundRequest", submissionId: randomUUID(), terms: otherTerms });
+    const sameMerchant = await maya!.send<RefundRequest>({ action: "createRefundRequest", submissionId: randomUUID(), terms: otherTerms });
+    const advance = async () => {
+      const result = await maya!.send<View>({ action: "nextDemoEvent", runId: state.runId, step: state.step });
+      state = result.state;
+    };
+    const submit = (cashier: typeof maya) => cashier!.send<RefundRequest>({ action: "createRefundRequest", submissionId: randomUUID(),
+      demoRun: state.runId, terms: { reference: state.event.sale!.reference, amount: state.event.refund!.amount,
+        reason: state.event.refund!.reason, currency: "USD" } });
+    const approve = (id: string) => ({ action: "decideRefundRequest", id, decision: "Approved", password });
+    async function play(verifyRoles: boolean) {
+      const events = [state.event];
+      const routes: string[] = [];
+      const ids: string[] = [];
+      while (!state.finished) {
+        if (state.event.refund) {
+          const cashier = state.event.refund.cashier === "maya" ? maya : robin;
+          const lookup = await cashier!.send<{ sale: object }>({ action: "lookupOriginalSale", reference: state.event.sale!.reference });
+          expect(lookup.sale).toEqual(state.event.sale);
+          const result = await submit(cashier);
+          expect((await submit(cashier)).id).toBe(result.id);
+          const check = checks(result);
+          routes.push(check.route);
+          ids.push(result.id);
+          if (state.step === 6) {
+            expect(check.monitoring).toMatchObject({ cashierWatchCount: 3, registerWatchCount: 3 });
+            expect(check.monitoring?.reasons.join(" ")).toMatch(/across registers.*across cashiers/);
+          }
+          if (state.step === 2 && verifyRoles) {
+            expect(check.cumulativeCents).toBe(5000);
+            expect((await jordan!.send<View>({ action: "demoShift" })).inbox).toEqual([{ requestId: result.id, phase: 0 }]);
+            expect((await backup!.send<View>({ action: "demoShift" })).inbox).toEqual([]);
+            expect((await maya!.request(approve(result.id))).status).toBe(403);
+            expect((await alex!.request(approve(result.id))).status).toBe(404);
+            expect((await alex!.request({ action: "openRefundRequest", id: result.id })).status).toBe(404);
+            expect((await alex!.request({ action: "demoShift" })).status).toBe(404);
+            const receipt = requestReceipt(await jordan!.send<RefundRequest>(approve(result.id)));
+            expect(receipt.decision).toMatchObject({ status: "Approved" });
+            expect(receipt.execution).toMatchObject({ status: "Not submitted", attempt: null, providerResponse: null });
+          }
+        }
+        await advance();
+        events.push(state.event);
+      }
+      expect((await backup!.send<View>({ action: "demoShift" })).inbox).toContainEqual({ requestId: ids[4], phase: 1 });
+      return { events, routes, ids };
+    }
+    const first = await play(true);
+    const overview = await jordan!.send<import("../src/merchant-team/shift-overview").ShiftOverview>({ action: "shiftOverview" });
+    expect(overview.sales).toHaveLength(2);
+    expect(overview.sales.filter(sale => sale.discountCents > 0)).toHaveLength(1);
+    expect(overview.refunds).toHaveLength(5);
+    expect(overview.refunds.filter(row => row.awaitingApproval).map(row => row.id)).toEqual([first.ids[4]]);
+    expect(overview.refunds.filter(row => row.awaitingSubmission).map(row => row.id)).toEqual([first.ids[0]]);
+    expect(overview.refunds.every(row => row.confirmedPayoutCents === null)).toBe(true);
+    expect((await alex!.request({ action: "shiftOverview" })).status).toBe(404);
+    expect(first.events).toEqual(generateDemoEvents(seed));
+    expect(first.routes).toEqual(["manager", "routine", "routine", "routine", "manager"]);
+    const reviewer = users[2]!;
+    const firstHeld = await jordan!.send<RefundRequest>({ action: "openRefundRequest", id: first.ids[4] });
+    vi.stubEnv("CHANGEGATE_MONITOR_AI_KEY", undefined);
+    vi.stubEnv("CHANGEGATE_MONITOR_AI_MODEL", undefined);
+    try {
+      expect(demoExplanation(server.store.alerts, reviewer, firstHeld)).toEqual({ status:"unavailable" });
+      vi.stubEnv("CHANGEGATE_MONITOR_AI_KEY", "test-only");
+      vi.stubEnv("CHANGEGATE_MONITOR_AI_MODEL", "test-model");
+      const transport = vi.fn(async (_url: string, init: RequestInit) => {
+        const payload = JSON.parse(String(init.body));
+        expect(payload).toMatchObject({ model:"test-model", store:false });
+        expect(JSON.parse(payload.input)).toEqual({ windowMinutes:15, threshold:3, rules:[
+          { label:"Unusual refunds by the same cashier across registers", count:3 },
+          { label:"Unusual refunds at the same register across cashiers", count:3 },
+        ] });
+        return Response.json({ status:"completed", model:"test-model-version", usage:{input_tokens:52,output_tokens:18},
+          output:[{content:[{type:"output_text",text:JSON.stringify({summary:"Both scopes reached three unusual refunds in 15 minutes."})}]}] });
+      });
+      vi.stubGlobal("fetch", transport);
+      expect(demoExplanation(server.store.alerts, reviewer, firstHeld)).toEqual({ status:"pending" });
+      expect(demoExplanation(server.store.alerts, reviewer, firstHeld)).toEqual({ status:"pending" });
+      await vi.waitFor(() => expect(demoExplanation(server.store.alerts, reviewer, firstHeld)).toMatchObject({
+        status:"complete", summary:"Both scopes reached three unusual refunds in 15 minutes.", model:"test-model-version", usage:{input:52,output:18},
+      }));
+      expect(transport).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+    const lastRun = state.runId;
+    ({ state } = await maya!.send<View>({ action: "replayDemoShift", runId: lastRun }));
+    expect(state.runId).not.toBe(lastRun);
+    const resetOverview = await jordan!.send<import("../src/merchant-team/shift-overview").ShiftOverview>({ action: "shiftOverview" });
+    expect(resetOverview.sales).toHaveLength(1);
+    expect(resetOverview.refunds).toEqual([]);
+    expect(await maya!.send<RefundRequest[]>({ action: "listRefundRequests" })).toEqual([sameMerchant]);
+    expect(await alex!.send<RefundRequest[]>({ action: "listRefundRequests" })).toEqual([other]);
+    const second = await play(false);
+    expect(second.events).toEqual(first.events);
+    expect(second.routes).toEqual(first.routes);
+    const secondHeld = await jordan!.send<RefundRequest>({ action: "openRefundRequest", id: second.ids[4] });
+    vi.stubEnv("CHANGEGATE_MONITOR_AI_KEY", "test-only");
+    vi.stubEnv("CHANGEGATE_MONITOR_AI_MODEL", "test-model");
+    const timeout = vi.fn(async () => { throw new DOMException("Timed out", "TimeoutError"); });
+    vi.stubGlobal("fetch", timeout);
+    try {
+      expect(demoExplanation(server.store.alerts, reviewer, secondHeld)).toEqual({status:"pending"});
+      await vi.waitFor(() => expect(demoExplanation(server.store.alerts, reviewer, secondHeld)).toEqual({status:"unavailable"}));
+      expect(demoExplanation(server.store.alerts, reviewer, secondHeld)).toEqual({status:"unavailable"});
+      expect(timeout).toHaveBeenCalledTimes(1);
+      const approved = await jordan!.send<RefundRequest>(approve(secondHeld.id));
+      expect(requestReceipt(approved)).toMatchObject({ decision:{status:"Approved"},execution:{status:"Not submitted"} });
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+    const replayHeld = { action: "replayHeldDemoRefund", runId: state.runId };
+    expect((await alex!.request(replayHeld)).status).toBe(404);
+    const heldOverview = await jordan!.send<import("../src/merchant-team/shift-overview").ShiftOverview>(replayHeld);
+    expect(heldOverview).toMatchObject({ seed, sales: overview.sales });
+    expect(heldOverview.runId).not.toBe(state.runId);
+    expect(heldOverview.refunds).toHaveLength(5);
+    const held = heldOverview.refunds.find(refund => refund.amountCents === 3800)!;
+    expect(held).toMatchObject({ location: "Harbor Fuel", awaitingApproval: true, awaitingSubmission: false, confirmedPayoutCents: null });
+    expect(heldOverview.refunds.filter(refund => refund.awaitingApproval)).toHaveLength(2);
+    expect(heldOverview.refunds.every(refund => !refund.awaitingSubmission && refund.confirmedPayoutCents === null)).toBe(true);
+    const final = await jordan!.send<View>({ action: "demoShift" });
+    expect(final.state).toMatchObject({ requestId: held.id, finished: false, event: generateDemoEvents(seed)[6] });
+    expect(final.inbox).toContainEqual({ requestId: held.id, phase: 0 });
+    expect((await backup!.send<View>({ action: "demoShift" })).inbox).not.toContainEqual({ requestId: held.id, phase: 1 });
+    expect((await jordan!.request(replayHeld)).status).toBe(409);
+    const decisions = await Promise.all([
+      jordan!.request({ action: "decideRefundRequest", id: held.id, decision: "Rejected", password }),
+      backup!.request({ action: "decideRefundRequest", id: held.id, decision: "Approved", password }),
+    ]);
+    expect(decisions.map(result => result.status).sort()).toEqual([200, 409]);
+    const won = decisions[0]!.ok ? { decision: "Rejected", actor: "Jordan Lee", reviewer: jordan! }
+      : { decision: "Approved", actor: "Backup Supervisor", reviewer: backup! };
+    const decisionEvents = async () => (await jordan!.send<RefundRequest>({ action: "openRefundRequest", id: held.id }))
+      .events.filter(event => event.kind === "Decision recorded");
+    const recorded = await decisionEvents();
+    expect(recorded).toEqual([{ kind: "Decision recorded", decision: won.decision, actor: won.actor,
+      occurredAt: final.state.event.at }]);
+    expect((await won.reviewer.request({ action: "decideRefundRequest", id: held.id, decision: won.decision, password })).status).toBe(200);
+    expect(await decisionEvents()).toEqual(recorded);
+    expect((await jordan!.request({ action: "openRefundRequest", id: secondHeld.id })).status).toBe(404);
+    expect((await maya!.send<RefundRequest[]>({ action: "listRefundRequests" })).map(row => row.id)).toContain(sameMerchant.id);
+    expect(await alex!.send<RefundRequest[]>({ action: "listRefundRequests" })).toEqual([other]);
+  });
+});
+
+describe("cashier-recorded demo sales", () => {
+  it("reserves an approved partial refund, blocks an overage and retains both after restart and seeded replay", async () => {
+    const users = roster.map(employee => ({ ...employee, role: employee.username === "maya" ? "cashier" as const : "manager" as const }));
+    let server = app(undefined, users, undefined, undefined, undefined, true);
+    const [maya, jordan, alex] = await Promise.all(users.map(user => signIn(server, user.username)));
+    const command = { action: "recordDemoSale", submissionId: randomUUID(), amount: "75.00", tender: "Electronic" };
+    type DemoSale = import("../src/merchant-team/demo-sales").DemoSale;
+    expect((await maya!.request({ ...command, merchantId: "ridge" })).status).toBe(400);
+    expect((await jordan!.request(command)).status).toBe(403);
+    const [sale, duplicate] = await Promise.all([maya!.send<DemoSale>(command), maya!.send<DemoSale>(command)]);
+    expect(sale).toEqual(duplicate);
+    expect(sale).toMatchObject({ originalCents: 7500, cashier: "Maya Chen", location: "Harbor Fuel", register: "Register 1", recordedDemo: true });
+    expect((await maya!.request({ ...command, amount: "76.00" })).status).toBe(409);
+    const reference = sale.reference;
+    const original = { action: "openDemoSale", reference };
+    expect((await alex!.request(original)).status).toBe(404);
+    expect((await alex!.request({ action: "lookupOriginalSale", reference })).status).toBe(404);
+    const request = (amount: string) => ({ action: "createRefundRequest", submissionId: randomUUID(),
+      terms: { reference, amount, currency: "USD", reason: "Partial demo refund" } });
+    expect((await alex!.request(request("5.00"))).status).toBe(404);
+    const held = await maya!.send<RefundRequest>(request("52.00"));
+    expect(checks(held)).toMatchObject({ route: "manager", thresholdCents: 5000, balanceCents: 7500 });
+    expect(checks(held).explanation).toContain("$50.00 store threshold");
+    const approved = await jordan!.send<RefundRequest>({ action: "decideRefundRequest", id: held.id, decision: "Approved", password });
+    expect(requestReceipt(approved)).toMatchObject({ decision: { status: "Approved", reviewer: "Jordan Lee" }, execution: { status: "Not submitted" } });
+    const blocked = await maya!.send<RefundRequest>(request("24.00"));
+    expect(checks(blocked)).toMatchObject({ route: "over-balance", balanceCents: 2300, reservedCents: 5200 });
+    expect(checks(blocked).explanation).toContain("Only $23.00 remains refundable");
+    const manual = { action: "shiftOverview", manual: true };
+    type Overview = import("../src/merchant-team/shift-overview").ShiftOverview;
+    const beforeRestart = await maya!.send<Overview>(manual);
+    expect(beforeRestart.sales).toHaveLength(1);
+    expect(beforeRestart.refunds.find(row => row.id === held.id)).toMatchObject({ awaitingSubmission: true, confirmedPayoutCents: null });
+    const dbPath = server.path;
+    server.stop();
+    server = app(dbPath, users, undefined, undefined, undefined, true);
+    const resumed = await signIn(server, "maya");
+    expect(await resumed.send(manual)).toEqual(beforeRestart);
+    expect(await resumed.send({ action: "lookupOriginalSale", reference })).toMatchObject({ sale, reservedCents: 5200, paidCents: 0, balanceCents: 2300 });
+    const seeded = await resumed.send<{ state: DemoState }>({ action: "startDemoShift", seed: "harbor-evening" });
+    await resumed.send({ action: "replayDemoShift", runId: seeded.state.runId });
+    expect(await resumed.send(manual)).toEqual(beforeRestart);
+  });
+});
 
 describe("Square Sandbox refunds", () => {
   const users: Employee[] = roster.map(employee => ({ ...employee, role: "manager" }));
@@ -201,7 +572,7 @@ describe("Square Sandbox refunds", () => {
     const outsider = await signIn(server, "alex");
     const request = await cashier.send<RefundRequest>(submit());
     expect(requestStatus(request)).toBe("Needs manager decision");
-    const execute = { action: "executeSquareRefund", id: request.id };
+    const execute = { action: "executeElectronicRefund", id: request.id };
     const approval = { action: "decideRefundRequest", id: request.id, decision: "Approved", password };
     expect((await cashier.request(execute)).status).toBe(409);
     expect((await cashier.request(approval)).status).toBe(403);
@@ -253,7 +624,7 @@ describe("Square Sandbox refunds", () => {
       const manager = await signIn(server, "jordan");
       const request = await cashier.send<RefundRequest>(submit());
       await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
-      const execute = { action: "executeSquareRefund", id: request.id };
+      const execute = { action: "executeElectronicRefund", id: request.id };
       const stopped = await cashier.send<RefundRequest>(execute);
       expect(stopped.events.at(-1)).toMatchObject({ kind: "Execution stopped" });
       expect(requestReceipt(stopped).execution.status).toBe("Not submitted");
@@ -272,7 +643,7 @@ describe("Square Sandbox refunds", () => {
     const manager = await signIn(server, "jordan");
     const request = await cashier.send<RefundRequest>(submit());
     await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
-    const execute = { action: "executeSquareRefund", id: request.id };
+    const execute = { action: "executeElectronicRefund", id: request.id };
     mock.settings.loseResponse = true;
     await cashier.send(execute);
     mock.settings.denyRefund = true;
@@ -297,12 +668,12 @@ describe("Square Sandbox refunds", () => {
     expect(await cashier.send(lookup)).toMatchObject({ balanceCents: 7000, reservedCents: 0 });
     const request = await cashier.send<RefundRequest>(submit());
     await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
-    const submitted = await cashier.send<RefundRequest>({ action: "executeSquareRefund", id: request.id });
+    const submitted = await cashier.send<RefundRequest>({ action: "executeElectronicRefund", id: request.id });
     expect(requestReceipt(submitted).verification.status).toBe("Pending");
     expect(await cashier.send(lookup)).toMatchObject({ balanceCents: 2000, reservedCents: 0 });
     const above = await cashier.send<RefundRequest>(submit({ amount: "20.01" }));
     expect(requestStatus(above)).toBe("Blocked · Over refundable balance");
-    expect((await cashier.request({ action: "executeSquareRefund", id: above.id })).status).toBe(409);
+    expect((await cashier.request({ action: "executeElectronicRefund", id: above.id })).status).toBe(409);
     expect(mock.posts).toHaveLength(1);
   });
 
@@ -312,7 +683,7 @@ describe("Square Sandbox refunds", () => {
     const requester = await signIn(server, "maya");
     const supervisor = await signIn(server, "jordan");
     const request = await requester.send<RefundRequest>(submit({ amount: "20.00" }));
-    const execute = { action: "executeSquareRefund", id: request.id };
+    const execute = { action: "executeElectronicRefund", id: request.id };
     const approve = { action: "decideRefundRequest", id: request.id, decision: "Approved", password };
     const submitToSquare = mock.square.submit.bind(mock.square);
     const squareSubmit = vi.spyOn(mock.square, "submit").mockImplementationOnce((attempt, authorize) => {
@@ -359,7 +730,7 @@ describe("Square Sandbox refunds", () => {
 
     const reopened = await requester.send<RefundRequest>({ action: "openRefundRequest", id: request.id });
     expect(requestStatus(reopened)).toBe("Needs manager decision");
-    expect((await requester.request({ action: "executeSquareRefund", id: request.id })).status).toBe(409);
+    expect((await requester.request({ action: "executeElectronicRefund", id: request.id })).status).toBe(409);
     expect(mock.posts).toHaveLength(0);
     const approved = await supervisor.send<RefundRequest>({
       action: "decideRefundRequest", id: request.id, decision: "Approved", password,
@@ -376,7 +747,7 @@ describe("Square Sandbox refunds", () => {
     const cashier = await signIn(first, "maya");
     const supervisor = await signIn(second, "jordan");
     const request = await cashier.send<RefundRequest>(submit());
-    const action = { action: "executeSquareRefund", id: request.id };
+    const action = { action: "executeElectronicRefund", id: request.id };
     const lookup = { action: "lookupOriginalSale", source: "square", reference: terms.reference };
     await supervisor.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
 
@@ -387,7 +758,7 @@ describe("Square Sandbox refunds", () => {
     try {
       await vi.waitFor(() => expect(mock.ledger.size).toBe(1));
       const repeat = await supervisor.send<RefundRequest>(action);
-      const reconcile = await supervisor.send<RefundRequest>({ ...action, action: "verifySquareRefund" });
+      const reconcile = await supervisor.send<RefundRequest>({ ...action, action: "verifyElectronicRefund" });
       expect(requestReceipt(repeat).execution.status).toBe("Outcome unconfirmed");
       expect(requestReceipt(reconcile).execution.status).toBe("Outcome unconfirmed");
       expect(await supervisor.send(lookup)).toMatchObject({ reservedCents: 5000 });
@@ -424,7 +795,7 @@ describe("Square Sandbox refunds", () => {
     const cashier = await signIn(first, "maya");
     const supervisor = await signIn(second, "jordan");
     const request = await cashier.send<RefundRequest>(submit());
-    const action = { action: "executeSquareRefund", id: request.id };
+    const action = { action: "executeElectronicRefund", id: request.id };
     const lookup = { action: "lookupOriginalSale", source: "square", reference: terms.reference };
     await supervisor.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
 
@@ -469,7 +840,7 @@ describe("Square Sandbox refunds", () => {
     const cashier = await signIn(first, "maya");
     const supervisor = await signIn(second, "jordan");
     const request = await cashier.send<RefundRequest>(submit());
-    const action = { action: "executeSquareRefund", id: request.id };
+    const action = { action: "executeElectronicRefund", id: request.id };
     await supervisor.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
 
     const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
@@ -503,7 +874,7 @@ describe("Square Sandbox refunds", () => {
     const manager = await signIn(server, "jordan");
     const request = await cashier.send<RefundRequest>(submit());
     await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
-    const execute = { action: "executeSquareRefund", id: request.id };
+    const execute = { action: "executeElectronicRefund", id: request.id };
     const first = cashier.send<RefundRequest>(execute);
     try {
       await vi.waitFor(() => expect(mock.posts).toHaveLength(1));
@@ -523,11 +894,11 @@ describe("Square Sandbox refunds", () => {
     const manager = await signIn(server, "jordan");
     const rejected = await cashier.send<RefundRequest>(submit());
     await manager.send({ action: "decideRefundRequest", id: rejected.id, decision: "Rejected", password });
-    expect((await cashier.request({ action: "executeSquareRefund", id: rejected.id })).status).toBe(409);
+    expect((await cashier.request({ action: "executeElectronicRefund", id: rejected.id })).status).toBe(409);
     const approved = await cashier.send<RefundRequest>(submit());
     await manager.send({ action: "decideRefundRequest", id: approved.id, decision: "Approved", password });
     mock.settings.total = 4900;
-    const result = await cashier.send<RefundRequest>({ action: "executeSquareRefund", id: approved.id });
+    const result = await cashier.send<RefundRequest>({ action: "executeElectronicRefund", id: approved.id });
     expect(requestStatus(result)).toBe("Blocked · No refund submitted");
     expect(requestReceipt(result).execution.status).toBe("Not submitted");
     expect(await cashier.send({ action: "lookupOriginalSale", source: "square", reference: terms.reference }))
@@ -554,7 +925,7 @@ describe("Square Sandbox refunds", () => {
     const request = await cashier.send<RefundRequest>(submit());
     await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
     mock.settings.refundIds = ["earlier-refund"];
-    const stopped = await cashier.send<RefundRequest>({ action: "executeSquareRefund", id: request.id });
+    const stopped = await cashier.send<RefundRequest>({ action: "executeElectronicRefund", id: request.id });
     expect(mock.posts).toHaveLength(0);
     expect(requestReceipt(stopped).execution.status).toBe("Not submitted");
     expect(stopped.events.at(-1)).toMatchObject({ kind: "Execution stopped", reason: expect.stringContaining("earlier refund failed") });
@@ -575,7 +946,7 @@ describe("Square Sandbox refunds", () => {
     const manager = await signIn(server, "jordan");
     const request = await cashier.send<RefundRequest>(submit());
     await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
-    const execute = { action: "executeSquareRefund", id: request.id };
+    const execute = { action: "executeElectronicRefund", id: request.id };
     const original = await cashier.send<RefundRequest>(execute);
     expect(mock.posts).toHaveLength(1);
     const originalPost = mock.posts[0];
@@ -646,16 +1017,477 @@ describe("Square Sandbox refunds", () => {
     const supervisor = await signIn(server, "jordan");
     await supervisor.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
     mock.settings.visible = false;
-    const result = await cashier.send<RefundRequest>({ action: "executeSquareRefund", id: request.id });
+    const result = await cashier.send<RefundRequest>({ action: "executeElectronicRefund", id: request.id });
     expect(requestReceipt(result).verification.status).toBe("Unconfirmed");
     mock.settings.visible = true;
-    const verify = { action: "verifySquareRefund", id: request.id };
+    const verify = { action: "verifyElectronicRefund", id: request.id };
     mock.settings.readback = { ...refund, status: "PENDING", amount_money: { amount: 1234, currency: "USD" } };
     expect(requestReceipt(await cashier.send<RefundRequest>(verify)).verification.status).toBe("Pending");
     mock.settings.readback = { ...refund, payment_id: "unrelated-payment" };
     expect(requestReceipt(await cashier.send<RefundRequest>(verify)).verification.status).toBe("Mismatch");
     mock.settings.readback = { ...refund, status: "FAILED", amount_money: { amount: 1234, currency: "USD" } };
     expect(requestReceipt(await cashier.send<RefundRequest>(verify)).verification.status).toBe("Failed");
+    expect(mock.posts).toHaveLength(1);
+  });
+});
+
+describe("PayPal Sandbox refunds with simulated transport", () => {
+  const users: Employee[] = roster.map(employee => ({ ...employee, role: "manager" }));
+  const capture = "MOCKCAPTURE123";
+  const order = "MOCKORDER123";
+  const refund = "MOCKREFUND123";
+  const merchantId = "MOCKMERCHANT123";
+  const terms = { source: "paypal", reference: capture, amount: "50.00", currency: "USD", reason: "Simulated PayPal" };
+  const source = { action: "lookupOriginalSale", source: "paypal", reference: capture };
+  const submit = (amount = terms.amount) => ({ action: "createRefundRequest", submissionId: randomUUID(), terms: { ...terms, amount } });
+  const completedPrior = { id: "MOCKPRIORCOMPLETE", status: "COMPLETED", amount: "17.23" };
+  const pendingPrior = { id: "MOCKPRIORPENDING", status: "PENDING", amount: "8.64" };
+
+  function simulator(allowRefunds = true) {
+    const posts: { key: string; invoice: string }[] = [];
+    const priorRefunds: { id: string; status: string; amount: string }[] = [];
+    const settings = { payee: merchantId, lost: true, visible: true, denied: false, amount: "50.00", invoice: "",
+      expectedAmount: "50.00", captureAmount: "120.00", providerStatus: "COMPLETED", beforeRead: async () => {},
+      beforeSubmit: async () => {}, beforeCaptureRead: async () => {}, beforeOAuth: async () => {}, tokenLifetime: 120, unreadableRefund: "" };
+    const transport = vi.fn(async (input: string, init: RequestInit) => {
+      const url = new URL(input);
+      expect(url.origin).toBe("https://api-m.sandbox.paypal.com");
+      const money = (value: string) => ({ value, currency_code: "USD" });
+      if (url.pathname === "/v1/oauth2/token") {
+        await settings.beforeOAuth();
+        return Response.json({ access_token: "fixture-bearer", token_type: "Bearer", expires_in: settings.tokenLifetime });
+      }
+      if (url.pathname === "/v2/payments/captures/" + capture) {
+        await settings.beforeCaptureRead();
+        const totalRefunded = priorRefunds.filter(row => row.status === "COMPLETED")
+          .reduce((sum, row) => sum + Math.round(Number(row.amount) * 100),
+            posts.length && settings.providerStatus === "COMPLETED" ? Math.round(Number(settings.amount) * 100) : 0);
+        return Response.json({ id: capture, amount: money(settings.captureAmount),
+          status: totalRefunded === Math.round(Number(settings.captureAmount) * 100) ? "REFUNDED" : totalRefunded ? "PARTIALLY_REFUNDED" : "COMPLETED",
+          supplementary_data: { related_ids: { order_id: order } } });
+      }
+      if (url.pathname === "/v2/checkout/orders/" + order) return Response.json({ id: order, purchase_units: [
+        { payee: { merchant_id: settings.payee }, payments: { captures: [{ id: capture }],
+          refunds: [...priorRefunds.map(({ id }) => ({ id })), ...(posts.length && settings.visible ? [{ id: refund }] : [])] } },
+      ] });
+      if (url.pathname === "/v2/payments/captures/" + capture + "/refund" && init.method === "POST") {
+        await settings.beforeSubmit();
+        if (settings.denied) return Response.json({ name: "UNPROCESSABLE_ENTITY",
+          details: [{ issue: "REFUND_AMOUNT_EXCEEDED" }] }, { status: 422 });
+        const key = new Headers(init.headers).get("PayPal-Request-Id") ?? "";
+        const body = JSON.parse(String(init.body)) as { amount: unknown; invoice_id: string };
+        expect(key).toMatch(/^[a-f0-9-]{36}$/);
+        expect(body.amount).toEqual(money(settings.expectedAmount));
+        expect(body.invoice_id).toBe("changegate-" + key);
+        posts.push({ key, invoice: body.invoice_id });
+        if (settings.lost) throw new Error("simulated lost reply");
+        return Response.json({ id: refund });
+      }
+      if (url.pathname === "/v2/payments/refunds/" + refund && settings.visible) {
+        await settings.beforeRead();
+        return Response.json({ id: refund, amount: money(settings.amount), status: settings.providerStatus,
+          invoice_id: settings.invoice || posts[0]?.invoice, links: [
+            { rel: "up", href: "https://api-m.sandbox.paypal.com/v2/payments/captures/" + capture, method: "GET" },
+          ] });
+      }
+      const prior = priorRefunds.find(row => url.pathname === "/v2/payments/refunds/" + row.id);
+      if (prior) {
+        if (settings.unreadableRefund === prior.id) return new Response(null, { status: 503 });
+        return Response.json({ id: prior.id, amount: money(prior.amount), status: prior.status, links: [
+          { rel: "up", href: "https://api-m.sandbox.paypal.com/v2/payments/captures/" + capture, method: "GET" },
+        ] });
+      }
+      return new Response(null, { status: 404 });
+    });
+    const connect = () => new PayPalProvider({ teamMerchantId: "harbor", merchantId, clientId: "mock-client",
+      clientSecret: "mock-secret", allowRefunds }, transport);
+    const refundSubmissions = () => transport.mock.calls.filter(([url, init]) =>
+      init.method === "POST" && new URL(url).pathname === "/v2/payments/captures/" + capture + "/refund");
+    return { settings, transport, connect, provider: connect(), posts, priorRefunds, refundSubmissions };
+  }
+
+  it("routes an unlocated PayPal hold to the merchant's enrolled primary and backup supervisors", async () => {
+    const mock = simulator();
+    const backup = { ...users[1]!, username: "pay-backup" };
+    const server = app(undefined, [...users, backup], undefined, undefined, mock.provider);
+    function enroll(member: Employee, duty: "primary" | "backup", location: string) {
+      server.store.alerts.enroll(member, { duty, location,
+        endpoint: "https://fcm.googleapis.com/" + member.username,
+        keys: { p256dh: "a".repeat(87), auth: "b".repeat(22) } });
+    }
+    enroll(users[0]!, "primary", "Harbor Fuel");
+    enroll(users[1]!, "primary", "Harbor Fuel");
+    enroll(backup, "backup", "Harbor Bar");
+    enroll(users[2]!, "primary", "Harbor Fuel");
+
+    const cashier = await signIn(server, "maya");
+    const request = await cashier.send<RefundRequest>(submit());
+    expect(request.sale?.location).toBe("Unavailable");
+    expect(requestStatus(request)).toBe("Needs manager decision");
+
+    const primary = server.store.alerts.claim(Date.now())!;
+    expect(primary).toMatchObject({ requestId: request.id, phase: 0 });
+    expect(server.store.alerts.recipients(primary).map(row => row.username)).toEqual(["jordan"]);
+    expect(server.store.alerts.recipients({ ...primary, location: "Harbor Bar" })).toEqual([]);
+    server.store.alerts.finish(primary, "push accepted");
+
+    const escalation = server.store.alerts.claim(Date.now() + 30 * 60_000)!;
+    expect(escalation).toMatchObject({ requestId: request.id, phase: 1 });
+    expect(server.store.alerts.recipients(escalation).map(row => row.username)).toEqual(["pay-backup"]);
+    const blocked = await cashier.request({ action: "executeElectronicRefund", id: request.id });
+    expect(blocked.status).toBe(409);
+    expect(mock.refundSubmissions()).toHaveLength(0);
+  });
+
+  it("excludes PayPal's unavailable register but retains the cashier monitoring threshold", async () => {
+    const mock = simulator();
+    mock.settings.captureAmount = "300.00";
+    const roles: Employee[] = [...users, { ...users[0]!, username: "pay-operator", role: "cashier" },
+      { ...users[0]!, username: "pay-owner", role: "owner" }];
+    const server = app(undefined, roles, undefined, undefined, mock.provider);
+    const owner = await signIn(server, "pay-owner");
+    await owner.send({ action: "setRefundPolicy", thresholdCents: 25000 });
+    const first = await signIn(server, "maya");
+    const second = await signIn(server, "jordan");
+    const third = await signIn(server, "pay-operator");
+    for (const operator of [first, second, third]) {
+      const request = await operator.send<RefundRequest>(submit("34.00"));
+      expect(request.events.find(event => event.kind === "Checks recorded")).toMatchObject({ check: {
+        route: "routine", monitoring: { watch: true, cashierWatchCount: 1, registerWatchCount: 0 },
+      } });
+    }
+    const secondForCashier = await first.send<RefundRequest>(submit("34.00"));
+    expect(secondForCashier.events.find(event => event.kind === "Checks recorded")).toMatchObject({ check: {
+      route: "routine", monitoring: { cashierWatchCount: 2, registerWatchCount: 0 },
+    } });
+    const thirdForCashier = await first.send<RefundRequest>(submit("34.00"));
+    expect(thirdForCashier.events.find(event => event.kind === "Checks recorded")).toMatchObject({ check: {
+      route: "manager", monitoring: { cashierWatchCount: 3, registerWatchCount: 0 },
+    } });
+    expect(mock.refundSubmissions()).toHaveLength(0);
+  });
+
+  it.each([
+    { label: "completed", history: [completedPrior], cents: 10277, amount: "102.77" },
+    { label: "pending", history: [pendingPrior], cents: 11136, amount: "111.36" },
+    { label: "completed and pending", history: [completedPrior, pendingPrior], cents: 9413, amount: "94.13" },
+  ])("allows exactly the available PayPal balance with earlier $label refunds", async ({ history, cents, amount }) => {
+    const mock = simulator();
+    mock.priorRefunds.push(...history);
+    Object.assign(mock.settings, { lost: false, expectedAmount: amount, amount });
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    expect(await cashier.send(source)).toMatchObject({ balanceCents: cents, reservedCents: 0 });
+    const request = await cashier.send<RefundRequest>(submit(amount));
+    const execute = { action: "executeElectronicRefund", id: request.id };
+    expect((await cashier.request(execute)).status).toBe(409);
+    expect(mock.refundSubmissions()).toHaveLength(0);
+    await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    const receipt = requestReceipt(await cashier.send<RefundRequest>(execute));
+    expect(mock.refundSubmissions()).toHaveLength(1);
+    expect(receipt.verification).toMatchObject({ status: "Verified", independentReadback: { amountCents: cents, currency: "USD" } });
+  });
+
+  it("does not submit an approved PayPal request one cent above the fresh available balance", async () => {
+    const mock = simulator();
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit("94.14"));
+    await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    mock.priorRefunds.push(completedPrior, pendingPrior);
+    const attempt = await cashier.send<RefundRequest>({ action: "executeElectronicRefund", id: request.id });
+    expect(requestReceipt(attempt).execution.status).toBe("Not submitted");
+    expect(attempt.events.at(-1)).toMatchObject({ kind: "Execution stopped" });
+    expect(await cashier.send(source)).toMatchObject({ balanceCents: 9413, reservedCents: 0 });
+    expect(mock.refundSubmissions()).toHaveLength(0);
+  });
+
+  it("does not submit when approved PayPal refund history becomes unreadable", async () => {
+    const mock = simulator();
+    mock.priorRefunds.push(completedPrior);
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit());
+    await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    mock.settings.unreadableRefund = completedPrior.id;
+    const denied = await cashier.request({ action: "executeElectronicRefund", id: request.id });
+    expect(denied.status).toBe(409);
+    expect(await denied.json()).toEqual({ error: "PAYPAL_HISTORY_UNAVAILABLE" });
+    const stored = await cashier.send<RefundRequest>({ action: "openRefundRequest", id: request.id });
+    expect(requestReceipt(stored).execution.attempt).toBeNull();
+    expect(mock.refundSubmissions()).toHaveLength(0);
+  });
+
+  it("makes no provider calls when settings are missing or PayPal is disabled", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    try {
+      for (const paypal of [configuredPayPalSandbox({}), configuredPayPalSandbox({ CHANGEGATE_PAYPAL_MODE: "sandbox" }),
+        configuredPayPalSandbox({ CHANGEGATE_PAYPAL_MODE: "production" })]) {
+        expect(paypal).toBeUndefined();
+        const cashier = await signIn(app(undefined, users, undefined, undefined, paypal), "maya");
+        expect(cashier.user.paypalConnected).toBe(false);
+        expect(await (await cashier.request(source)).json()).toEqual({ error: "PAYPAL_NOT_CONNECTED" });
+        expect(await (await cashier.request(submit())).json()).toEqual({ error: "PAYPAL_NOT_CONNECTED" });
+        expect(await (await cashier.request({ ...source, source: "square" })).json())
+          .toEqual({ error: "SQUARE_NOT_CONNECTED" });
+      }
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("holds for a separate supervisor and reconciles the original request after a lost reply and restart", async () => {
+    const mock = simulator();
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    const otherMerchant = await signIn(server, "alex");
+    expect(await cashier.send(source)).toMatchObject({ balanceCents: 12000, sale: { paypal: { orderId: order } } });
+    expect((await otherMerchant.request(source)).status).toBe(503);
+    const request = await cashier.send<RefundRequest>(submit());
+    const execute = { action: "executeElectronicRefund", id: request.id };
+    const approval = { action: "decideRefundRequest", id: request.id, decision: "Approved", password };
+    expect((await cashier.request(execute)).status).toBe(409);
+    expect((await cashier.request(approval)).status).toBe(403);
+    expect((await otherMerchant.request(execute)).status).toBe(404);
+    expect(mock.posts).toHaveLength(0);
+    await manager.send(approval);
+    const lost = await cashier.send<RefundRequest>(execute);
+    expect(requestReceipt(lost).execution.status).toBe("Outcome unconfirmed");
+    expect(mock.posts).toHaveLength(1);
+    server.stop();
+    const disconnected = app(server.path, users);
+    const disconnectedUser = await signIn(disconnected, "maya");
+    const callsBefore = mock.transport.mock.calls.length;
+    expect(await (await disconnectedUser.request(execute)).json()).toEqual({ error: "PAYPAL_NOT_CONNECTED" });
+    expect(mock.transport.mock.calls).toHaveLength(callsBefore);
+    disconnected.stop();
+    const restarted = app(server.path, users, undefined, undefined, mock.connect());
+    const operator = await signIn(restarted, "maya");
+    const retry = { action: "verifyElectronicRefund", id: request.id };
+    mock.settings.visible = false;
+    expect(requestReceipt(await operator.send<RefundRequest>(retry)).verification.status).toBe("Unconfirmed");
+    mock.settings.visible = true;
+    mock.settings.invoice = "wrong-invoice";
+    expect(requestReceipt(await operator.send<RefundRequest>(retry)).verification.status).toBe("Unconfirmed");
+    mock.settings.invoice = "";
+    const receipt = requestReceipt(await operator.send<RefundRequest>(retry));
+    expect(receipt.decision).toMatchObject({ status: "Approved", reviewer: "Jordan Lee" });
+    expect(receipt.execution.status).toBe("Provider reference recorded");
+    expect(receipt.verification).toMatchObject({ status: "Verified", independentReadback: {
+      id: refund, paymentId: capture, amountCents: 5000, currency: "USD", status: "COMPLETED",
+    } });
+    expect(JSON.stringify(receipt)).not.toContain(mock.posts[0]?.key);
+    expect(JSON.stringify(receipt)).not.toContain("fixture-bearer");
+    await operator.send(execute);
+    expect(mock.posts).toHaveLength(1);
+    expect(await operator.send(source)).toMatchObject({ balanceCents: 7000, reservedCents: 0 });
+  });
+
+  it("blocks unowned capture lookup and allows read-only lookup without starting a refund attempt", async () => {
+    const mock = simulator(false);
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    mock.settings.payee = "OTHERPAYEE";
+    expect((await cashier.request(source)).status).toBe(422);
+    mock.settings.payee = merchantId;
+    const request = await cashier.send<RefundRequest>(submit());
+    await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    expect(await (await cashier.request({ action: "executeElectronicRefund", id: request.id })).json())
+      .toEqual({ error: "PAYPAL_REFUNDS_DISABLED" });
+    expect(mock.posts).toHaveLength(0);
+  });
+
+  it("submits once on double click and distinguishes pending, failed and mismatched provider results", async () => {
+    const mock = simulator();
+    mock.settings.lost = false;
+    mock.settings.providerStatus = "PENDING";
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit());
+    await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    const execute = { action: "executeElectronicRefund", id: request.id };
+    await Promise.all([cashier.send(execute), cashier.send(execute)]);
+    expect(mock.posts).toHaveLength(1);
+    const read = { action: "verifyElectronicRefund", id: request.id };
+    expect(requestReceipt(await cashier.send<RefundRequest>(read)).verification.status).toBe("Pending");
+    mock.settings.providerStatus = "COMPLETED";
+    mock.settings.amount = "49.00";
+    expect(requestReceipt(await cashier.send<RefundRequest>(read)).verification.status).toBe("Mismatch");
+    mock.settings.providerStatus = "FAILED";
+    mock.settings.amount = "50.00";
+    expect(requestReceipt(await cashier.send<RefundRequest>(read)).verification.status).toBe("Failed");
+    expect(mock.posts).toHaveLength(1);
+  });
+
+  it("releases the reservation after a definite PayPal rejection", async () => {
+    const mock = simulator();
+    mock.settings.denied = true;
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit());
+    await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    const execute = { action: "executeElectronicRefund", id: request.id };
+    const result = await cashier.send<RefundRequest>(execute);
+    expect(requestReceipt(result).execution.status).toBe("Not submitted");
+    expect(result.events.at(-1)).toMatchObject({ kind: "Execution stopped" });
+    expect(await cashier.send(source)).toMatchObject({ balanceCents: 12000, reservedCents: 0 });
+    expect(await cashier.send(execute)).toEqual(result);
+    expect(mock.posts).toHaveLength(0);
+  });
+
+  it("counts a known PayPal refund once after readback recovers and retains the hold if the amount disagrees", async () => {
+    const mock = simulator();
+    mock.settings.lost = false;
+    mock.settings.visible = false;
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit());
+    await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    const attempted = await cashier.send<RefundRequest>({ action: "executeElectronicRefund", id: request.id });
+    expect(requestReceipt(attempted).verification.status).toBe("Unconfirmed");
+    mock.settings.visible = true;
+    mock.settings.amount = "49.99";
+    expect(await cashier.send(source)).toMatchObject({ balanceCents: 2001, reservedCents: 5000 });
+    mock.settings.amount = "50.00";
+    expect(await cashier.send(source)).toMatchObject({ balanceCents: 7000, reservedCents: 0 });
+    expect(mock.refundSubmissions()).toHaveLength(1);
+  });
+
+  it.each(["lowered threshold", "new external refund"])("holds routine PayPal execution after a %s", async change => {
+    const mock = simulator();
+    Object.assign(mock.settings, { lost: false, amount: "20.00", expectedAmount: "20.00" });
+    const roles: Employee[] = [...users, { ...users[0]!, username: "pay-owner", role: "owner" }];
+    const server = app(undefined, roles, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const supervisor = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit("20.00"));
+    expect(requestStatus(request)).toBe("Ready for PayPal Sandbox refund");
+
+    if (change === "lowered threshold") {
+      const owner = await signIn(server, "pay-owner");
+      await owner.send({ action: "setRefundPolicy", thresholdCents: 2000 });
+    } else {
+      mock.priorRefunds.push({ ...pendingPrior, amount: "30.00" });
+    }
+
+    const execute = { action: "executeElectronicRefund", id: request.id };
+    const held = await supervisor.send<RefundRequest>(execute);
+    expect(requestStatus(held)).toBe("Needs manager decision");
+    expect(requestReceipt(held).execution.attempt).toBeNull();
+    expect(server.store.alerts.claim(Date.now())).toMatchObject({ requestId: request.id, requester: "maya", route: "manager" });
+    expect((await cashier.request(execute)).status).toBe(409);
+    expect(mock.refundSubmissions()).toHaveLength(0);
+    const approve = { action: "decideRefundRequest", id: request.id, decision: "Approved", password };
+    expect((await cashier.request(approve)).status).toBe(403);
+    await supervisor.send(approve);
+    expect(requestReceipt(await cashier.send<RefundRequest>(execute)).verification.status).toBe("Verified");
+    expect(mock.refundSubmissions()).toHaveLength(1);
+  });
+
+  it.each([true, false])("keeps the PayPal outcome but denies a signed-out caller (definite rejection: %s)", async denied => {
+    const mock = simulator();
+    mock.settings.denied = denied;
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const supervisor = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit());
+    await supervisor.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
+    mock.settings.beforeSubmit = async () => { entered.resolve(); await resume.promise; };
+    const execute = { action: "executeElectronicRefund", id: request.id };
+    const submitting = cashier.request(execute);
+    await entered.promise;
+    try {
+      expect((await cashier.request({ action: "signOut" })).ok).toBe(true);
+    } finally {
+      resume.resolve();
+    }
+
+    expect((await submitting).status).toBe(401);
+    const saved = await supervisor.send<RefundRequest>({ action: "openRefundRequest", id: request.id });
+    expect(requestReceipt(saved).execution.status).toBe(denied ? "Not submitted" : "Outcome unconfirmed");
+    expect(await supervisor.send(source)).toMatchObject({ reservedCents: denied ? 0 : 5000 });
+    if (!denied) {
+      expect(requestReceipt(await supervisor.send<RefundRequest>(execute)).verification.status).toBe("Verified");
+    }
+    expect(mock.refundSubmissions()).toHaveLength(1);
+  });
+
+  it("stops PayPal execution when the operator signs out during submission OAuth refresh", async () => {
+    const mock = simulator();
+    mock.settings.tokenLifetime = 1;
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const supervisor = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit());
+    await supervisor.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+
+    const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
+    const submitToPayPal = mock.provider.submit.bind(mock.provider);
+    vi.spyOn(mock.provider, "submit").mockImplementationOnce((attempt, authorize) => {
+      mock.settings.beforeOAuth = async () => { entered.resolve(); await resume.promise; };
+      return submitToPayPal(attempt, authorize);
+    });
+    const execute = { action: "executeElectronicRefund", id: request.id };
+    const submitting = cashier.request(execute);
+    try {
+      await entered.promise;
+      expect((await cashier.request({ action: "signOut" })).ok).toBe(true);
+    } finally {
+      resume.resolve();
+    }
+    expect((await submitting).status).toBe(401);
+    expect(mock.refundSubmissions()).toHaveLength(0);
+    const saved = await supervisor.send<RefundRequest>({ action: "openRefundRequest", id: request.id });
+    expect(requestReceipt(saved).execution.status).toBe("Not submitted");
+    expect(await supervisor.send(source)).toMatchObject({ balanceCents: 12000, reservedCents: 0 });
+  });
+
+  it("denies PayPal balance lookup after the cashier signs out during the provider read", async () => {
+    const mock = simulator();
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
+    mock.settings.beforeCaptureRead = async () => { entered.resolve(); await resume.promise; };
+    const lookup = cashier.request(source);
+    await entered.promise;
+    try {
+      expect((await cashier.request({ action: "signOut" })).ok).toBe(true);
+    } finally {
+      resume.resolve();
+    }
+    expect((await lookup).status).toBe(401);
+    expect(mock.refundSubmissions()).toHaveLength(0);
+  });
+
+  it("prevents a revoked session from committing a PayPal readback", async () => {
+    const mock = simulator();
+    const server = app(undefined, users, undefined, undefined, mock.provider);
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>(submit());
+    await manager.send({ action: "decideRefundRequest", id: request.id, decision: "Approved", password });
+    const attempt = await cashier.send<RefundRequest>({ action: "executeElectronicRefund", id: request.id });
+    const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
+    mock.settings.beforeRead = async () => { entered.resolve(); await resume.promise; };
+    const read = cashier.request({ action: "verifyElectronicRefund", id: request.id });
+    await entered.promise;
+    try {
+      expect((await cashier.request({ action: "signOut" })).status).toBe(200);
+    } finally {
+      resume.resolve();
+    }
+    expect((await read).ok).toBe(false);
+    expect(await manager.send({ action: "openRefundRequest", id: request.id })).toEqual(attempt);
     expect(mock.posts).toHaveLength(1);
   });
 });
@@ -904,10 +1736,17 @@ describe("shared merchant workspace", () => {
     expect((await request({ action: "session" }, { Cookie: key })).status).toBe(200);
     expect((await request({ action: "session" }, { Cookie: key.replace("__Host-", "") })).status).toBe(401);
 
-    for (let i = 0; i < 29; i++) {
-      expect((await request({ ...signIn, password: "incorrect" })).status).toBe(401);
+    // Use one stable rate-limit window even when CI starts just before a five-minute rollover.
+    const fixedClock = vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 10, 22, 13, 31));
+    try {
+      const throttled = { "X-Real-IP": "192.0.2.6" };
+      for (let i = 0; i < 30; i++) {
+        expect((await request({ ...signIn, password: "incorrect" }, throttled)).status).toBe(401);
+      }
+      expect((await request(signIn, throttled)).status).toBe(429);
+    } finally {
+      fixedClock.mockRestore();
     }
-    expect((await request(signIn)).status).toBe(429);
     expect((await request(signIn, { "X-Real-IP": "192.0.2.5" })).status).toBe(200);
   });
 
@@ -1209,4 +2048,347 @@ describe("shared merchant workspace", () => {
     expect(windows.map(window=>window.elevated)).toEqual([false,true,true]);
     expect(windows[2]?.eligible).toBe(false);
   });
+});
+
+describe("managed-service demonstration", () => {
+  it("converts Atlanta civil time and rejects ambiguous or skipped hours", () => {
+    expect(coverageInstant("2026-11-23T22:00")).toBe("2026-11-24T03:00:00.000Z");
+    expect(coverageInstant("2026-07-20T22:00")).toBe("2026-07-21T02:00:00.000Z");
+    expect(coverageInstant("2026-03-08T02:30")).toBeNull();
+    expect(coverageInstant("2026-11-01T01:30")).toBeNull();
+    expect(coverageInstant("2026-02-31T22:00")).toBeNull();
+  });
+  it("claims one open drawer case, keeps the owner handoff, and revokes expired access", async () => {
+    let now = "2026-11-24T02:59:00.000Z";
+    const clock = () => now;
+    const users: Employee[] = roster.map(member => ({ ...member, role: member.username === "maya" ? "cashier" : "manager" }));
+    for (const account of overnightAccounts) {
+      const salt = randomBytes(16);
+      users.push({ username: account.username, name: account.name, merchantName: "Harbor Goods", merchantId: "harbor",
+        role: "reviewer", salt: salt.toString("hex"), passwordHash: scryptSync(password, salt, 32).toString("hex") });
+    }
+    const server = app(undefined, users, clock, undefined, undefined, true, true);
+    const cashier = await signIn(server, "maya");
+    const owner = await signIn(server, "jordan");
+    const ivy = await signIn(server, "ivy-night");
+    const noah = await signIn(server, "noah-night");
+    const sam = await signIn(server, "sam-night");
+    const outsider = await signIn(server, "alex");
+    const cases: string[] = [];
+    const drawerIds: string[] = [];
+    for (const count of [9500, 9300, 9600]) {
+      const drawer = randomUUID();
+      await cashier.send({ action: "openCashDrawer", id: drawer, cents: 10000 });
+      await cashier.send({ action: "closeCashDrawer", id: drawer, cents: count });
+      const result = await owner.send<CashDrawerView>({ action: "openDrawerCase", id: drawer });
+      cases.push(result.drawer!.report!.caseId!);
+      drawerIds.push(drawer);
+    }
+    const db = new DatabaseSync(server.path);
+    db.prepare("UPDATE team_cash_drawers SET location=?, register=? WHERE merchant_id=? AND id=?")
+      .run("Harbor Bar", "Bar 1", "harbor", drawerIds[2]!);
+    db.close();
+    const id = cases[1]!;
+    const desk = { action: "overnightDesk", id };
+    const claim = { action: "claimOvernightCase", id };
+    expect((await ivy.request(desk)).status).toBe(403);
+    expect((await sam.request({ action: "overnightDesk" })).status).toBe(403);
+    expect((await outsider.request({ action: "overnightOwner" })).status).toBe(403);
+    const scheduled = { action: "grantCoverage", id: randomUUID(), location: "Harbor Fuel", reviewer: "ivy-night",
+      start: "2026-11-23T22:00", end: "2026-11-24T06:00" };
+    expect((await cashier.request(scheduled)).status).toBe(403);
+    expect((await outsider.request(scheduled)).status).toBe(403);
+    expect((await owner.request({ ...scheduled, reviewer: "alex" })).status).toBe(403);
+    expect((await owner.request({ ...scheduled, location: "Unknown Store" })).status).toBe(403);
+    expect((await owner.request({ ...scheduled, end: "2026-11-23T21:59" })).status).toBe(422);
+    expect((await owner.send<CoverageSettingsView>(scheduled)).grants[0]).toMatchObject({
+      status: "Scheduled", grantedBy: "Jordan Lee", startsAt: "2026-11-24T03:00:00.000Z", endsAt: "2026-11-24T11:00:00.000Z",
+    });
+    expect((await owner.send<CoverageSettingsView>(scheduled)).grants).toHaveLength(1);
+    expect((await owner.request({ ...scheduled, id: randomUUID() })).status).toBe(409);
+    expect((await ivy.request(desk)).status).toBe(403);
+    await owner.send({ ...scheduled, id: randomUUID(), reviewer: "noah-night" });
+    now = "2026-11-24T03:00:00.000Z";
+    expect((await ivy.request(desk)).status).toBe(200);
+    now = "2026-11-24T05:01:00.000Z";
+    expect((await ivy.send<OvernightQueue>({ action: "overnightDesk" })).cases.map(item => item.id).sort()).toEqual(cases.slice(0, 2).sort());
+    expect((await ivy.request({ action: "overnightDesk", id: cases[2] })).status).toBe(404);
+    expect((await sam.request(desk)).status).toBe(403);
+    expect((await sam.send<TeamWorkspaceView>({ action: "workspace", id })).detail).toBeNull();
+    expect((await ivy.send<TeamWorkspaceView>({ action: "workspace", id })).detail).toBeNull();
+    expect((await ivy.request({ action: "decideRefundRequest", id, decision: "Approved", password })).status).toBe(403);
+    const evidence = await ivy.send<OvernightQueue>(desk);
+    expect(evidence.detail?.evidence.report).toMatchObject({ expected: 10000, firstCount: { cents: 9300 } });
+    expect(evidence.detail?.variance).toBe(-700);
+    const racers = [ivy, noah];
+    const results = await Promise.all(racers.map(user => user.request(claim)));
+    expect(results.map(result => result.status).sort()).toEqual([200, 409]);
+    const winner = racers[results.findIndex(result => result.ok)]!;
+    const claimed = await winner.send<NonNullable<OvernightQueue["detail"]>>(claim);
+    const requestId = randomUUID();
+    const ask = { action: "requestOvernightFollowUp", id, grantId: claimed.progress?.claimant?.grantId, requestId, checked: "Compared drawer entries with the first count.",
+      question: "Can you verify the closing count?" };
+    await winner.send(ask);
+    await winner.send(ask);
+    expect((await owner.send<OvernightOwner>({ action: "overnightOwner" })).cases[0]?.progress?.handoff)
+      .toMatchObject({ actor: winner.user.name, question: ask.question });
+    const reply = { action: "replyOvernight", id, requestId, text: "I will ask the closer to verify." };
+    await owner.send(reply);
+    await owner.send(reply);
+    const week = await owner.send<CashWeek>({ action: "weeklyCashReview", week: "2026-11-23" });
+    expect(week.rows.filter(row => row.location === "Harbor Fuel").map(row => row.close?.variance).sort()).toEqual([-500, -700]);
+    expect(week.rows.find(row => row.close?.review?.id === id)?.close?.review?.status).toBe("Investigating");
+    const nextAsk = { ...ask, requestId: randomUUID(), question: "Can you verify the closing count with Maya?" };
+    await winner.send(nextAsk);
+    now = "2026-11-24T11:00:00.000Z";
+    expect((await winner.request(ask)).status).toBe(403);
+    expect((await winner.request(desk)).status).toBe(403);
+    expect((await owner.send<CoverageSettingsView>({ action: "coverageSettings" })).grants.every(grant => grant.status === "Ended")).toBe(true);
+    const demo = { action: "startDemoCoverage", id: randomUUID(), reviewer: winner.user.username, location: "Harbor Fuel" };
+    expect((await owner.send<CoverageSettingsView>(demo)).grants[0]?.status).toBe("Active");
+    expect((await winner.request(desk)).status).toBe(200);
+    expect((await winner.request({ action: "revokeCoverage", id: demo.id })).status).toBe(403);
+    const revoked = await owner.send<CoverageSettingsView>({ action: "revokeCoverage", id: demo.id });
+    expect(revoked.grants[0]).toMatchObject({ status: "Revoked", revokedBy: "Jordan Lee", revokedAt: now });
+    expect((await winner.request({ ...ask, requestId: randomUUID(), question: "Stale note" })).status).toBe(403);
+    await owner.send({ ...reply, requestId: nextAsk.requestId });
+    server.stop();
+    const restored = app(server.path, users, clock, undefined, undefined, true, true);
+    const original = await restored.request({ action: "workspace", id }, owner.key);
+    const { detail } = await original.json() as TeamWorkspaceView;
+    expect(detail?.case.status).toBe("Investigating");
+    expect(detail?.history.map(event => event.kind)).toEqual([
+      "Opened", "Coverage claimed", "Owner follow-up requested", "Owner replied", "Owner follow-up requested", "Reviewer shift ended", "Owner replied",
+    ]);
+    const restoredOwner = await restored.request({ action: "overnightOwner" }, owner.key,
+      { sessionVersion: owner.user.sessionVersion });
+    const restoredSettings = await restored.request({ action: "coverageSettings" }, owner.key,
+      { sessionVersion: owner.user.sessionVersion });
+    expect(await restoredSettings.json()).toMatchObject({ grants: [
+      { id: demo.id, status: "Revoked" }, { status: "Ended" }, { status: "Ended" },
+    ] });
+    expect(await restoredOwner.json()).toMatchObject({ cases: [
+      { id, progress: { handoff: { question: nextAsk.question, reply: { text: reply.text } } } },
+    ] });
+  });
+
+  it("returns an investigation exactly once on startup and reassigns the same open case", async () => {
+    let now = "2026-11-24T10:59:00.000Z";
+    const clock = () => now;
+    const users: Employee[] = roster.map(member => ({ ...member, role: member.username === "maya" ? "cashier" : "manager" }));
+    for (const account of overnightAccounts) {
+      const salt = randomBytes(16);
+      users.push({ ...account, merchantName: "Harbor Goods", merchantId: "harbor", role: "reviewer",
+        salt: salt.toString("hex"), passwordHash: scryptSync(password, salt, 32).toString("hex") });
+    }
+    const server = app(undefined, users, clock, undefined, undefined, true, true);
+    const owner = await signIn(server, "jordan");
+    const cashier = await signIn(server, "maya");
+    const first = await signIn(server, "ivy-night");
+    const next = await signIn(server, "noah-night");
+    const drawerCase = async (cents: number) => {
+      const drawer = randomUUID();
+      await cashier.send({ action: "openCashDrawer", id: drawer, cents: 10000 });
+      await cashier.send({ action: "closeCashDrawer", id: drawer, cents });
+      const item = await owner.send<CashDrawerView>({ action: "openDrawerCase", id: drawer });
+      return item.drawer!.report!.caseId!;
+    };
+    const id = await drawerCase(9300);
+    const closed = await drawerCase(9500);
+    const ending = randomUUID();
+    await owner.send({ action: "grantCoverage", id: ending, location: "Harbor Fuel", reviewer: "ivy-night",
+      start: "2026-11-23T22:00", end: "2026-11-24T06:00" });
+    await owner.send({ action: "grantCoverage", id: randomUUID(), location: "Harbor Fuel", reviewer: "noah-night",
+      start: "2026-11-24T06:00", end: "2026-11-24T14:00" });
+    await owner.send({ action: "startDemoCoverage", id: randomUUID(), location: "Harbor Bar", reviewer: "sam-night" });
+    await first.send({ action: "claimOvernightCase", id });
+    await first.send({ action: "claimOvernightCase", id: closed });
+    await owner.send({ action: "record", id: closed, revision: 1, finding: "Reviewed count", nextAction: "Close as unexplained",
+      status: "Investigating" });
+    await owner.send({ action: "resolve", id: closed, revision: 2, drawerDisposition: "Closed with difference unexplained" });
+    const ownerCommand = { action: "overnightOwner" };
+    const before = await owner.send<OvernightOwner>(ownerCommand);
+    expect(before.cases).toHaveLength(1);
+    expect(before.cases[0]).toMatchObject({ id, responsible: "Ivy Brooks", variance: -700 });
+    expect((await next.request({ action: "overnightDesk", id })).status).toBe(403);
+    server.stop();
+
+    now = "2026-11-24T11:00:00.000Z";
+    const restarted = app(server.path, users, clock, undefined, undefined, true, true);
+    const send = (command: unknown, person = owner) =>
+      restarted.request(command, person.key, { sessionVersion: person.user.sessionVersion });
+    const readCase = async (caseId: string) => {
+      const response = await send({ action: "workspace", id: caseId });
+      return (await response.json() as TeamWorkspaceView).detail!;
+    };
+    const handoff = (await readCase(id)).history.filter(event => event.kind === "Reviewer shift ended");
+    expect(handoff).toHaveLength(1);
+    expect(handoff[0]).toMatchObject({ occurredAt: now, detail: expect.stringContaining("Ivy Brooks") });
+    const after = await (await send(ownerCommand)).json() as OvernightOwner;
+    expect(after.cases).toHaveLength(1);
+    expect(after.cases[0]).toMatchObject({ id, responsible: "Store owner", lastAction: { kind: "Coverage claimed" },
+      eligible: [{ username: "noah-night", name: "Noah Reed" }] });
+    expect((await readCase(closed)).case.status).toBe("Resolved");
+    expect((await readCase(closed)).history.some(event => event.kind === "Reviewer shift ended")).toBe(false);
+    const stale = { action: "requestOvernightFollowUp", id, grantId: ending, requestId: randomUUID(), checked: "Count",
+      question: "Please verify $93" };
+    expect((await send(stale, first)).status).toBe(403);
+    expect((await send({ action: "claimOvernightCase", id }, next)).status).toBe(409);
+    const assign = { action: "reassignOvernightCase", id, endedAt: now, reviewer: "noah-night" };
+    expect((await send({ ...assign, reviewer: "sam-night" })).status).toBe(409);
+    expect((await send({ ...assign, reviewer: "ivy-night" })).status).toBe(409);
+    const assigned = await (await send(assign)).json() as OvernightOwner;
+    expect(assigned.cases[0]).toMatchObject({ id, responsible: "Noah Reed", lastAction: { kind: "Coverage reassigned" } });
+    expect((await send(assign)).status).toBe(409);
+    expect((await readCase(id)).history.filter(event => event.kind === "Reviewer shift ended")).toHaveLength(1);
+    expect((await readCase(id)).history.filter(event => event.kind === "Coverage reassigned")).toHaveLength(1);
+    const week = await (await send({ action: "weeklyCashReview", week: "2026-11-23" })).json() as CashWeek;
+    expect(week.rows.map(row => row.close?.variance).sort()).toEqual([-500, -700]);
+  });
+
+});
+
+describe("read-only closed-week pilot", () => {
+  it("scores three flags and one missed issue and deduplicates uploads across reset and restart", async () => {
+    const users: Employee[] = roster.map(member => ({ ...member, role: member.username === "maya" ? "cashier" : "manager" }));
+    const clock = () => "2026-11-23T15:00:00.000Z";
+    const server = app(undefined, users, clock, undefined, undefined, true);
+    const owner = await signIn(server,"jordan");
+    const outsider = await signIn(server,"alex");
+    const cashier = await signIn(server,"maya");
+    const start = { action:"startPilot", location:"Harbor Fuel", register:"Register 1", week:"2026-11-16",
+      timeZone:"America/New_York", synthetic:true };
+    expect((await cashier.request(start)).status).toBe(403);
+    expect((await owner.request({...start,week:"2026-11-23"})).status).toBe(422);
+    expect((await owner.request({...start,week:"2026-11-17"})).status).toBe(422);
+    expect((await owner.request({...start,timeZone:"Not a zone"})).status).toBe(422);
+    const pilot = await owner.send<PilotView>(start);
+    const id = pilot.scope.id;
+    const open = { action:"openPilot",id };
+    expect((await owner.send<PilotView>(start)).scope.id).toBe(id);
+    expect(pilot.scope.end).toBe("2026-11-22");
+    expect(pilot.savedMinutes).toBeNull();
+    expect((await outsider.request(open)).status).toBe(404);
+    expect(await outsider.send({action:"listPilots"})).toEqual([]);
+    const mapping={reference:0,amount:1,currency:2,status:3};
+    const header="refund_reference,refund_amount,currency,status";
+    const merchant=[header,"P-amount,15,USD,COMPLETED","P-timing,20,USD,COMPLETED",
+      "P-missed,8,USD,PENDING","P-unresolved,25,USD,COMPLETED",",5,USD,COMPLETED"].join("\n");
+    const processor=[header,"P-amount,17,USD,COMPLETED","P-missed,8,USD,COMPLETED","P-unresolved,22,USD,COMPLETED"].join("\n");
+    const file = (source:string,text:string) => ({action:"attachPilotFile",id,source,scopeConfirmed:true,
+      file:{name:source+".csv",text,mapping}});
+    const inspect = await owner.send<{rowCount:number}>({action:"inspectPilotCsv",text:merchant});
+    expect(inspect.rowCount).toBe(5);
+    const worksheet = await owner.send<PilotView>(file("Merchant",merchant));
+    expect(worksheet.sources).toMatchObject([{side:"Merchant",accepted:4,rejected:[{line:6}]}]);
+    expect(worksheet.comparisonReady).toBe(false);
+    expect(worksheet.score).toBeNull();
+    expect((await owner.request({action:"revealPilot",id})).status).toBe(409);
+    expect((await owner.request({action:"savePilotBaseline",id,minutes:null,exceptions:null})).status).toBe(422);
+    const baseline={action:"savePilotBaseline",id,minutes:24,exceptions:["P-amount amount differs","P-missed status differs"]};
+    expect((await owner.send<PilotView>(baseline)).baseline?.beforeFindings).toBe(true);
+    expect((await owner.request({...baseline,minutes:3})).status).toBe(409);
+    const ready=await owner.send<PilotView>(file("Processor",processor));
+    expect(ready.comparisonReady).toBe(true);
+    expect(ready.issues).toHaveLength(0);
+    const revealed=await owner.send<PilotView>({action:"revealPilot",id});
+    expect(revealed.score).toMatchObject({flags:3,decided:0,unresolved:3});
+    expect(revealed.exact).toBe(1);
+    const issue=(reference:string)=>revealed.issues.find(item=>item.rows[0]?.reference===reference)!;
+    expect((await cashier.request({action:"workspace",id:issue("P-amount").id})).status).toBe(200);
+    const hidden=await cashier.send<TeamWorkspaceView>({action:"workspace",id:issue("P-amount").id});
+    expect(hidden.detail).toBeNull();
+    expect(hidden.cases.some(item=>item.id===issue("P-amount").id)).toBe(false);
+    const decide=(caseId:string,outcome:string,revision=0)=>({action:"decidePilotIssue",id,caseId,outcome,note:"Reviewed by finance",revision});
+    await owner.send(decide(issue("P-amount").id,"confirmed"));
+    await owner.send(decide(issue("P-timing").id,"incorrect flag"));
+    await owner.send(decide(issue("P-unresolved").id,"unresolved"));
+    expect((await owner.request(decide(issue("P-amount").id,"incorrect flag"))).status).toBe(409);
+    const miss={action:"addPilotMiss",id,reference:"P-missed",note:"Register still showed pending."};
+    await owner.send(miss);
+    await owner.send(miss);
+    expect((await owner.request({...miss,reference:"unknown"})).status).toBe(422);
+    await owner.send({action:"savePilotTime",id,review:12,setup:5,waiting:30});
+    const saved = await owner.send<PilotView>({action:"savePilotDecision",id,decision:"continue",note:"Repeat independently."});
+    expect(saved.score).toEqual({confirmed:1,incorrect:1,unresolved:1,missed:1,flags:3,decided:2});
+    expect(saved.savedMinutes).toBe(12);
+    expect(saved.issues.find(item=>item.outcome==="missed")?.rows.map(row=>row.side)).toEqual(["Merchant","Processor"]);
+    expect(saved.decision?.value).toBe("continue");
+    const report = pilotSummaryText({ ...saved, time: { ...saved.time, waiting: null } });
+    expect(report).toContain("SYNTHETIC ACCEPTANCE RUN");
+    expect(report).toContain("Confirmed among decided ChangeGate flags: 1 of 2");
+    expect(report).toContain("Waiting: Unmeasured");
+    expect(report).toContain("Owner decision: continue");
+    for (const privateValue of ["P-missed", "P-amount", "Jordan Lee", "Reviewed by finance", "Harbor Fuel", "Repeat independently."]) {
+      expect(report).not.toContain(privateValue);
+    }
+    await owner.send(file("Merchant",merchant));
+    await owner.send(file("Processor",processor));
+    await owner.send({action:"revealPilot",id});
+    expect((await owner.send<PilotView>(open)).issues).toEqual(saved.issues);
+    expect((await owner.request(file("Merchant",merchant.replace("15,USD","18,USD")))).status).toBe(409);
+    const demo = await cashier.send<{state:DemoState}>({action:"startDemoShift",seed:"harbor-evening"});
+    await cashier.send({action:"replayDemoShift",runId:demo.state.runId});
+    expect((await owner.send<PilotView>(open)).issues).toEqual(saved.issues);
+    server.stop();
+    const restarted=app(server.path,users,clock,undefined,undefined,true, true);
+    const restored=await restarted.request(open,owner.key,{sessionVersion:owner.user.sessionVersion});
+    expect(await restored.json()).toEqual(saved);
+  });
+
+  it("labels a late baseline and leaves time savings unmeasured", async () => {
+    const users: Employee[] = roster.map(member => ({ ...member, role:"manager" }));
+    const server = app(undefined, users, () => "2026-11-23T15:00:00.000Z", undefined, undefined, true);
+    const owner=await signIn(server,"jordan");
+    const pilot=await owner.send<PilotView>({action:"startPilot",location:"Harbor Fuel",register:"Register 1",
+      week:"2026-11-16",timeZone:"America/New_York",synthetic:true});
+    const id=pilot.scope.id;
+    for(const source of ["Merchant","Processor"]) await owner.send({action:"attachPilotFile",id,source,scopeConfirmed:true,
+      file:{name:source+".csv",text:"reference,amount,currency\nexact,4,USD",mapping:{reference:0,amount:1,currency:2}}});
+    await owner.send({action:"revealPilot",id});
+    await owner.send({action:"savePilotBaseline",id,minutes:25,exceptions:[]});
+    const saved=await owner.send<PilotView>({action:"savePilotTime",id,review:10,setup:null,waiting:null});
+    expect(saved.baseline?.beforeFindings).toBe(false);
+    expect(saved.savedMinutes).toBeNull();
+    expect(pilotSummaryText(saved)).toContain("Confirmed among decided ChangeGate flags: Unmeasured");
+    expect(pilotSummaryText(saved)).toContain("ChangeGate setup: Unmeasured");
+  });
+});
+
+it("hosted pilot accepts only server-bundled fictional files", async () => {
+  const users: Employee[] = roster.map(user => ({...user, role:"manager"}));
+  const server = app(undefined, users, () => "2026-11-23T15:00:00.000Z", undefined, undefined, true, true);
+  const owner = await signIn(server,"jordan");
+  const {scope} = await owner.send<PilotView>({action:"startPilot",location:"Harbor Fuel",register:"Register 1",week:"2026-11-16",
+    timeZone:"America/New_York",synthetic:true});
+  const marker = "LOCAL-BOUNDARY-UNIT-CHECK";
+  const file = {name:"source.csv",text:"reference,amount,currency\n"+marker+",10,USD",mapping:{reference:0,amount:1,currency:2}};
+  const open = {action:"openPilot",id:scope.id};
+  const raw = [
+    {action:"inspectPilotCsv",text:file.text},
+    {action:"attachPilotFile",id:scope.id,source:"Merchant",scopeConfirmed:true,file},
+  ];
+  for(const command of raw) {
+    const denied = await owner.request(command);
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toEqual({error:"PILOT_SYNTHETIC_ONLY"});
+  }
+  const legacy = [
+    {action:"inspectCsv",text:file.text},
+    {action:"previewCsv",text:file.text,mapping:file.mapping},
+    {action:"importCsv",text:file.text,mapping:file.mapping},
+    ...["previewComparison","saveComparison"].map(action=>({action,input:{merchant:file,processor:file,
+      period:{start:scope.week,end:scope.end}}})),
+  ];
+  for(const command of legacy) expect((await owner.request(command)).status).toBe(404);
+  const load = {action:"loadFictionalPilotFile",id:scope.id,source:"Merchant"};
+  expect((await owner.request({...load,file})).status).toBe(400);
+  expect((await owner.send<PilotView>(open)).sources).toEqual([]);
+  const register = await owner.send<PilotView>(load);
+  expect(register.sources).toMatchObject([{name:"fictional-register.csv",accepted:4}]);
+  expect(register.comparisonReady).toBe(false);
+  await owner.send({...load,source:"Processor"});
+  const compared = await owner.send<PilotView>({action:"revealPilot",id:scope.id});
+  expect(compared.score).toMatchObject({flags:3,unresolved:3});
+  expect(JSON.stringify(compared)).not.toContain(marker);
 });

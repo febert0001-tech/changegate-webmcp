@@ -2,10 +2,16 @@ import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 import { promisify } from "node:util";
 import { TeamError, teamCommand, type Employee, type TeamSession } from "./contracts";
+import { accessIdentity } from "./cloudflare-access";
+import { canManageDemoInvites, createDemoAccess } from "./demo-access";
 import type { TeamStore } from "./store";
 import { alertPublicKey } from "./refund-alerts";
-import { canReview } from "./refund-requests";
+import { canReview, isDemoSaleReference } from "./refund-requests";
+import { demoRegister } from "./demo-sales";
+import { demoExplanation } from "./refund-ai-explanation";
 import type { SquareSandbox } from "./square-sandbox";
+import type { PayPalProvider } from "./paypal-provider";
+import type { ElectronicProvider } from "./refund-requests";
 import { csvLimit, inspectRefundCsv, reviewRefundCsv } from "./refund-csv";
 
 import { compareRefunds } from "./refund-comparison";
@@ -42,8 +48,27 @@ async function readCommand(request: Request): Promise<unknown> {
   }
 }
 
+const hostedDemoActions = new Set([
+  "listPilots", "openPilot", "startPilot", "loadFictionalPilotFile", "savePilotBaseline", "revealPilot", "decidePilotIssue", "addPilotMiss", "savePilotTime", "savePilotDecision",
+  "overnightDesk", "overnightOwner", "coverageSettings", "grantCoverage", "startDemoCoverage", "revokeCoverage", "claimOvernightCase", "requestOvernightFollowUp", "replyOvernight", "reassignOvernightCase",
+  "signIn", "signOut", "session", "workspace", "demoShift", "shiftOverview", "startDemoShift", "nextDemoEvent", "replayDemoShift",
+  "replayHeldDemoRefund",
+  "recordDemoSale", "openDemoSale", "lookupOriginalSale",
+  "refundAlertStatus", "listRefundRequests", "openRefundRequest", "createRefundRequest", "decideRefundRequest",
+  "reportCashPayout", "cashDrawers", "openCashDrawer", "closeCashDrawer", "recordDrawerMovement",
+  "weeklyCashReview",
+  "recordDrawerFollowUp", "openDrawerCase", "record", "assign", "note", "resolve",
+]);
+
+const reviewerActions = new Set(["workspace", "session", "signOut", "overnightDesk", "claimOvernightCase", "requestOvernightFollowUp"]);
+
+function merchantAccess(employee: Employee) {
+  if (employee.role === "reviewer") throw new TeamError("CASE_NOT_FOUND", 404);
+}
+
 export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[], origin: string,
-  { staging = false, square }: { staging?: boolean; square?: SquareSandbox } = {}) {
+  { staging = false, hostedDemo = false, presenterEmail, ...providers }:
+  { staging?: boolean; hostedDemo?: boolean; presenterEmail?: string; square?: SquareSandbox; paypal?: PayPalProvider } = {}) {
   const cookieName = staging ? "__Host-changegate_team_session" : "changegate_team_session";
   const cookie = (token: string, age: number) =>
     `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${age}${staging ? "; Secure" : ""}`;
@@ -55,9 +80,21 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
   const expectedHost = new URL(origin).host;
   const expectedSalt = randomBytes(16);
   const expectedHash = randomBytes(32);
+
+  function providerFor(employee: Employee, source: ElectronicProvider) {
+    const provider = providers[source];
+    if (!provider?.supports(employee.merchantId)) {
+      throw new TeamError(source === "square" ? "SQUARE_NOT_CONNECTED" : "PAYPAL_NOT_CONNECTED", 503);
+    }
+    return provider;
+  }
   function validIngress(headers: Pick<Headers, "get">) {
     return headers.get("host") === expectedHost &&
       (!staging || (headers.get("x-forwarded-proto") === "https" && headers.get("x-forwarded-host") === expectedHost));
+  }
+
+  function presenterIngress(headers: Pick<Headers, "get">) {
+    return validIngress(headers) && (!presenterEmail || accessIdentity(headers)?.email === presenterEmail);
   }
 
   function tokenDigest(headers: Pick<Headers, "get">) {
@@ -67,7 +104,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
   }
 
   function authenticate(headers: Pick<Headers, "get">) {
-    if (!validIngress(headers)) return undefined;
+    if (!presenterIngress(headers)) return undefined;
     const token = tokenDigest(headers);
     if (!token) return undefined;
     const session = store.getSession(token);
@@ -78,24 +115,42 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
   }
 
   function projectSession(employee: Employee, version: string): TeamSession {
+    const assignment = store.demo && demoRegister(employee);
     return {
       sessionVersion: version,
       username: employee.username, name: employee.name, merchantName: employee.merchantName,
       ...(employee.role && { role: employee.role }),
       reviewerConfigured: roster.some(member=>member.merchantId===employee.merchantId&&canReview(member.role)),
-      coworkers: roster.filter((member) => member.merchantId === employee.merchantId)
+      paypalConnected: providers.paypal?.supports(employee.merchantId) ?? false,
+      ...(employee.role !== "reviewer" && store.demo?.includes(employee) && { demoShift: true }),
+      ...(assignment && { demoRegister: assignment }),
+      ...(store.demo && canReview(employee.role) && { pilotEnabled: true }),
+      ...(hostedDemo && { syntheticOnly: true }),
+      ...(hostedDemo && canManageDemoInvites(employee) && { demoInviteAdmin: true }),
+      ...(presenterEmail && canManageDemoInvites(employee) && { demoInviteIdentityRequired: true }),
+      coworkers: roster.filter((member) => employee.role !== "reviewer" && member.role !== "reviewer" && member.merchantId === employee.merchantId)
         .map(({ username, name }) => ({ username, name })),
     };
   }
 
   async function handle(request: Request): Promise<Response> {
-    if (!validIngress(request.headers) || request.headers.get("origin") !== origin) {
+    if (!presenterIngress(request.headers) || request.headers.get("origin") !== origin) {
       return json({ error: "ORIGIN_DENIED" }, 403);
     }
     try {
-      const parsed = teamCommand.safeParse(await readCommand(request));
+      const input = await readCommand(request);
+      if (hostedDemo && input && typeof input === "object" && "action" in input &&
+          (input.action === "inspectPilotCsv" || input.action === "attachPilotFile")) {
+        return json({ error: "PILOT_SYNTHETIC_ONLY" }, 403);
+      }
+      const parsed = teamCommand.safeParse(input);
       if (!parsed.success) return json({ error: "INVALID_COMMAND" }, 400);
       const command = parsed.data;
+      if (hostedDemo && (!hostedDemoActions.has(command.action) ||
+          (command.action === "createRefundRequest" && !command.demoRun && !isDemoSaleReference(command.terms.reference)) ||
+          (command.action === "lookupOriginalSale" && !isDemoSaleReference(command.reference)))) {
+        return json({ error: "DEMO_SHIFT_UNAVAILABLE" }, 404);
+      }
       if (command.action === "signIn") {
         if (staging) {
           const ip = request.headers.get("x-real-ip");
@@ -116,10 +171,11 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
       const identity = authenticate(request.headers);
       if (!identity) return json({ error: "SIGN_IN_REQUIRED" }, 401);
       const { employee, token, version } = identity;
+      if (employee.role === "reviewer" && !reviewerActions.has(command.action)) throw new TeamError("COVERAGE_DENIED", 403);
       switch (command.action) {
         case "session": return json(projectSession(employee, version));
         case "workspace": {
-          const cases = store.list(employee);
+          const cases = employee.role === "reviewer" ? [] : store.list(employee);
           const detail = command.id && cases.some(({ id }) => id === command.id)
             ? store.open(employee, command.id) : null;
           return json({ session: projectSession(employee, version), cases, detail });
@@ -131,6 +187,30 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             return json({ error: "SESSION_CHANGED" }, 409);
           }
           switch (command.action) {
+            case "listPilots":
+            case "openPilot":
+            case "startPilot":
+            case "loadFictionalPilotFile":
+            case "inspectPilotCsv":
+            case "attachPilotFile":
+            case "savePilotBaseline":
+            case "revealPilot":
+            case "decidePilotIssue":
+            case "addPilotMiss":
+            case "savePilotTime":
+            case "savePilotDecision":
+              return json(store.pilotCommand(employee, token, command, hostedDemo));
+            case "overnightDesk":
+            case "overnightOwner":
+            case "coverageSettings":
+            case "grantCoverage":
+            case "startDemoCoverage":
+            case "revokeCoverage":
+            case "reassignOvernightCase":
+            case "claimOvernightCase":
+            case "requestOvernightFollowUp":
+            case "replyOvernight":
+              return json(store.overnightCommand(employee, token, roster, command));
             case "signOut":
               store.revokeSession(token);
               return json(null, 200, cookie("", 0));
@@ -152,42 +232,64 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "recordDisposition": return json(store.recordDisposition(employee, token, command));
             case "refundAlertSettings": {
               if(!canReview(employee.role)) throw new TeamError("TRANSACTION_ROLE_REQUIRED",403);
-              return json({publicKey:alertPublicKey()});
+              return json({publicKey:store.demo ? null : alertPublicKey()});
             }
             case "enrollRefundAlerts": {
               if(!canReview(employee.role)) throw new TeamError("TRANSACTION_ROLE_REQUIRED",403);
-              if(!alertPublicKey()) throw new TeamError("ALERTS_UNAVAILABLE",503);
+              if(store.demo || !alertPublicKey()) throw new TeamError("ALERTS_UNAVAILABLE",503);
               store.enrollRefundAlerts(employee,token,command.enrollment);
               return json(null);
             }
             case "removeRefundAlerts":
               store.removeRefundAlerts(employee,token,command.endpoint);
               return json(null);
-            case "refundAlertStatus":
-              store.refundRequests.open(employee,command.id);
-              return json(store.alerts.status(employee,command.id));
+            case "refundAlertStatus": {
+              const refund = store.refundRequests.open(employee,command.id);
+              const alerts = store.alerts.status(employee,command.id);
+              const explanation = !hostedDemo ? undefined : command.includeSavedExplanation
+                ? store.alerts.readDemoExplanation(employee,command.id)
+                : command.includeExplanation && canReview(employee.role) ? demoExplanation(store.alerts,employee,refund) : undefined;
+              return json(explanation ? alerts.map(alert => alert.phase === 0 ? { ...alert, explanation } : alert) : alerts);
+            }
             case "lookupOriginalSale": {
-              if (command.source !== "square") return json(store.lookupRefundSale(employee,token,command.reference));
-              if (!square?.supports(employee.merchantId)) throw new TeamError("SQUARE_NOT_CONNECTED",503);
-              const evidence = await square.lookup(command.reference);
+              if (!command.source || command.source === "test") return json(store.lookupRefundSale(employee,token,command.reference));
+              if (isDemoSaleReference(command.reference)) throw new TeamError("TRANSACTION_NOT_FOUND",404);
+              const evidence = await providerFor(employee,command.source).lookup(command.reference);
               return json(store.lookupRefundSale(employee,token,command.reference,evidence));
             }
             case "refundPolicy": return json(store.refundRequests.policy(employee));
             case "setRefundPolicy": return json(store.setRefundPolicy(employee,token,command.thresholdCents));
-            case "reportCashPayout": return json(store.reportCashPayout(employee,token,command.id));
+            case "reportCashPayout": return json(store.reportCashPayout(employee,token,command.id,hostedDemo));
+            case "cashDrawers":
+            case "openCashDrawer":
+            case "closeCashDrawer":
+            case "recordDrawerMovement":
+            case "recordDrawerFollowUp":
+            case "openDrawerCase": return json(store.cashDrawer(employee, token, command));
+            case "weeklyCashReview": return json(store.weeklyCashReview(employee, token, command.week, command.location));
             case "listRefundRequests": return json(store.refundRequests.list(employee));
+            case "shiftOverview": return json(store.shiftOverview(employee,token,command.manual));
+            case "recordDemoSale": return json(store.recordDemoSale(employee,token,command));
+            case "openDemoSale": return json(store.openDemoSale(employee,token,command.reference));
+            case "replayHeldDemoRefund": return json(store.replayHeldDemoRefund(employee,token,command.runId,roster));
+            case "demoShift":
+            case "startDemoShift":
+            case "nextDemoEvent":
+            case "replayDemoShift": return json(store.demoShift(employee,token,command));
             case "openRefundRequest": return json(store.refundRequests.open(employee,command.id));
             case "createRefundRequest": {
-              if (command.terms.source !== "square") return json(store.createRefundRequest(employee,token,command.submissionId,command.terms));
+              const { source } = command.terms;
+              if (!source || source === "test" || command.demoRun || isDemoSaleReference(command.terms.reference)) {
+                return json(store.createRefundRequest(employee,token,command.submissionId,command.terms,undefined,command.demoRun));
+              }
               const saved = store.refundRequests.replay(employee,command.submissionId,command.terms);
               if (saved) return json(saved);
-              if (!square?.supports(employee.merchantId)) throw new TeamError("SQUARE_NOT_CONNECTED",503);
-              const evidence = await square.lookup(command.terms.reference);
+              const evidence = await providerFor(employee,source).lookup(command.terms.reference);
               return json(store.createRefundRequest(employee,token,command.submissionId,command.terms,evidence));
             }
-            case "executeSquareRefund":
-            case "verifySquareRefund":
-              return json(await store.executeSquareRefund(employee,token,command.id,square,command.action === "verifySquareRefund"));
+            case "executeElectronicRefund":
+            case "verifyElectronicRefund":
+              return json(await store.executeElectronicRefund(employee,token,command.id,providers,command.action === "verifyElectronicRefund"));
             case "decideRefundRequest": {
               store.refundRequests.open(employee, command.id);
               if (!canReview(employee.role)) throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
@@ -204,12 +306,14 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "openImport": return json(store.openImport(employee, command.id));
             case "assignFinding": {
               const assignee = employees.get(command.assignee);
-              if (!assignee || assignee.merchantId !== employee.merchantId) {
+              if (!assignee || assignee.role === "reviewer" || assignee.merchantId !== employee.merchantId) {
                 return json({ error: "ASSIGNEE_UNAVAILABLE" }, 422);
               }
               return json(store.assignFinding(employee, token, command.id, assignee));
             }
-            default: return json(store.change(employee, command, roster, token));
+            default:
+              if (hostedDemo && !store.isDrawerCase(employee, command.id)) throw new TeamError("CASE_NOT_FOUND", 404);
+              return json(store.change(employee, command, roster.filter(member => member.role !== "reviewer"), token));
           }
       }
     } catch (error) {
@@ -220,11 +324,13 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
 
   return {
     handle,
+    demoAccess: hostedDemo && store.demoInvites ? createDemoAccess(store.demoInvites, origin, staging, validIngress,
+      headers => authenticate(headers)?.employee, Boolean(presenterEmail)) : undefined,
     alerts:store.alerts,
     roster,
-    openRefundRequest: (employee: Employee, id: string) => store.refundRequests.open(employee,id),
-    openImport: (employee: Employee, id: string) => store.openImport(employee, id),
+    openRefundRequest: (employee: Employee, id: string) => { merchantAccess(employee); return store.refundRequests.open(employee, id); },
+    openImport: (employee: Employee, id: string) => { merchantAccess(employee); return store.openImport(employee, id); },
     employeeFor: (headers: Pick<Headers, "get">) => authenticate(headers)?.employee,
-    open: (employee: Employee, id: string) => store.open(employee, id),
+    open: (employee: Employee, id: string) => { merchantAccess(employee); return store.open(employee, id); },
   };
 }

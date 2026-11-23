@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { PilotReviews } from "./pilot-review";
+import type { PilotCommand } from "./pilot-contracts";
+import { DemoInvites } from "./demo-invites";
+import { OvernightDesk } from "./overnight";
 import { TeamError, type CaseHistory, type Employee, type HistoryKind, type TeamCase, type TeamCaseDetail, type TeamCommand } from "./contracts";
 
 import type { CaseComparison, CaseEvidence, ComparisonEvidence, ImportSummary, RefundFinding, RefundImport, RefundImportResult, Rejection, SavedFinding } from "./refund-csv";
@@ -9,10 +13,14 @@ import { summarizeComparison, type ReviewDisposition, type ReviewFindingState } 
 import { RefundAlertStore } from "./refund-alert-store";
 import type { AlertEnrollment } from "./refund-alerts";
 import { RefundRequestStore } from "./refund-request-store";
-import type { RefundDecision, RefundTerms } from "./refund-requests";
-import { executionStopped, squareVerification } from "./refund-requests";
-import type { SquareSandbox, SquareSaleEvidence } from "./square-sandbox";
-import { SquareSubmissionBlocked } from "./square-sandbox";
+import { canReview, cents, checks, executionStopped, isDemoSaleReference, money, payout, providerVerification, type ElectronicSaleEvidence, type RefundDecision, type RefundTerms } from "./refund-requests";
+import { SquareSubmissionBlocked, type SquareSandbox } from "./square-sandbox";
+import type { PayPalProvider } from "./paypal-provider";
+import { RefundNotSubmitted, RefundSubmissionRejected } from "./paypal-contracts";
+import { DemoShift, demoEscalationMs, demoReferencePrefix, demoMerchant } from "./demo-shift";
+import { DemoSales, demoRegister } from "./demo-sales";
+import { summarizeShift } from "./shift-overview";
+import { CashDrawers } from "./cash-drawers";
 
 type ImportRow = ImportSummary & { rejections: string };
 type FindingRow = { id: string; importId: string; evidence: string; caseId: string | null };
@@ -32,6 +40,8 @@ function comparisonSignature(comparison: ComparisonEvidence, findings: RefundFin
 }
 
 type Change = Extract<TeamCommand, { action: "record" | "assign" | "note" | "resolve" }>;
+type DrawerCommand = Extract<TeamCommand, { action: "cashDrawers" | "openCashDrawer" | "closeCashDrawer" |
+  "recordDrawerMovement" | "recordDrawerFollowUp" | "openDrawerCase" }>;
 interface SessionRow { username: string; merchantId: string; passwordVersion: string }
 
 const caseColumns = `id, reference, revision, assignee, assignee_name AS assigneeName, status,
@@ -41,8 +51,14 @@ export class TeamStore {
   private readonly db: DatabaseSync;
   readonly refundRequests: RefundRequestStore;
   readonly alerts: RefundAlertStore;
+  readonly demo?: DemoShift;
+  readonly demoInvites?: DemoInvites;
+  private readonly overnight?: OvernightDesk;
+  private readonly pilots: PilotReviews;
+  private readonly demoSales?: DemoSales;
+  private readonly drawers?: CashDrawers;
 
-  constructor(path: string, private readonly now = () => new Date().toISOString()) {
+  constructor(path: string, private readonly now = () => new Date().toISOString(), demo = false) {
     this.db = new DatabaseSync(path, { enableForeignKeyConstraints: true });
     try {
       this.db.exec(`
@@ -112,8 +128,19 @@ export class TeamStore {
           replacement_hash TEXT NOT NULL
         );
       `);
-      this.refundRequests = new RefundRequestStore(this.db, this.now);
+      this.pilots = new PilotReviews(this.db, this.now, (employee, id, kind, detail, at) =>
+        this.addEvent(employee, id, kind, detail, at), (merchant, id) => this.caseHistory(merchant, id));
+      this.refundRequests = new RefundRequestStore(this.db, this.now, demo);
       this.alerts = new RefundAlertStore(this.db);
+      if (demo) {
+        this.demo = new DemoShift(this.db);
+        this.demoInvites = new DemoInvites(this.db);
+        this.demoSales = new DemoSales(this.db, this.now);
+        this.drawers = new CashDrawers(this.db, this.now);
+        const overnight = new OvernightDesk(this.db, this.drawers, this.now);
+        this.overnight = overnight;
+        this.atomic(() => overnight.settle(demoMerchant));
+      }
     } catch (error) {
       this.db.close();
       throw error;
@@ -124,29 +151,185 @@ export class TeamStore {
     this.db.close();
   }
 
-  lookupRefundSale(employee: Employee, token: string, reference: string, evidence?: SquareSaleEvidence) {
+  lookupRefundSale(employee: Employee, token: string, reference: string, evidence?: ElectronicSaleEvidence) {
     this.requireActiveSession(employee, token);
-    return this.refundRequests.lookup(employee, reference, evidence);
+    if (isDemoSaleReference(reference)) return this.openDemoSale(employee, token, reference);
+    const sale = this.demo?.find(employee, reference);
+    return this.refundRequests.lookup(employee, reference, sale ? { sale, countedRefunds: [] } : evidence);
   }
 
-  createRefundRequest(employee: Employee, token: string, submissionId: string, terms: RefundTerms, evidence?: SquareSaleEvidence) {
+  recordDemoSale(employee: Employee, token: string, command: Extract<TeamCommand, { action: "recordDemoSale" }>) {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
+      if (!this.demoSales) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
+      return this.demoSales.record(employee, command.submissionId, cents(command.amount), command.tender, sale => {
+        if (sale.tender === "Cash") this.drawers?.recordActivity(employee, sale, sale.reference, "sale", sale.originalCents);
+      });
+    });
+  }
+
+  cashDrawer(employee: Employee, token: string, command: DrawerCommand) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      const drawers = this.drawers;
+      if (!drawers) throw new TeamError("DRAWER_NOT_FOUND", 404);
+      switch (command.action) {
+        case "openCashDrawer": return drawers.view(employee, drawers.open(employee, command.id, command.cents));
+        case "closeCashDrawer": drawers.close(employee, command.id, command.cents); break;
+        case "recordDrawerMovement":
+          drawers.movement(employee, command.id, command.entryId, command.kind, command.cents, command.note);
+          break;
+        case "recordDrawerFollowUp":
+          drawers.followUp(employee, command.id, command.entryId, command.cents, command.note);
+          break;
+        case "openDrawerCase":
+          drawers.review(employee, command.id, variance => {
+            const reviewId = randomUUID();
+            const at = this.now();
+            const finding = "Cash drawer discrepancy requiring review · " + money(Math.abs(variance)) +
+              (variance < 0 ? " short" : " over");
+            this.db.prepare(`INSERT INTO team_cases VALUES (?, ?, ?, 1, ?, ?, 'Investigating', ?, '', ?)`)
+              .run(employee.merchantId, reviewId, "Cash drawer close", employee.username, employee.name, finding, at);
+            this.addEvent(employee, reviewId, "Opened", finding, at);
+            return reviewId;
+          });
+          break;
+      }
+      return drawers.view(employee, command.id);
+    });
+  }
+
+  weeklyCashReview(employee: Employee, token: string, week?: string, location?: string) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      if (!this.drawers) throw new TeamError("DRAWER_NOT_FOUND", 404);
+      return this.drawers.week(employee, week, location, id => this.open(employee, id));
+    });
+  }
+
+  private requireDemoSale(employee: Employee, reference: string) {
+    if (!this.demoSales) throw new TeamError("TRANSACTION_NOT_FOUND", 404);
+    return this.demoSales.open(employee, reference);
+  }
+
+  openDemoSale(employee: Employee, token: string, reference: string) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      const sale = this.requireDemoSale(employee, reference);
+      return { ...this.refundRequests.lookup(employee, reference, { sale, countedRefunds: [] }),
+        sale, refunds: this.refundRequests.listForSale(employee, reference) };
+    });
+  }
+
+  createRefundRequest(employee: Employee, token: string, submissionId: string, terms: RefundTerms, evidence?: ElectronicSaleEvidence, demoRun?: string) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      if (isDemoSaleReference(terms.reference)) {
+        const sale = this.requireDemoSale(employee, terms.reference);
+        if (!demoRegister(employee) || demoRun || (terms.source && terms.source !== "test"))
+          throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
+        return this.refundRequests.create(employee, submissionId, terms, this.alerts, { sale, countedRefunds: [] });
+      }
+      if (demoRun || (this.demo && terms.reference.startsWith(demoReferencePrefix))) {
+        return this.createDemoRefund(employee, demoRun, terms);
+      }
       return this.refundRequests.create(employee, submissionId, terms, this.alerts, evidence);
     });
   }
 
-  async executeSquareRefund(employee: Employee, token: string, id: string, square: SquareSandbox | undefined, verifyOnly: boolean) {
+  private createDemoRefund(employee: Employee, runId: string | undefined, terms: RefundTerms) {
+    if (!this.demo) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
+    const input = this.demo.submission(employee, runId, terms);
+    return this.refundRequests.create(employee, input.submissionId, terms, this.alerts, undefined, {
+      sale: input.sale, occurredAt: input.occurredAt, escalationMs: demoEscalationMs,
+    });
+  }
+
+  private readShiftOverview(employee: Employee, demo: DemoShift) {
+    const records = demo.overviewRecords();
+    if (!records) return null;
+    const { refundIds, ...shift } = records;
+    return summarizeShift(shift, refundIds.map(id => this.refundRequests.open(employee, id)));
+  }
+
+  shiftOverview(employee: Employee, token: string, manual?: true) {
+    const demo = this.demo;
+    if (!demo?.includes(employee)) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      if (manual) {
+        const sales = this.demoSales!.list(employee);
+        return summarizeShift({
+          runId: null, seed: "Manual demo", locations: [...new Set(sales.map(sale => sale.location))],
+          sales: sales.map(sale => ({ reference: sale.reference, location: sale.location, register: sale.register,
+            at: sale.recordedAt, netCents: sale.originalCents, discountCents: 0, recordedDemo: true })),
+        }, this.refundRequests.list(employee).filter(request => request.sale?.recordedDemo));
+      }
+      return this.readShiftOverview(employee, demo);
+    });
+  }
+
+  replayHeldDemoRefund(employee: Employee, token: string, expectedRunId: string | null, roster: readonly Employee[]) {
+    const demo = this.demo;
+    if (!demo?.includes(employee)) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      const previous = demo.state();
+      if ((previous?.runId ?? null) !== expectedRunId) throw new TeamError("DEMO_SHIFT_CHANGED", 409);
+      const seed = "harbor-evening";
+      let state = previous ? demo.replay(previous.runId, seed) : demo.start(seed);
+      while (!state.finished) {
+        const { refund, sale } = state.event;
+        if (refund && sale) {
+          const cashier = roster.find(member => demo.includes(member) && member.role === "cashier" && member.username === refund.cashier);
+          if (!cashier) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
+          const request = this.createDemoRefund(cashier, state.runId, {
+            reference: sale.reference, amount: refund.amount, currency: "USD", reason: refund.reason,
+          });
+          if (sale.location === "Harbor Fuel" && refund.amount === "38.00" && checks(request).route === "manager") {
+            return this.readShiftOverview(employee, demo);
+          }
+        }
+        state = demo.next(state.runId, state.step);
+      }
+      throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
+    });
+  }
+
+  demoShift(employee: Employee, token: string,
+    command: Extract<TeamCommand, { action: "demoShift" | "startDemoShift" | "nextDemoEvent" | "replayDemoShift" }>) {
+    const demo = this.demo;
+    if (!demo?.includes(employee)) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      if (command.action !== "demoShift" && employee.role !== "cashier") throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
+      const state = command.action === "startDemoShift" ? demo.start(command.seed) :
+        command.action === "nextDemoEvent" ? demo.next(command.runId, command.step) :
+        command.action === "replayDemoShift" ? demo.replay(command.runId) : demo.state();
+      const duty = employee.username === "jordan" ? "primary" : employee.username === "pay-backup" ? "backup" : undefined;
+      return { state, inbox: state && duty ? this.alerts.demoInbox(employee, { duty }, Date.parse(state.event.at)) : [] };
+    });
+  }
+
+  async executeElectronicRefund(employee: Employee, token: string, id: string,
+    providers: { square?: SquareSandbox; paypal?: PayPalProvider }, verifyOnly: boolean) {
     this.requireActiveSession(employee, token);
-    const state = this.refundRequests.squareExecution(employee, id);
-    const completed = squareVerification(state.request)?.result;
+    const state = this.refundRequests.electronicExecution(employee, id);
+    const completed = providerVerification(state.request)?.result;
     if (completed === "Verified" || completed === "Failed" || executionStopped(state.request)) return state.request;
+    if (state.provider === "paypal") {
+      if (!providers.paypal?.supports(employee.merchantId, state.request.sale ?? undefined)) {
+        throw new TeamError("PAYPAL_NOT_CONNECTED", 503);
+      }
+      return this.processPayPal(employee, token, id, providers.paypal, state, verifyOnly);
+    }
+    const square = providers.square;
     if (!square?.supports(employee.merchantId, state.request.sale ?? undefined)) {
       throw new TeamError("SQUARE_NOT_CONNECTED", 503);
     }
     let response = state.response;
     if (!response && !verifyOnly) {
-      let evidence: SquareSaleEvidence | undefined;
+      let evidence: ElectronicSaleEvidence | undefined;
       if (!state.attempt) {
         try {
           evidence = await square.lookup(state.request.terms.reference);
@@ -158,13 +341,13 @@ export class TeamStore {
             : "The sale is outside Square’s refund window or has reached its refund limit.";
           return this.atomic(() => {
             this.requireActiveSession(employee, token);
-            return this.refundRequests.stopSquare(employee, id, reason);
+            return this.refundRequests.stopElectronic(employee, id, reason);
           });
         }
       }
       const { attempt, response: saved, started, claim } = this.atomic(() => {
         this.requireActiveSession(employee, token);
-        const current = this.refundRequests.startSquare(employee, id, evidence);
+        const current = this.refundRequests.startElectronic(employee, id, this.alerts, evidence);
         return { ...current, claim: current.attempt && !current.response && !executionStopped(current.request)
           ? this.claimSquareDispatch(employee, id, current.attempt.startedAt) : undefined };
       });
@@ -182,12 +365,12 @@ export class TeamStore {
           });
           // Persist the provider outcome even if the requesting session has since signed out.
           response = this.atomic(() => {
-            if (!this.releaseSquareDispatch(employee, id, claim)) return this.refundRequests.squareExecution(employee, id).response;
+            if (!this.releaseSquareDispatch(employee, id, claim)) return this.refundRequests.electronicExecution(employee, id).response;
             if (started && result instanceof SquareSubmissionBlocked) {
-              this.refundRequests.stopSquare(employee, id, result.reason, true);
+              this.refundRequests.stopElectronic(employee, id, result.reason, true);
               return undefined;
             }
-            return this.refundRequests.recordSquareResponse(employee, id,
+            return this.refundRequests.recordProviderResponse(employee, id,
               result instanceof SquareSubmissionBlocked ? null : result) ?? undefined;
           });
         } finally {
@@ -200,7 +383,7 @@ export class TeamStore {
     const readback = await square.verify(response.id).catch(() => null);
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
-      return this.refundRequests.recordSquareLookup(employee, id, readback);
+      return this.refundRequests.recordProviderLookup(employee, id, readback);
     });
   }
 
@@ -238,10 +421,64 @@ export class TeamStore {
       .run(employee.merchantId, id, claim).changes !== 0;
   }
 
+  private async processPayPal(employee: Employee, token: string, id: string, paypal: PayPalProvider,
+    state: ReturnType<RefundRequestStore["electronicExecution"]>, verifyOnly: boolean) {
+    let { attempt, response } = state;
+    if (!attempt && !verifyOnly) {
+      paypal.assertExecutionEnabled();
+      const evidence = await paypal.lookup(state.request.terms.reference);
+      const recorded = this.atomic(() => {
+        this.requireActiveSession(employee, token);
+        return this.refundRequests.startElectronic(employee, id, this.alerts, evidence);
+      });
+      ({ attempt, response } = recorded);
+      // Only the caller that committed the new attempt can submit. Repeat actions recover by readback.
+      if (attempt && recorded.started) {
+        let refundId: string | null;
+        try {
+          refundId = await paypal.submit(attempt.terms, () => this.requireActiveSession(employee, token));
+        } catch (error) {
+          if (error instanceof TeamError && error.code === "SIGN_IN_REQUIRED") {
+            this.atomic(() => this.refundRequests.stopElectronic(employee, id,
+              "The operator signed out or lost authorization before submission. No refund was sent.", true));
+            throw error;
+          }
+          if (error instanceof RefundNotSubmitted || error instanceof RefundSubmissionRejected) {
+            const reason = error instanceof RefundNotSubmitted
+              ? "ChangeGate could not authenticate before submission. No refund was sent."
+              : "PayPal rejected the submission without creating a refund.";
+            const stopped = this.atomic(() => this.refundRequests.stopElectronic(employee, id, reason, true));
+            this.requireActiveSession(employee, token);
+            return stopped;
+          }
+          refundId = null;
+        }
+        response = this.atomic(() => this.refundRequests.recordProviderResponse(employee, id,
+          refundId ? { id: refundId, status: null } : null)) ?? undefined;
+        this.requireActiveSession(employee, token);
+        if (!response) return this.refundRequests.open(employee, id);
+      }
+    }
+    if (!attempt) return this.refundRequests.open(employee, id);
+    const { terms } = attempt;
+    const readback = await paypal.readback(terms, response?.id).catch(() => undefined);
+    const sameAttempt = readback && readback.captureId === terms.paymentId &&
+      (readback.invoiceId === "changegate-" + terms.key || (response && readback.invoiceId === null)) &&
+      (!response || response.id === readback.refundId);
+    const evidence = sameAttempt && readback ? paypal.project(readback) : null;
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      if (!response && evidence) this.refundRequests.recordProviderResponse(employee, id, { id: evidence.id, status: null }, true);
+      return this.refundRequests.recordProviderLookup(employee, id, evidence);
+    });
+  }
+
   decideRefundRequest(employee: Employee, token: string, id: string, decision: RefundDecision) {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
-      return this.refundRequests.decide(employee, id, decision);
+      const request = this.refundRequests.open(employee, id);
+      const demoTime = request.sale?.shift === "Demo shift" && this.demo ? this.demo.state()?.event.at : undefined;
+      return this.refundRequests.decide(employee, id, decision, demoTime);
     });
   }
 
@@ -266,10 +503,49 @@ export class TeamStore {
     });
   }
 
-  reportCashPayout(employee: Employee, token: string, id: string) {
+  reportCashPayout(employee: Employee, token: string, id: string, manualOnly = false) {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
-      return this.refundRequests.reportCash(employee,id);
+      const before = this.refundRequests.open(employee, id);
+      const sale = before.sale;
+      if (manualOnly && (!sale?.recordedDemo || sale.tender !== "Cash")) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
+      const result = this.refundRequests.reportCash(employee, id);
+      if (sale?.recordedDemo && !payout(before)) {
+        this.drawers?.recordActivity(employee, sale, id, "payout", -cents(before.terms.amount));
+      }
+      return result;
+    });
+  }
+
+  overnightCommand(employee: Employee, token: string, roster: readonly Employee[], command: Extract<TeamCommand, {
+    action: "overnightDesk" | "overnightOwner" | "coverageSettings" | "grantCoverage" | "startDemoCoverage" | "revokeCoverage" | "claimOvernightCase" |
+      "requestOvernightFollowUp" | "replyOvernight" | "reassignOvernightCase";
+  }>) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      const desk = this.overnight;
+      if (!desk) throw new TeamError("COVERAGE_DENIED", 404);
+      desk.settle(employee.merchantId);
+      switch (command.action) {
+        case "overnightDesk": return desk.desk(employee, command.id);
+        case "overnightOwner": return desk.owner(employee, roster);
+        case "coverageSettings": return desk.settings(employee, roster);
+        case "grantCoverage": return desk.grant(employee, roster, command.id, command.location, command.reviewer, command);
+        case "startDemoCoverage": return desk.grant(employee, roster, command.id, command.location, command.reviewer);
+        case "revokeCoverage": return desk.revoke(employee, roster, command.id);
+        case "claimOvernightCase": return desk.claim(employee, command.id);
+        case "requestOvernightFollowUp": return desk.handoff(employee, command.id, command.grantId, command.requestId, command.checked, command.question);
+        case "replyOvernight": return desk.reply(employee, roster, command.id, command.requestId, command.text);
+        case "reassignOvernightCase": return desk.reassign(employee, roster, command.id, command.reviewer, command.endedAt);
+      }
+    });
+  }
+
+  pilotCommand(employee: Employee, token: string, command: PilotCommand, syntheticOnly: boolean) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      if (!this.demo) throw new TeamError("PILOT_NOT_FOUND", 404);
+      return this.pilots.handle(employee, command, syntheticOnly);
     });
   }
 
@@ -366,20 +642,18 @@ export class TeamStore {
     const rows = this.db.prepare(`SELECT ${caseColumns},
         (SELECT json_extract(evidence, '$.differenceCents') FROM team_refund_findings
          WHERE merchant_id=c.merchant_id AND case_id=c.id) AS differenceCents
-      FROM team_cases AS c WHERE merchant_id=? ORDER BY updated_at DESC, id`)
+      FROM team_cases AS c WHERE merchant_id=? AND NOT EXISTS (
+        SELECT 1 FROM team_pilot_cases p WHERE p.merchant_id=c.merchant_id AND p.case_id=c.id
+      ) ORDER BY updated_at DESC, id`)
       .all(employee.merchantId) as unknown as (Omit<TeamCase, "differenceCents"> & { differenceCents: number | null })[];
     return rows.map(({ differenceCents, ...item }) => ({ ...item, ...(differenceCents !== null && { differenceCents }) }));
   }
 
   open(employee: Employee, id: string): TeamCaseDetail {
-    const row = this.db.prepare(`SELECT ${caseColumns},
-        (SELECT json_group_array(json_object(
-          'sequence', sequence, 'actor', actor, 'username', username, 'kind', kind, 'detail', detail, 'occurredAt', occurred_at
-        )) FROM (SELECT * FROM team_history WHERE merchant_id=c.merchant_id AND case_id=c.id ORDER BY sequence)) AS history
-      FROM team_cases AS c WHERE merchant_id=? AND id=?`)
-      .get(employee.merchantId, id) as (TeamCase & { history: string }) | undefined;
-    if (!row) throw new TeamError("CASE_NOT_FOUND", 404);
-    const { history, ...item } = row;
+    const item = this.db.prepare(`SELECT ${caseColumns} FROM team_cases AS c WHERE merchant_id=? AND id=? AND NOT EXISTS (
+        SELECT 1 FROM team_pilot_cases p WHERE p.merchant_id=c.merchant_id AND p.case_id=c.id
+      )`).get(employee.merchantId, id) as TeamCase | undefined;
+    if (!item) throw new TeamError("CASE_NOT_FOUND", 404);
     const linked = this.db.prepare(`SELECT ${findingColumns} FROM team_refund_findings
       WHERE merchant_id=? AND case_id=?`).get(employee.merchantId, id) as FindingRow | undefined;
     const comparison = linked && this.db.prepare(`SELECT json_remove(evidence, '$.exact') AS evidence
@@ -388,7 +662,12 @@ export class TeamStore {
       importId: linked.importId, finding: projectFinding(linked),
       ...(typeof comparison === "string" && { comparison: JSON.parse(comparison) as CaseComparison }),
     } : undefined;
-    return { case: item, history: JSON.parse(history) as CaseHistory[], ...(evidence && { evidence }) };
+    const drawerId = this.drawers?.forCase(employee, id);
+    return { case: item, history: this.caseHistory(employee.merchantId, id), ...(evidence && { evidence }), ...(drawerId && { drawerId }) };
+  }
+
+  isDrawerCase(employee: Employee, id: string) {
+    return Boolean(this.drawers?.forCase(employee, id));
   }
 
   listImports(employee: Employee): ImportSummary[] {
@@ -504,6 +783,11 @@ export class TeamStore {
     });
   }
 
+  private caseHistory(merchantId: string, id: string) {
+    return this.db.prepare(`SELECT sequence, actor, username, kind, detail, occurred_at AS occurredAt
+      FROM team_history WHERE merchant_id=? AND case_id=? ORDER BY sequence`).all(merchantId, id) as unknown as CaseHistory[];
+  }
+
   private addEvent(employee: Employee, id: string, kind: HistoryKind, detail: string, time: string) {
     this.db.prepare(`INSERT INTO team_history(merchant_id, case_id, actor, username, kind, detail, occurred_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)`).run(employee.merchantId, id, employee.name, employee.username, kind, detail, time);
@@ -531,6 +815,9 @@ export class TeamStore {
   change(employee: Employee, command: Change, roster: readonly Employee[], token: string) {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
+      const drawerId = this.drawers?.forCase(employee, command.id);
+      if (drawerId && !canReview(employee.role))
+        throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
       const current = this.open(employee, command.id).case;
       if (current.revision !== command.revision) throw new TeamError("CASE_CHANGED", 409);
       if (current.status === "Resolved") throw new TeamError("CASE_RESOLVED", 409);
@@ -562,7 +849,7 @@ export class TeamStore {
           if (!current.finding || !current.nextAction) throw new TeamError("FINDING_REQUIRED", 422);
           next.status = "Resolved";
           kind = "Resolved";
-          detail = "Case marked resolved.";
+          detail = drawerId ? this.drawers!.resolution(employee, drawerId, command.drawerDisposition) : "Case marked resolved.";
           break;
       }
       const time = this.now();

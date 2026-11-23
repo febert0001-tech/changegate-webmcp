@@ -7,6 +7,16 @@ import { activeStatuses, type TeamCaseDetail, type TeamCommand, type TeamSession
 import styles from "./merchant.module.css";
 import { StoreEntry } from "./store-entry";
 import { TransactionWorkspace } from "../transactions/transaction-workspace";
+import { ShiftOverviewPanel } from "./shift-overview-panel";
+import { CashDrawerPanel } from "./cash-drawer-panel";
+import { DemoInviteAdmin } from "./demo-invite-panel";
+import { PilotReviewPanel } from "./pilot-review-panel";
+import { CoverageSettings } from "./coverage-settings";
+import { OvernightOwnerPanel, OvernightReviewer } from "./overnight-panel";
+import { canReview } from "../../merchant-team/refund-requests";
+import { WeeklyCashReviewPanel } from "./weekly-cash-review-panel";
+import { drawerDispositions } from "../../merchant-team/weekly-cash-review";
+import { DemoSalesPanel } from "./demo-sales-panel";
 import type { TransactionStep } from "../../merchant-team/refund-requests";
 import { ReviewSummaryPanel } from "./review-summary-panel";
 import { RefundImportPanel } from "./refund-import-panel";
@@ -14,11 +24,37 @@ import { EvidenceRows, findingTitle } from "./refund-evidence";
 import { formatUsd } from "../../merchant-team/refund-comparison";
 
 const errors: Record<string, string> = {
+  COVERAGE_CASE_CHANGED: "The case changed. Refresh the handoff before assigning a reviewer.",
+  COVERAGE_REASSIGN_UNAVAILABLE: "Choose another reviewer with active coverage for this store.",
+  PILOT_NOT_FOUND: "This pilot review is unavailable in your merchant workspace.",
+  PILOT_ROLE_REQUIRED: "A merchant owner or manager can review a pilot.",
+  PILOT_SYNTHETIC_ONLY: "Use fictional exports in the online demo.",
+  PILOT_INVALID_WEEK: "Select a completed seven-day week and a valid store time zone.",
+  PILOT_SOURCE_CHANGED: "This source already has saved evidence. Reimport the same CSV and column mapping.",
+  PILOT_NEEDS_BOTH: "Attach both exports before comparing the week.",
+  PILOT_CASE_CHANGED: "Someone updated this issue. Reopen the pilot to see the latest decision.",
+  PILOT_BASELINE_EMPTY: "Record active minutes or the exceptions your staff measured.",
+  PILOT_BASELINE_RECORDED: "The original baseline is already saved.",
+  PILOT_SOURCE_REFERENCE: "Use an exact refund reference from the attached exports.",
+  COVERAGE_DENIED: "You do not have access to this overnight case or queue.",
+  COVERAGE_EXPIRED: "You have no active coverage for this shift.",
+  COVERAGE_INVALID_WINDOW: "Enter a valid Atlanta-time window with an end in the future.",
+  COVERAGE_GRANT_CONFLICT: "An overlapping grant already covers this reviewer and store.",
+  COVERAGE_ALREADY_CLAIMED: "Another reviewer has claimed this case.",
+  COVERAGE_CLAIM_REQUIRED: "Claim the case before asking the owner a question.",
+  COVERAGE_REPLY_PENDING: "The current question is awaiting an owner reply.",
+  COVERAGE_ALREADY_ANSWERED: "This question has already been answered.",
+  DRAWER_DISPOSITION_REQUIRED: "Choose how the drawer discrepancy was resolved.",
+  DRAWER_RECOUNT_MISMATCH: "Record a recount that matches expected cash before choosing that disposition.",
   SIGN_IN_FAILED: "Check your username and password.",
   SIGN_IN_LIMIT: "Too many sign-in attempts. Try again in a few minutes.",
   SIGN_IN_RECOVERY_REQUIRED: "This browser kept an old session cookie. Re-enter your password to recover sign-in.",
   SIGN_IN_REQUIRED: "Your session has ended. Sign in again.",
   SESSION_CHANGED: "The signed-in employee changed. Reload this page before making updates.",
+  DEMO_SHIFT_STARTED: "A demo shift is already running. Use Replay this seed to start it over.",
+  DEMO_SHIFT_CHANGED: "The demo event changed. Wait for the current event to refresh.",
+  DEMO_REFUND_REQUIRED: "Have the assigned cashier submit this refund before advancing the clock.",
+  DEMO_SHIFT_UNAVAILABLE: "The synthetic shift is unavailable in this workspace.",
   CASE_NOT_FOUND: "This case could not be opened in your workspace.",
   CASE_CHANGED: "Someone updated this case. Reload to see the latest version before saving.",
   CASE_RESOLVED: "This case is already resolved. Reload to see its history.",
@@ -43,6 +79,12 @@ const errors: Record<string, string> = {
   SQUARE_SALE_INELIGIBLE: "The Square sale is outside its refund window or has reached its refund limit.",
   SQUARE_PRIOR_REFUND_FAILED: "Square blocks additional refunds because an earlier refund failed on this payment.",
   SQUARE_RECONCILIATION_REQUIRED: "The retry window ended. Reconcile the original attempt in Square before taking further action.",
+  PAYPAL_NOT_CONNECTED: "PayPal not connected",
+  PAYPAL_CAPTURE_UNAVAILABLE: "PayPal could not verify a USD capture owned by this store.",
+  PAYPAL_HISTORY_UNAVAILABLE: "PayPal’s capture or refund history is incomplete. Refunds are blocked until it can be reconciled.",
+  PAYPAL_PROVIDER_UNAVAILABLE: "PayPal Sandbox is unavailable. Try the lookup again.",
+  PAYPAL_REFUNDS_DISABLED: "PayPal Sandbox is connected for lookup. Refund submissions are disabled.",
+  PAYPAL_BALANCE_CHANGED: "The refundable balance changed. Recheck the PayPal capture before starting a new request.",
   FINDING_NOT_FOUND: "This finding is unavailable in your workspace.",
   CSV_TOO_LARGE: "Choose a file no larger than 96 KiB.",
   CSV_ENCODING: "Save the CSV as UTF-8 and try again.",
@@ -89,9 +131,15 @@ function notifySessionChange() {
   channel.close();
 }
 
-export function MerchantConsole({ caseId, imports, importId, reviewSummary, transaction }: {
-  caseId?: string; imports?: boolean; importId?: string; reviewSummary?: boolean;
+export function MerchantConsole({ caseId, imports, importId, reviewSummary, transaction, overview, demoSale, cashDrawer, cashWeek, overnight, pilot, inviteAdmin }: {
+  caseId?: string; imports?: boolean; importId?: string; reviewSummary?: boolean; overview?: boolean;
   transaction?: { id: string; step: TransactionStep } | "list";
+  demoSale?: string | true;
+  cashDrawer?: string | true;
+  cashWeek?: { week?: string; location?: string };
+  overnight?: string | true;
+  pilot?: string | true;
+  inviteAdmin?: boolean;
 }) {
   const router = useRouter();
   const [ready, setReady] = useState(false);
@@ -192,6 +240,21 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
         <p className={styles.fieldHint}>Need access or a password reset? Contact your store administrator.</p>
       </form>
   </StoreEntry>;
+  if (session.role === "reviewer") return <main className={styles.shell}>
+    <header className={styles.header}>
+      <div><p className={styles.brand}>ChangeGate</p><h1>{session.merchantName}</h1></div>
+      <div className={styles.profile}><span>{session.name}</span>
+        <button type="button" disabled={busy} onClick={() => void run(async () => {
+          await send<null>({ action: "signOut" }, { sessionVersion: session.sessionVersion });
+          setWorkspace(null);
+          notifySessionChange();
+        })}>Sign out</button>
+      </div>
+    </header>
+    {notice && <p role="alert">{notice}</p>}
+    <OvernightReviewer key={String(overnight)} {...(typeof overnight === "string" && { id: overnight })}
+      session={session} send={send} onSessionError={clearOnSessionError} />
+  </main>;
   return <main className={styles.shell}>
     <header className={styles.header}>
       <div>
@@ -199,7 +262,12 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
         <h1>{session?.merchantName ?? "Merchant workspace"}</h1>
       </div>
       {session && <div className={styles.profile}>
+        {session.demoShift && <Link href="/shift-overview" prefetch={false} aria-current={overview ? "page" : undefined}>Shift Overview</Link>}
+        {session.demoShift && <Link href="/verified-square-example" prefetch={false}>View verified Square Sandbox example</Link>}
+        {session.demoInviteAdmin && !inviteAdmin && <Link href="/demo-access" prefetch={false}>Create demo invite</Link>}
+        {session.pilotEnabled && !pilot && <Link href="/pilot-review" prefetch={false}>Start pilot review</Link>}
         <Link href="/transactions" prefetch={false}>Transactions</Link>
+        {session.demoRegister && <Link href="/demo-sales" prefetch={false}>Record sale</Link>}
         {transaction && <Link href="/merchant" prefetch={false}>Reconciliation</Link>}
         {(imports || caseId) && <Link href="/merchant" prefetch={false}>Work queue</Link>}
         <span>{session.name}</span>
@@ -207,13 +275,32 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
           await send<null>({ action: "signOut" }, { sessionVersion: session.sessionVersion });
           setWorkspace(null);
           notifySessionChange();
-          router.replace(transaction ? "/transactions" : "/merchant");
+          router.replace(overview ? "/shift-overview" : transaction ? "/transactions" : "/merchant");
           router.refresh();
         })}>Sign out</button>
       </div>}
     </header>
     {(notice || busy) && <p className={styles.inlineNotice} role="status">{notice || "Working…"}</p>}
-    {transaction ? (
+    {overview && session.demoShift && canReview(session.role) && <>
+      <OvernightOwnerPanel key={session.sessionVersion} session={session} send={send} onSessionError={clearOnSessionError} />
+      <CoverageSettings key={session.sessionVersion} session={session} send={send} onSessionError={clearOnSessionError} />
+    </>}
+    {inviteAdmin ? (session.demoInviteAdmin ? <DemoInviteAdmin key={session.sessionVersion}
+      requireIdentity={Boolean(session.demoInviteIdentityRequired)} /> :
+      <section className={styles.card}><h2>Demo invitations</h2><p>A demo administrator manages invites.</p></section>) : pilot ? <PilotReviewPanel key={String(pilot)} session={session} send={send} onSessionError={clearOnSessionError}
+      {...(typeof pilot === "string" && { id: pilot })} /> : overnight ? <section className={styles.card}><h2>Overnight review desk</h2>
+      <p>Sign in with your assigned reviewer account to open the desk.</p></section> : cashWeek ? (
+      <WeeklyCashReviewPanel key={session.sessionVersion} initial={cashWeek} session={session} send={send} onSessionError={clearOnSessionError} />
+    ) : cashDrawer ? (
+      <CashDrawerPanel key={session.sessionVersion} {...(typeof cashDrawer === "string" && { id: cashDrawer })}
+        session={session} send={send} onSessionError={clearOnSessionError} />
+    ) : overview ? (
+      <ShiftOverviewPanel key={session.sessionVersion} session={session} send={send} onSessionError={clearOnSessionError} />
+    ) : demoSale ? (
+      <DemoSalesPanel key={versionKey(session.sessionVersion, typeof demoSale === "string" ? demoSale : undefined)}
+        {...(typeof demoSale === "string" && { reference: demoSale })}
+        session={session} send={send} onSessionError={clearOnSessionError} />
+    ) : transaction ? (
       <TransactionWorkspace key={versionKey(session.sessionVersion, transaction === "list" ? undefined : transaction.id)}
         destination={transaction} session={session} send={send} onSessionError={clearOnSessionError} />
     ) : reviewSummary && importId ? (
@@ -265,7 +352,9 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
           <p className={styles.fieldHint}>This case could not be opened in your workspace.</p>
         </> : <>
           <p className={styles.caseReference}>{item.reference}</p>
-          <h2 id="case-heading">{detail.evidence ? findingTitle(detail.evidence.finding) : "Refund case"}</h2>
+          <h2 id="case-heading">{detail.drawerId ? "Cash drawer discrepancy" :
+            detail.evidence ? findingTitle(detail.evidence.finding) : "Refund case"}</h2>
+          {detail.drawerId && <Link href={`/cash-drawer?id=${detail.drawerId}`} prefetch={false}>Open drawer close</Link>}
           {item.finding && <p className={styles.findingSummary}>{item.finding}</p>}
           <dl className={styles.facts}>
             <div><dt>Assignee</dt><dd>{item.assigneeName}</dd></div>
@@ -278,7 +367,7 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
             <EvidenceRows rows={detail.evidence.finding.rows} {...(detail.evidence.comparison && { files: detail.evidence.comparison.files })} />
             <Link href={`/merchant/imports/${detail.evidence.importId}`} prefetch={false}>Open source import</Link>
           </section>}
-          {item.status !== "Resolved" && (
+          {item.status !== "Resolved" && (!detail.drawerId || session.role === "manager" || session.role === "owner") && (
             <fieldset key={item.id} className={styles.editors} disabled={busy}>
               <legend className={styles.visuallyHidden}>Case updates</legend>
               <details className={styles.caseEdit} open={!canResolve}>
@@ -321,6 +410,12 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
                   <button>Add note</button>
                 </form>
               </details>
+              {canResolve && detail.drawerId && <label>Drawer disposition
+                <select name="drawerDisposition" defaultValue="">
+                  <option value="" disabled>Select a disposition</option>
+                  {drawerDispositions.map(option => <option key={option}>{option}</option>)}
+                </select>
+              </label>}
               {canResolve && <button type="button" className={styles.primary} onClick={event => {
                 const controls = event.currentTarget.closest("fieldset")?.elements;
                 const value = (name: string) => {
@@ -332,7 +427,10 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
                   setNotice("Save your edits or restore the saved values before resolving.");
                   return;
                 }
-                change({ action: "resolve", id: item.id, revision: item.revision }, "Case resolved.");
+                const drawerDisposition = drawerDispositions.find(option => option === value("drawerDisposition"));
+                if (detail.drawerId && !drawerDisposition) { setNotice(errors.DRAWER_DISPOSITION_REQUIRED!); return; }
+                change({ action: "resolve", id: item.id, revision: item.revision,
+                  ...(drawerDisposition && { drawerDisposition }) }, "Case resolved.");
               }}>Resolve case</button>}
             </fieldset>
           )}

@@ -2,10 +2,16 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Employee } from "./contracts";
 import { TeamError } from "./error";
 import type { AlertEnrollment } from "./refund-alerts";
-import type { RefundCheck } from "./refund-requests";
+import { unavailableSaleLocation, type RefundCheck } from "./refund-requests";
+import type { DemoExplanation } from "./refund-ai-explanation";
 
 export type AlertJob={merchantId:string; requestId:string; requester:string; location:string; phase:number;
   route:string; alertEvidence:string; tries:number; createdAt:number};
+type Duty = { duty: "primary" | "backup"; location?: string };
+function onDuty(job: Pick<AlertJob, "phase" | "location">, subscription: Duty) {
+  return subscription.duty === (job.phase === 0 ? "primary" : "backup") &&
+    (job.location === unavailableSaleLocation || !subscription.location || subscription.location === job.location);
+}
 export class RefundAlertStore {
   constructor(private readonly db:DatabaseSync) {
     db.exec(`
@@ -25,6 +31,11 @@ export class RefundAlertStore {
         PRIMARY KEY(merchant_id,request_id,phase,endpoint)
       );
       CREATE INDEX IF NOT EXISTS team_refund_alert_due ON team_refund_alert_jobs(status,due,lease);
+      CREATE TABLE IF NOT EXISTS team_demo_refund_explanations (
+        merchant_id TEXT NOT NULL, request_id TEXT NOT NULL, result TEXT NOT NULL,
+        PRIMARY KEY(merchant_id,request_id),
+        FOREIGN KEY(merchant_id,request_id) REFERENCES team_refund_requests(merchant_id,id) ON DELETE CASCADE
+      );
     `);
   }
   enroll(employee:Employee, model:AlertEnrollment) {
@@ -38,7 +49,7 @@ export class RefundAlertStore {
     this.db.prepare("DELETE FROM team_refund_alert_devices WHERE merchant_id=? AND username=? AND endpoint=?")
       .run(employee.merchantId,employee.username,endpoint);
   }
-  queue(employee:Employee,requestId:string,location:string,check:RefundCheck,occurredAt:string) {
+  queue(employee:Employee,requestId:string,location:string,check:RefundCheck,occurredAt:string,escalationMs?:number) {
     if(check.route==="routine") return;
     const now=Date.parse(occurredAt);
     const configured=Number(process.env.CHANGEGATE_ALERT_ESCALATION_SECONDS);
@@ -50,7 +61,7 @@ export class RefundAlertStore {
       thresholdCents:check.thresholdCents,route:check.route,score:check.monitoring?.z??null,
       cashierWatchCount:check.monitoring?.cashierWatchCount??0,registerWatchCount:check.monitoring?.registerWatchCount??0});
     make.run(employee.merchantId,requestId,employee.username,location,0,check.route,evidence,now,now);
-    if(check.route!=="over-balance")make.run(employee.merchantId,requestId,employee.username,location,1,check.route,evidence,now,now+seconds*1000);
+    if(check.route!=="over-balance")make.run(employee.merchantId,requestId,employee.username,location,1,check.route,evidence,now,now+(escalationMs??seconds*1000));
   }
   claim(now:number) {
     return this.db.prepare(`UPDATE team_refund_alert_jobs SET lease=?, tries=tries+1
@@ -68,9 +79,20 @@ export class RefundAlertStore {
       WHERE d.merchant_id=? AND d.username<>? AND d.expires_at>? AND NOT EXISTS(
         SELECT 1 FROM team_refund_alert_sent s WHERE s.merchant_id=d.merchant_id AND s.endpoint=d.endpoint AND s.request_id=? AND s.phase=?
       ) ORDER BY d.endpoint`).all(job.merchantId,job.requester,Date.now(),job.requestId,job.phase) as {username:string;payload:string}[];
-    const duty=job.phase===0?"primary":"backup";
+    // Captures without a provider location still need review by the merchant on duty.
     return rows.map(row=>({username:row.username,subscription:JSON.parse(row.payload) as AlertEnrollment}))
-      .filter(({subscription:s})=>s.duty===duty && (!s.location || s.location===job.location));
+      .filter(({subscription})=>onDuty(job,subscription));
+  }
+  demoInbox(employee:Employee, duty:Duty, now:number) {
+    const jobs=this.db.prepare(`SELECT j.request_id AS requestId,j.phase,j.location FROM team_refund_alert_jobs j
+      JOIN team_refund_requests r ON r.merchant_id=j.merchant_id AND r.id=j.request_id
+      WHERE j.merchant_id=? AND j.requester<>? AND j.route='manager' AND j.due<=?
+      AND json_extract(r.sale,'$.shift')='Demo shift' AND NOT EXISTS (
+        SELECT 1 FROM team_refund_request_events e WHERE e.merchant_id=j.merchant_id AND e.request_id=j.request_id
+        AND json_extract(e.payload,'$.kind')='Decision recorded'
+      ) ORDER BY j.due,j.request_id`).all(employee.merchantId,employee.username,now) as unknown as
+      {requestId:string;phase:number;location:string}[];
+    return jobs.filter(job=>onDuty(job,duty)).map(({requestId,phase})=>({requestId,phase}));
   }
   sent(job:AlertJob,endpoint:string) {
     this.db.prepare("INSERT OR IGNORE INTO team_refund_alert_sent VALUES(?,?,?,?)")
@@ -90,6 +112,19 @@ export class RefundAlertStore {
   saveAdvisory(job:AlertJob,advisory:string) {
     this.db.prepare("UPDATE team_refund_alert_jobs SET advisory=? WHERE merchant_id=? AND request_id=? AND phase=0")
       .run(advisory,job.merchantId,job.requestId);
+  }
+  readDemoExplanation(employee: Employee, id: string): DemoExplanation | undefined {
+    const row = this.db.prepare("SELECT result FROM team_demo_refund_explanations WHERE merchant_id=? AND request_id=?")
+      .get(employee.merchantId,id);
+    return typeof row?.result === "string" ? JSON.parse(row.result) as DemoExplanation : undefined;
+  }
+  claimDemoExplanation(employee: Employee, id: string) {
+    return Boolean(this.db.prepare("INSERT OR IGNORE INTO team_demo_refund_explanations VALUES(?,?,?)")
+      .run(employee.merchantId,id,JSON.stringify({status:"pending"})).changes);
+  }
+  finishDemoExplanation(employee: Employee, id: string, result: DemoExplanation) {
+    this.db.prepare("UPDATE team_demo_refund_explanations SET result=? WHERE merchant_id=? AND request_id=?")
+      .run(JSON.stringify(result),employee.merchantId,id);
   }
   finish(job:AlertJob,status:string, due=0) {
     this.db.prepare(`UPDATE team_refund_alert_jobs SET status=?,due=?,lease=0
