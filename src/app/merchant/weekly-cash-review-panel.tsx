@@ -102,7 +102,7 @@ export function WeeklyCashReviewPanel({ initial, session, send, onSessionError }
     {!allowed && <p>Weekly cash review is available to supervisors in this demo workspace.</p>}
     {error && <p className={styles.formError} role="alert">{error}</p>}
     {!report && allowed && !error && <p role="status">Loading weekly cash review…</p>}
-    {report && <>
+    {report && allowed && <>
       <form className={styles.formRow} key={report.start + (filters.location ?? "")} onSubmit={filter}>
         <label>Date in reporting week<input name="week" type="date" defaultValue={report.start} required /></label>
         <label>Location<select name="location" defaultValue={filters.location ?? ""}>
@@ -112,8 +112,8 @@ export function WeeklyCashReviewPanel({ initial, session, send, onSessionError }
         <button type="submit" className={styles.primary} disabled={filtering}>Show week</button>
       </form>
     </>}
-    {filtering && <p role="status">Loading weekly cash review…</p>}
-    {report && !filtering && !error && <>
+    {allowed && filtering && <p role="status">Loading weekly cash review…</p>}
+    {report && allowed && !filtering && !error && <>
       <p className={styles.reviewPeriod}>{report.start} through {report.end} · {report.timeZone} · By shift opening date</p>
       <div className={styles.shiftMetricGrid} aria-label="Cash review totals">
         {metrics.map(([key, label]) => {
