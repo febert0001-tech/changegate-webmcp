@@ -85,7 +85,7 @@ export function CashDrawerPanel({ id, session, send, onSessionError }: {
     {view && demoRegister && !view.activeId && <form className={styles.formRow} onSubmit={event =>
       submit(event, data => ({ action: "openCashDrawer", id: submissionId("openCashDrawer"), cents: amount(data.get("amount")) }))}>
       <CashAmount label={drawer ? "Next shift opening float" : "Opening float"} />
-      <button className={styles.primary} disabled={busy}>Save opening float</button>
+      <button type="submit" className={styles.primary} disabled={busy}>Save opening float</button>
     </form>}
     {view?.activeId && view.activeId !== drawer?.id && <Link href={`/cash-drawer?id=${view.activeId}`} prefetch={false}>Open current drawer</Link>}
     {drawer && <div className={styles.shiftOverview}>
@@ -106,14 +106,14 @@ export function CashDrawerPanel({ id, session, send, onSessionError }: {
               <label>Movement<select name="kind"><option value="addition">Cash addition</option><option value="removal">Cash removal</option></select></label>
               <CashAmount label="Movement amount" min={0.01} />
               <label>Reason<input name="note" maxLength={240} required /></label>
-              <button disabled={busy}>Save movement</button>
+              <button type="submit" disabled={busy}>Save movement</button>
             </form>
           </details>
           <form className={styles.formRow} onSubmit={event => submit(event, data => ({
             action: "closeCashDrawer", id: drawer.id, cents: amount(data.get("amount")),
           }))}>
             <CashAmount label="First closing count" />
-            <button className={styles.primary} disabled={busy}>Save first count</button>
+            <button type="submit" className={styles.primary} disabled={busy}>Save first count</button>
           </form>
         </>}
       </> : <>
@@ -153,7 +153,7 @@ export function CashDrawerPanel({ id, session, send, onSessionError }: {
           }))}>
             <CashAmount label="Recount (optional)" required={false} />
             <label>Explanation<input name="note" maxLength={240} required /></label>
-            <button disabled={busy}>Save follow-up</button>
+            <button type="submit" disabled={busy}>Save follow-up</button>
           </form>
         </section>
       </>}
