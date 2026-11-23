@@ -22,7 +22,8 @@ export class DemoSales {
     )`);
   }
 
-  record(employee: Employee, submissionId: string, originalCents: number, tender: DemoSale["tender"]): DemoSale {
+  record(employee: Employee, submissionId: string, originalCents: number, tender: DemoSale["tender"],
+    onRecorded?: (sale: DemoSale) => void): DemoSale {
     const assignment = demoRegister(employee);
     if (!assignment) throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
     const existing = this.db.prepare("SELECT sale FROM team_demo_sales WHERE merchant_id=? AND cashier=? AND submission_id=?")
@@ -36,6 +37,7 @@ export class DemoSales {
       originalCents, priorCents: 0, tender, recordedDemo: true, cashier: employee.name, recordedAt: this.now() };
     this.db.prepare("INSERT INTO team_demo_sales VALUES (?,?,?,?,?)")
       .run(employee.merchantId, sale.reference, employee.username, submissionId, JSON.stringify(sale));
+    onRecorded?.(sale);
     return sale;
   }
 

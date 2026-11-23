@@ -9,6 +9,7 @@ export { TeamError } from "./error";
 const text = (max: number) => z.string().trim().min(1).max(max);
 const slug = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/);
 const id = z.uuid();
+const drawerCount = z.number().int().min(0).max(999999999999);
 const revision = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 export const activeStatuses = ["Investigating", "Awaiting evidence"] as const;
 export type CaseStatus = (typeof activeStatuses)[number] | "Resolved";
@@ -68,6 +69,13 @@ export const teamCommand = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("refundPolicy") }),
   z.strictObject({ action: z.literal("setRefundPolicy"), thresholdCents: z.number().int().min(0).max(999999999999) }),
   z.strictObject({ action: z.literal("reportCashPayout"), id }),
+  z.strictObject({ action: z.literal("cashDrawers"), id: id.optional() }),
+  z.strictObject({ action: z.literal("openCashDrawer"), id, cents: drawerCount }),
+  z.strictObject({ action: z.literal("closeCashDrawer"), id, cents: drawerCount }),
+  z.strictObject({ action: z.literal("recordDrawerMovement"), id, entryId: id,
+    kind: z.enum(["addition", "removal"]), cents: drawerCount.min(1), note: text(240) }),
+  z.strictObject({ action: z.literal("recordDrawerFollowUp"), id, entryId: id, cents: drawerCount.nullable(), note: text(240) }),
+  z.strictObject({ action: z.literal("openDrawerCase"), id }),
   z.strictObject({ action: z.literal("listRefundRequests") }),
   z.strictObject({ action: z.literal("demoShift") }),
   z.strictObject({ action: z.literal("shiftOverview"), manual: z.literal(true).optional() }),
@@ -112,6 +120,7 @@ export interface TeamCaseDetail {
   case: TeamCase;
   history: CaseHistory[];
   evidence?: CaseEvidence;
+  drawerId?: string;
 }
 export interface TeamSession {
   sessionVersion: string;

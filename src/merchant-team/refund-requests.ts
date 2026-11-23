@@ -125,8 +125,8 @@ export function requestStatus(request: RefundRequest) {
   if (route === "over-balance") return "Blocked · Over refundable balance";
   if (decision?.decision === "Rejected") return "Rejected";
   if (!decision && (route === "manager" || route === "exception")) return "Needs manager decision";
-  if (request.sale?.recordedDemo) return "Blocked · Processor not connected";
   if (request.sale?.tender === "Cash") return "Ready for cash payout";
+  if (request.sale?.recordedDemo) return "Blocked · Processor not connected";
   const provider = saleProvider(request.sale);
   if (provider) {
     const name = providerName(provider);

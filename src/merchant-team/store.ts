@@ -9,13 +9,14 @@ import { summarizeComparison, type ReviewDisposition, type ReviewFindingState } 
 import { RefundAlertStore } from "./refund-alert-store";
 import type { AlertEnrollment } from "./refund-alerts";
 import { RefundRequestStore } from "./refund-request-store";
-import { cents, checks, executionStopped, isDemoSaleReference, providerVerification, type ElectronicSaleEvidence, type RefundDecision, type RefundTerms } from "./refund-requests";
+import { canReview, cents, checks, executionStopped, isDemoSaleReference, money, payout, providerVerification, type ElectronicSaleEvidence, type RefundDecision, type RefundTerms } from "./refund-requests";
 import { SquareSubmissionBlocked, type SquareSandbox } from "./square-sandbox";
 import type { PayPalProvider } from "./paypal-provider";
 import { RefundNotSubmitted, RefundSubmissionRejected } from "./paypal-contracts";
 import { DemoShift, demoEscalationMs, demoReferencePrefix } from "./demo-shift";
 import { DemoSales, demoRegister } from "./demo-sales";
 import { summarizeShift } from "./shift-overview";
+import { CashDrawers } from "./cash-drawers";
 
 type ImportRow = ImportSummary & { rejections: string };
 type FindingRow = { id: string; importId: string; evidence: string; caseId: string | null };
@@ -35,6 +36,8 @@ function comparisonSignature(comparison: ComparisonEvidence, findings: RefundFin
 }
 
 type Change = Extract<TeamCommand, { action: "record" | "assign" | "note" | "resolve" }>;
+type DrawerCommand = Extract<TeamCommand, { action: "cashDrawers" | "openCashDrawer" | "closeCashDrawer" |
+  "recordDrawerMovement" | "recordDrawerFollowUp" | "openDrawerCase" }>;
 interface SessionRow { username: string; merchantId: string; passwordVersion: string }
 
 const caseColumns = `id, reference, revision, assignee, assignee_name AS assigneeName, status,
@@ -46,6 +49,7 @@ export class TeamStore {
   readonly alerts: RefundAlertStore;
   readonly demo?: DemoShift;
   private readonly demoSales?: DemoSales;
+  private readonly drawers?: CashDrawers;
 
   constructor(path: string, private readonly now = () => new Date().toISOString(), demo = false) {
     this.db = new DatabaseSync(path, { enableForeignKeyConstraints: true });
@@ -122,6 +126,7 @@ export class TeamStore {
       if (demo) {
         this.demo = new DemoShift(this.db);
         this.demoSales = new DemoSales(this.db, this.now);
+        this.drawers = new CashDrawers(this.db, this.now);
       }
     } catch (error) {
       this.db.close();
@@ -144,7 +149,40 @@ export class TeamStore {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
       if (!this.demoSales) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
-      return this.demoSales.record(employee, command.submissionId, cents(command.amount), command.tender);
+      return this.demoSales.record(employee, command.submissionId, cents(command.amount), command.tender, sale => {
+        if (sale.tender === "Cash") this.drawers?.recordActivity(employee, sale, sale.reference, "sale", sale.originalCents);
+      });
+    });
+  }
+
+  cashDrawer(employee: Employee, token: string, command: DrawerCommand) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      const drawers = this.drawers;
+      if (!drawers) throw new TeamError("DRAWER_NOT_FOUND", 404);
+      switch (command.action) {
+        case "openCashDrawer": return drawers.view(employee, drawers.open(employee, command.id, command.cents));
+        case "closeCashDrawer": drawers.close(employee, command.id, command.cents); break;
+        case "recordDrawerMovement":
+          drawers.movement(employee, command.id, command.entryId, command.kind, command.cents, command.note);
+          break;
+        case "recordDrawerFollowUp":
+          drawers.followUp(employee, command.id, command.entryId, command.cents, command.note);
+          break;
+        case "openDrawerCase":
+          drawers.review(employee, command.id, variance => {
+            const reviewId = randomUUID();
+            const at = this.now();
+            const finding = "Cash drawer discrepancy requiring review · " + money(Math.abs(variance)) +
+              (variance < 0 ? " short" : " over");
+            this.db.prepare(`INSERT INTO team_cases VALUES (?, ?, ?, 1, ?, ?, 'Investigating', ?, '', ?)`)
+              .run(employee.merchantId, reviewId, "Cash drawer close", employee.username, employee.name, finding, at);
+            this.addEvent(employee, reviewId, "Opened", finding, at);
+            return reviewId;
+          });
+          break;
+      }
+      return drawers.view(employee, command.id);
     });
   }
 
@@ -444,10 +482,17 @@ export class TeamStore {
     });
   }
 
-  reportCashPayout(employee: Employee, token: string, id: string) {
+  reportCashPayout(employee: Employee, token: string, id: string, manualOnly = false) {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
-      return this.refundRequests.reportCash(employee,id);
+      const before = this.refundRequests.open(employee, id);
+      const sale = before.sale;
+      if (manualOnly && (!sale?.recordedDemo || sale.tender !== "Cash")) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
+      const result = this.refundRequests.reportCash(employee, id);
+      if (sale?.recordedDemo && !payout(before)) {
+        this.drawers?.recordActivity(employee, sale, id, "payout", -cents(before.terms.amount));
+      }
+      return result;
     });
   }
 
@@ -566,7 +611,12 @@ export class TeamStore {
       importId: linked.importId, finding: projectFinding(linked),
       ...(typeof comparison === "string" && { comparison: JSON.parse(comparison) as CaseComparison }),
     } : undefined;
-    return { case: item, history: JSON.parse(history) as CaseHistory[], ...(evidence && { evidence }) };
+    const drawerId = this.drawers?.forCase(employee, id);
+    return { case: item, history: JSON.parse(history) as CaseHistory[], ...(evidence && { evidence }), ...(drawerId && { drawerId }) };
+  }
+
+  isDrawerCase(employee: Employee, id: string) {
+    return Boolean(this.drawers?.forCase(employee, id));
   }
 
   listImports(employee: Employee): ImportSummary[] {
@@ -709,6 +759,8 @@ export class TeamStore {
   change(employee: Employee, command: Change, roster: readonly Employee[], token: string) {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
+      if (this.isDrawerCase(employee, command.id) && !canReview(employee.role))
+        throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
       const current = this.open(employee, command.id).case;
       if (current.revision !== command.revision) throw new TeamError("CASE_CHANGED", 409);
       if (current.status === "Resolved") throw new TeamError("CASE_RESOLVED", 409);

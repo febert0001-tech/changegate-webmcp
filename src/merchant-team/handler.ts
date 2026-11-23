@@ -51,6 +51,8 @@ const hostedDemoActions = new Set([
   "replayHeldDemoRefund",
   "recordDemoSale", "openDemoSale", "lookupOriginalSale",
   "refundAlertStatus", "listRefundRequests", "openRefundRequest", "createRefundRequest", "decideRefundRequest",
+  "reportCashPayout", "cashDrawers", "openCashDrawer", "closeCashDrawer", "recordDrawerMovement",
+  "recordDrawerFollowUp", "openDrawerCase", "record", "assign", "note", "resolve",
 ]);
 
 export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[], origin: string,
@@ -209,7 +211,13 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             }
             case "refundPolicy": return json(store.refundRequests.policy(employee));
             case "setRefundPolicy": return json(store.setRefundPolicy(employee,token,command.thresholdCents));
-            case "reportCashPayout": return json(store.reportCashPayout(employee,token,command.id));
+            case "reportCashPayout": return json(store.reportCashPayout(employee,token,command.id,hostedDemo));
+            case "cashDrawers":
+            case "openCashDrawer":
+            case "closeCashDrawer":
+            case "recordDrawerMovement":
+            case "recordDrawerFollowUp":
+            case "openDrawerCase": return json(store.cashDrawer(employee, token, command));
             case "listRefundRequests": return json(store.refundRequests.list(employee));
             case "shiftOverview": return json(store.shiftOverview(employee,token,command.manual));
             case "recordDemoSale": return json(store.recordDemoSale(employee,token,command));
@@ -254,7 +262,9 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
               }
               return json(store.assignFinding(employee, token, command.id, assignee));
             }
-            default: return json(store.change(employee, command, roster, token));
+            default:
+              if (hostedDemo && !store.isDrawerCase(employee, command.id)) throw new TeamError("CASE_NOT_FOUND", 404);
+              return json(store.change(employee, command, roster, token));
           }
       }
     } catch (error) {

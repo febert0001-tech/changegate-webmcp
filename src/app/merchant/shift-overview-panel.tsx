@@ -103,6 +103,7 @@ function Overview({ session, send, onSessionError, manual }: PanelProps & { manu
     onClick={() => void replayHeldRefund()}>{replaying ? "Replaying fictional shift…" : "Replay to held $38 refund"}</button>;
   const switchView = manual ? <Link href="/shift-overview" prefetch={false}>Seeded shift</Link>
     : <Link href="/shift-overview?shift=manual" prefetch={false}>Manual demo sales</Link>;
+  const drawerLink = <Link href="/cash-drawer" prefetch={false}>Close cash drawer</Link>;
 
   if (!demoShift) return <section className={styles.card}>
     <h2>Shift Overview</h2><p>No fictional shift is available in this workspace.</p>
@@ -110,7 +111,7 @@ function Overview({ session, send, onSessionError, manual }: PanelProps & { manu
   if (!overview) return <section className={styles.card}>
     <h2>Shift Overview</h2>
     <p className={styles.fieldHint}>Fictional shift</p>
-    <p>{switchView}</p>
+    <div className={styles.shiftOverviewActions}>{switchView}{drawerLink}</div>
     {error && <p role="alert">{error}</p>}
     {overview === undefined ? !error && <p role="status">Loading shift activity…</p> : !manual && replayButton}
   </section>;
@@ -124,7 +125,7 @@ function Overview({ session, send, onSessionError, manual }: PanelProps & { manu
   return <section className={`${styles.card} ${styles.shiftOverview}`} aria-labelledby="shift-heading">
     <div className={styles.shiftOverviewHeading}>
       <div><h2 id="shift-heading">Shift Overview</h2><p className={styles.fieldHint}>{manual ? "Manual demo · Fictional records" : `Fictional shift · ${overview.seed}`}</p>
-        {switchView}</div>
+        <div className={styles.shiftOverviewActions}>{switchView}{drawerLink}</div></div>
       <div className={styles.shiftOverviewActions}>
         <label>Location<select value={location} onChange={event => updateFilter("location", event.target.value)}>
           <option value="">All locations</option>

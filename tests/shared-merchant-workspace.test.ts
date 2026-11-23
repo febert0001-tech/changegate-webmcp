@@ -12,6 +12,7 @@ import { checks, requestStatus, requestReceipt, type RefundRequest } from "../sr
 import { demoAccounts, generateDemoEvents, type DemoState } from "../src/merchant-team/demo-shift";
 import { demoExplanation } from "../src/merchant-team/refund-ai-explanation";
 import type { Employee, TeamCase, TeamCaseDetail, TeamSession, TeamWorkspaceView } from "../src/merchant-team/contracts";
+import type { CashDrawerView } from "../src/merchant-team/cash-drawers";
 import { createTeamWorkspace } from "../src/merchant-team/handler";
 import { reviewSummaryCsv, type ReviewSummary } from "../src/merchant-team/review-summary";
 import { TeamStore } from "../src/merchant-team/store";
@@ -34,7 +35,7 @@ const folders: string[] = [];
 const stores = new Set<TeamStore>();
 const children = new Set<ChildProcess>();
 
-function app(path?: string, users = roster, clock?: () => string, square?: SquareSandbox, paypal?: PayPalProvider, demo = false) {
+function app(path?: string, users = roster, clock?: () => string, square?: SquareSandbox, paypal?: PayPalProvider, demo = false, hostedDemo = false) {
   if (!path) {
     const folder = mkdtempSync(join(tmpdir(), "changegate-team-"));
     folders.push(folder);
@@ -42,7 +43,7 @@ function app(path?: string, users = roster, clock?: () => string, square?: Squar
   }
   const store = new TeamStore(path, clock, demo);
   stores.add(store);
-  const workspace = createTeamWorkspace(store, users, origin, { ...(square && { square }), ...(paypal && { paypal }) });
+  const workspace = createTeamWorkspace(store, users, origin, { hostedDemo, ...(square && { square }), ...(paypal && { paypal }) });
   return {
     path, store,
     stop() { store.close(); stores.delete(store); },
@@ -89,6 +90,65 @@ async function signIn(server: Pick<ReturnType<typeof app>, "request">, username:
 }
 
 describe("authenticated synthetic shift", () => {
+  it("freezes a blind cash count and reuses one variance case across restart", async () => {
+    const users = roster.map(employee => ({ ...employee, role: employee.username === "maya" ? "cashier" as const : "manager" as const }));
+    const server = app(undefined, users, undefined, undefined, undefined, true, true);
+    const cashier = await signIn(server, "maya");
+    const supervisor = await signIn(server, "jordan");
+    const otherMerchant = await signIn(server, "alex");
+    const id = randomUUID();
+    const open = { action: "openCashDrawer", id, cents: 10000 };
+    const close = { action: "closeCashDrawer", id, cents: 16300 };
+    const read = { action: "cashDrawers", id };
+    expect(await cashier.send<CashDrawerView>({ action: "cashDrawers" })).toMatchObject({ drawer: null });
+    expect(await cashier.send<CashDrawerView>(open)).toMatchObject({ activeId: id, drawer: { report: null } });
+    expect(await cashier.send<CashDrawerView>(open)).toMatchObject({ activeId: id });
+    const sale = { action: "recordDemoSale", submissionId: randomUUID(), amount: "80.00", tender: "Cash" };
+    const savedSale = await cashier.send<{ reference: string }>(sale);
+    expect(await cashier.send(sale)).toEqual(savedSale);
+    await cashier.send({ ...sale, submissionId: randomUUID(), amount: "25.00", tender: "Electronic" });
+    const refund = await cashier.send<RefundRequest>({ action: "createRefundRequest", submissionId: randomUUID(),
+      terms: { reference: savedSale.reference, amount: "12.00", currency: "USD", reason: "Test cash payout" } });
+    const payout = { action: "reportCashPayout", id: refund.id };
+    await cashier.send(payout);
+    await cashier.send(payout);
+    const held = await cashier.send<RefundRequest>({ action: "createRefundRequest", submissionId: randomUUID(),
+      terms: { reference: savedSale.reference, amount: "50.00", currency: "USD", reason: "Held in this drawer" } });
+    const heldPayout = { action: "reportCashPayout", id: held.id };
+    expect((await cashier.request(heldPayout)).status).toBe(409);
+    await supervisor.send({ action: "decideRefundRequest", id: held.id, decision: "Approved", password });
+    const movement = { action: "recordDrawerMovement", id, entryId: randomUUID(), kind: "addition", cents: 200, note: "Change added" };
+    await cashier.send(movement);
+    await cashier.send(movement);
+    expect((await cashier.request({ ...movement, kind: "removal" })).status).toBe(409);
+    await cashier.send({ ...movement, entryId: randomUUID(), kind: "removal", note: "Change removed" });
+    expect((await otherMerchant.request(read)).status).toBe(404);
+    expect(await supervisor.send<CashDrawerView>(read)).toMatchObject({ drawer: { report: null } });
+    const closed = await cashier.send<CashDrawerView>(close);
+    expect(closed.drawer?.report).toMatchObject({ expected: 16800, variance: -500, firstCount: { cents: 16300, actor: "Maya Chen" } });
+    expect(closed.drawer?.report?.entries.map(({ cents }) => cents)).toEqual([8000, -1200, 200, -200]);
+    expect(await cashier.send(close)).toEqual(closed);
+    await cashier.send({ ...sale, submissionId: randomUUID(), amount: "31.00", tender: "Electronic" });
+    expect(await cashier.send(read)).toEqual(closed);
+    const review = { action: "openDrawerCase", id };
+    const cases = await Promise.all([supervisor.send<CashDrawerView>(review), supervisor.send<CashDrawerView>(review)]);
+    const caseId = cases[0].drawer?.report?.caseId;
+    expect(caseId).toBeTruthy();
+    expect(cases[1].drawer?.report?.caseId).toBe(caseId);
+    expect((await cashier.request({ action: "note", id: caseId, revision: 1, note: "Unauthorized review" })).status).toBe(403);
+    await supervisor.send({ action: "recordDrawerFollowUp", id, entryId: randomUUID(), cents: 16400, note: "Recount recorded" });
+    await supervisor.send({ action: "record", id: caseId, revision: 1, finding: "Recount reviewed", nextAction: "Reconcile cash log", status: "Investigating" });
+    await supervisor.send({ action: "resolve", id: caseId, revision: 2 });
+    server.stop();
+    const reopened = app(server.path, users, undefined, undefined, undefined, true, true);
+    const reviewer = await signIn(reopened, "jordan");
+    const result = await reviewer.send<CashDrawerView>(review);
+    expect(result.drawer?.report).toMatchObject({ caseId, expected: 16800, variance: -500,
+      firstCount: { cents: 16300 }, followUps: [{ cents: 16400, actor: "Jordan Lee" }] });
+    const workspace = await reviewer.send<TeamWorkspaceView>({ action: "workspace", id: caseId });
+    expect(workspace.detail).toMatchObject({ drawerId: id, case: { id: caseId, status: "Resolved" } });
+    expect(workspace.detail?.history.at(-1)).toMatchObject({ kind: "Resolved", actor: "Jordan Lee" });
+  });
   it("uses the HTTPS staging session boundary and accepts only synthetic writes on Railway", async () => {
     const demoOrigin = "https://changegate-demo.up.railway.app";
     const host = new URL(demoOrigin).host;

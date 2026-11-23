@@ -8,6 +8,7 @@ import styles from "./merchant.module.css";
 import { StoreEntry } from "./store-entry";
 import { TransactionWorkspace } from "../transactions/transaction-workspace";
 import { ShiftOverviewPanel } from "./shift-overview-panel";
+import { CashDrawerPanel } from "./cash-drawer-panel";
 import { DemoSalesPanel } from "./demo-sales-panel";
 import type { TransactionStep } from "../../merchant-team/refund-requests";
 import { ReviewSummaryPanel } from "./review-summary-panel";
@@ -101,10 +102,11 @@ function notifySessionChange() {
   channel.close();
 }
 
-export function MerchantConsole({ caseId, imports, importId, reviewSummary, transaction, overview, demoSale }: {
+export function MerchantConsole({ caseId, imports, importId, reviewSummary, transaction, overview, demoSale, cashDrawer }: {
   caseId?: string; imports?: boolean; importId?: string; reviewSummary?: boolean; overview?: boolean;
   transaction?: { id: string; step: TransactionStep } | "list";
   demoSale?: string | true;
+  cashDrawer?: string | true;
 }) {
   const router = useRouter();
   const [ready, setReady] = useState(false);
@@ -229,7 +231,10 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
       </div>}
     </header>
     {(notice || busy) && <p className={styles.inlineNotice} role="status">{notice || "Working…"}</p>}
-    {overview ? (
+    {cashDrawer ? (
+      <CashDrawerPanel key={session.sessionVersion} {...(typeof cashDrawer === "string" && { id: cashDrawer })}
+        session={session} send={send} onSessionError={clearOnSessionError} />
+    ) : overview ? (
       <ShiftOverviewPanel key={session.sessionVersion} session={session} send={send} onSessionError={clearOnSessionError} />
     ) : demoSale ? (
       <DemoSalesPanel key={versionKey(session.sessionVersion, typeof demoSale === "string" ? demoSale : undefined)}
@@ -287,7 +292,9 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
           <p className={styles.fieldHint}>This case could not be opened in your workspace.</p>
         </> : <>
           <p className={styles.caseReference}>{item.reference}</p>
-          <h2 id="case-heading">{detail.evidence ? findingTitle(detail.evidence.finding) : "Refund case"}</h2>
+          <h2 id="case-heading">{detail.drawerId ? "Cash drawer discrepancy" :
+            detail.evidence ? findingTitle(detail.evidence.finding) : "Refund case"}</h2>
+          {detail.drawerId && <Link href={`/cash-drawer?id=${detail.drawerId}`} prefetch={false}>Open drawer close</Link>}
           {item.finding && <p className={styles.findingSummary}>{item.finding}</p>}
           <dl className={styles.facts}>
             <div><dt>Assignee</dt><dd>{item.assigneeName}</dd></div>
@@ -300,7 +307,7 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
             <EvidenceRows rows={detail.evidence.finding.rows} {...(detail.evidence.comparison && { files: detail.evidence.comparison.files })} />
             <Link href={`/merchant/imports/${detail.evidence.importId}`} prefetch={false}>Open source import</Link>
           </section>}
-          {item.status !== "Resolved" && (
+          {item.status !== "Resolved" && (!detail.drawerId || session.role === "manager" || session.role === "owner") && (
             <fieldset key={item.id} className={styles.editors} disabled={busy}>
               <legend className={styles.visuallyHidden}>Case updates</legend>
               <details className={styles.caseEdit} open={!canResolve}>
