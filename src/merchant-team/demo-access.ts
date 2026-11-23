@@ -1,17 +1,19 @@
 import { z } from "zod";
 import type { Employee } from "./contracts";
+import { accessIdentity, normalizeAccessEmail } from "./cloudflare-access";
 import type { DemoInvites } from "./demo-invites";
 import { TeamError } from "./error";
 import { guestWalkthrough } from "./guest-walkthrough";
 
 type Incoming = Pick<Headers, "get">;
 const recipient = z.string().trim().min(1).max(100);
+const recipientEmail = z.string().trim().max(254).optional();
 const minutes = z.number().int().min(30).max(60);
 const opaque = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 const command = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("list") }),
-  z.strictObject({ action: z.literal("plan"), recipient, minutes }),
-  z.strictObject({ action: z.literal("issue"), id: z.uuid(), recipient, minutes, startsAt: z.number().int().positive() }),
+  z.strictObject({ action: z.literal("plan"), recipient, recipientEmail, minutes }),
+  z.strictObject({ action: z.literal("issue"), id: z.uuid(), recipient, recipientEmail, minutes, startsAt: z.number().int().positive() }),
   z.strictObject({ action: z.literal("revoke"), id: z.uuid() }),
   z.strictObject({ action: z.literal("redeem"), recipient, token: opaque, code: z.string().regex(/^[A-Za-z0-9_-]{24}$/) }),
 ]);
@@ -42,16 +44,19 @@ async function readGuestCommand(request: Request) {
 }
 
 export function createDemoAccess(invites: DemoInvites, origin: string, secure: boolean,
-  validIngress: (headers: Incoming) => boolean, employeeFor: (headers: Incoming) => Employee | undefined) {
+  validIngress: (headers: Incoming) => boolean, employeeFor: (headers: Incoming) => Employee | undefined,
+  requireIdentity = false) {
   const name = secure ? "__Host-changegate_demo_guest" : "changegate_demo_guest";
   const cookie = (session: string, remainingMs: number) =>
     `${name}=${session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.ceil(remainingMs / 1000)}${secure ? "; Secure" : ""}`;
 
   function session(headers: Incoming) {
     if (!validIngress(headers)) return undefined;
+    const identity = requireIdentity ? accessIdentity(headers) : undefined;
+    if (requireIdentity && !identity) return undefined;
     const raw = headers.get("cookie")?.split(";").map(value => value.trim())
       .find(value => value.startsWith(name + "="))?.slice(name.length + 1);
-    return raw && opaque.safeParse(raw).success ? invites.check(raw) : undefined;
+    return raw && opaque.safeParse(raw).success ? invites.check(raw, identity) : undefined;
   }
 
   return {
@@ -62,18 +67,24 @@ export function createDemoAccess(invites: DemoInvites, origin: string, secure: b
     },
     async post(request: Request) {
       if (!validIngress(request.headers) || request.headers.get("origin") !== origin) return error("ORIGIN_DENIED", 403);
+      const identity = requireIdentity ? accessIdentity(request.headers) : undefined;
+      if (requireIdentity && !identity) return error("ORIGIN_DENIED", 403);
       try {
         const parsed = command.safeParse(await readGuestCommand(request));
         if (!parsed.success) return error("INVITE_INVALID_REQUEST", 400);
         const input = parsed.data;
         if (input.action === "redeem") {
-          const result = invites.redeem(input.recipient, input.token, input.code);
+          const result = invites.redeem(input.recipient, input.token, input.code, identity);
           return json({ expiresAt: result.expiresAt }, 200, cookie(result.session, result.remainingMs));
         }
         if (!canManageDemoInvites(employeeFor(request.headers))) return error("INVITE_ADMIN_REQUIRED", 403);
+        const email = requireIdentity && "recipientEmail" in input ? normalizeAccessEmail(input.recipientEmail) : undefined;
+        if (requireIdentity && (input.action === "plan" || input.action === "issue") && !email) {
+          return error("INVITE_RECIPIENT_EMAIL_REQUIRED", 400);
+        }
         switch (input.action) {
           case "plan": return json(invites.plan(input.minutes));
-          case "issue": return json(invites.issue(input.id, input.recipient, input.minutes, input.startsAt));
+          case "issue": return json(invites.issue(input.id, input.recipient, input.minutes, input.startsAt, email));
           case "revoke": invites.revoke(input.id); break;
           case "list": break;
         }

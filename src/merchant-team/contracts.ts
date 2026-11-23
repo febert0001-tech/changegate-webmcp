@@ -150,6 +150,7 @@ export interface TeamSession {
   demoRegister?: { location: string; register: string };
   syntheticOnly?: boolean;
   demoInviteAdmin?: boolean;
+  demoInviteIdentityRequired?: boolean;
   pilotEnabled?: boolean;
   coworkers: { username: string; name: string }[];
 }

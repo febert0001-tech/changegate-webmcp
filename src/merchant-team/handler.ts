@@ -2,6 +2,7 @@ import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 import { promisify } from "node:util";
 import { TeamError, teamCommand, type Employee, type TeamSession } from "./contracts";
+import { accessIdentity } from "./cloudflare-access";
 import { canManageDemoInvites, createDemoAccess } from "./demo-access";
 import type { TeamStore } from "./store";
 import { alertPublicKey } from "./refund-alerts";
@@ -66,8 +67,8 @@ function merchantAccess(employee: Employee) {
 }
 
 export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[], origin: string,
-  { staging = false, hostedDemo = false, ...providers }:
-  { staging?: boolean; hostedDemo?: boolean; square?: SquareSandbox; paypal?: PayPalProvider } = {}) {
+  { staging = false, hostedDemo = false, presenterEmail, ...providers }:
+  { staging?: boolean; hostedDemo?: boolean; presenterEmail?: string; square?: SquareSandbox; paypal?: PayPalProvider } = {}) {
   const cookieName = staging ? "__Host-changegate_team_session" : "changegate_team_session";
   const cookie = (token: string, age: number) =>
     `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${age}${staging ? "; Secure" : ""}`;
@@ -92,6 +93,10 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
       (!staging || (headers.get("x-forwarded-proto") === "https" && headers.get("x-forwarded-host") === expectedHost));
   }
 
+  function presenterIngress(headers: Pick<Headers, "get">) {
+    return validIngress(headers) && (!presenterEmail || accessIdentity(headers)?.email === presenterEmail);
+  }
+
   function tokenDigest(headers: Pick<Headers, "get">) {
     const token = headers.get("cookie")?.split(";").map((item) => item.trim())
       .find((item) => item.startsWith(cookieName + "="))?.slice(cookieName.length + 1);
@@ -99,7 +104,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
   }
 
   function authenticate(headers: Pick<Headers, "get">) {
-    if (!validIngress(headers)) return undefined;
+    if (!presenterIngress(headers)) return undefined;
     const token = tokenDigest(headers);
     if (!token) return undefined;
     const session = store.getSession(token);
@@ -122,13 +127,14 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
       ...(store.demo && canReview(employee.role) && { pilotEnabled: true }),
       ...(hostedDemo && { syntheticOnly: true }),
       ...(hostedDemo && canManageDemoInvites(employee) && { demoInviteAdmin: true }),
+      ...(presenterEmail && canManageDemoInvites(employee) && { demoInviteIdentityRequired: true }),
       coworkers: roster.filter((member) => employee.role !== "reviewer" && member.role !== "reviewer" && member.merchantId === employee.merchantId)
         .map(({ username, name }) => ({ username, name })),
     };
   }
 
   async function handle(request: Request): Promise<Response> {
-    if (!validIngress(request.headers) || request.headers.get("origin") !== origin) {
+    if (!presenterIngress(request.headers) || request.headers.get("origin") !== origin) {
       return json({ error: "ORIGIN_DENIED" }, 403);
     }
     try {
@@ -319,7 +325,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
   return {
     handle,
     demoAccess: hostedDemo && store.demoInvites ? createDemoAccess(store.demoInvites, origin, staging, validIngress,
-      headers => authenticate(headers)?.employee) : undefined,
+      headers => authenticate(headers)?.employee, Boolean(presenterEmail)) : undefined,
     alerts:store.alerts,
     roster,
     openRefundRequest: (employee: Employee, id: string) => { merchantAccess(employee); return store.refundRequests.open(employee, id); },

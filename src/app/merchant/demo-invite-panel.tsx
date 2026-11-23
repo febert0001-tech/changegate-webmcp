@@ -15,6 +15,7 @@ const messages: Record<string, string> = {
   INVITE_PLAN_EXPIRED: "That issue time passed. Preview a new deadline.",
   INVITE_ALREADY_ISSUED: "This invite was already issued. Check the invite list.",
   INVITE_ADMIN_REQUIRED: "Sign in as the demo administrator.",
+  INVITE_RECIPIENT_EMAIL_REQUIRED: "Enter the email the recipient will use to sign in through Cloudflare Access.",
 };
 
 async function post<T>(command: object): Promise<T> {
@@ -26,9 +27,9 @@ async function post<T>(command: object): Promise<T> {
   return data as T;
 }
 
-export function DemoInviteAdmin() {
+export function DemoInviteAdmin({ requireIdentity = false }: { requireIdentity?: boolean }) {
   const [list, setList] = useState<Invite[]>([]);
-  const [prepared, setPrepared] = useState<Plan & { id: string; recipient: string; minutes: number }>();
+  const [prepared, setPrepared] = useState<Plan & { id: string; recipient: string; recipientEmail: string | undefined; minutes: number }>();
   const [issued, setIssued] = useState<Issued>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -64,19 +65,20 @@ export function DemoInviteAdmin() {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const recipient = String(data.get("recipient") ?? "").trim();
+    const recipientEmail = requireIdentity ? String(data.get("recipientEmail") ?? "").trim() : undefined;
     const minutes = Number(data.get("minutes"));
     void run(async () => {
-      const plan = await post<Plan>({ action: "plan", recipient, minutes });
-      setPrepared({ ...plan, id: crypto.randomUUID(), recipient, minutes });
+      const plan = await post<Plan>({ action: "plan", recipient, recipientEmail, minutes });
+      setPrepared({ ...plan, id: crypto.randomUUID(), recipient, recipientEmail, minutes });
       setIssued(undefined);
     });
   }
 
   function issue() {
     if (!prepared) return;
-    const { recipient, minutes, id, startsAt } = prepared;
+    const { recipient, recipientEmail, minutes, id, startsAt } = prepared;
     void run(async () => {
-      setIssued(await post<Issued>({ action: "issue", recipient, minutes, id, startsAt }));
+      setIssued(await post<Issued>({ action: "issue", recipient, recipientEmail, minutes, id, startsAt }));
       setPrepared(undefined);
     });
   }
@@ -87,11 +89,13 @@ export function DemoInviteAdmin() {
     {error && <p className={styles.formError} role="alert">{error}</p>}
     <form onSubmit={prepare} className={styles.overnightDetails}>
       <label>Recipient name<input name="recipient" required maxLength={100} autoComplete="off" /></label>
+      {requireIdentity && <label>Cloudflare sign-in email<input name="recipientEmail" type="email" required maxLength={254} autoComplete="off" /></label>}
       <label>Access minutes<input name="minutes" type="number" min={30} max={60} defaultValue={30} required /></label>
       <button type="submit" disabled={busy}>Preview expiration</button>
     </form>
     {prepared && <section className={styles.overnightDetails} aria-label="Confirm demo invite">
       <h3>Confirm demo invite for {prepared.recipient}</h3>
+      {prepared.recipientEmail && <p>Cloudflare sign-in email {prepared.recipientEmail}</p>}
       <p>Issues at {when(prepared.startsAt)}</p>
       <p><strong>Expires at {when(prepared.expiresAt)}</strong></p>
       <button type="button" className={styles.primary} disabled={busy} onClick={issue}>Confirm invite</button>

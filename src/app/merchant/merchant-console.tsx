@@ -285,7 +285,8 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
       <OvernightOwnerPanel key={session.sessionVersion} session={session} send={send} onSessionError={clearOnSessionError} />
       <CoverageSettings key={session.sessionVersion} session={session} send={send} onSessionError={clearOnSessionError} />
     </>}
-    {inviteAdmin ? (session.demoInviteAdmin ? <DemoInviteAdmin key={session.sessionVersion} /> :
+    {inviteAdmin ? (session.demoInviteAdmin ? <DemoInviteAdmin key={session.sessionVersion}
+      requireIdentity={Boolean(session.demoInviteIdentityRequired)} /> :
       <section className={styles.card}><h2>Demo invitations</h2><p>A demo administrator manages invites.</p></section>) : pilot ? <PilotReviewPanel key={String(pilot)} session={session} send={send} onSessionError={clearOnSessionError}
       {...(typeof pilot === "string" && { id: pilot })} /> : overnight ? <section className={styles.card}><h2>Overnight review desk</h2>
       <p>Sign in with your assigned reviewer account to open the desk.</p></section> : cashWeek ? (

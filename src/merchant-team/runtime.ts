@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 import { rosterSchema } from "./contracts";
+import { accessRequired, accessSettings } from "./cloudflare-access";
 import { createTeamWorkspace } from "./handler";
 import { configuredSquareSandbox } from "./square-sandbox";
 import { configuredPayPalSandbox } from "./paypal-provider";
@@ -19,13 +20,17 @@ export function teamWorkspace() {
     const invitePreview = env.CHANGEGATE_TEAM_MODE === "invite-preview";
     const demo = hostedDemo || invitePreview || env.CHANGEGATE_TEAM_MODE === "demo";
     if (env.CHANGEGATE_TEAM_MODE && !staging && !demo) return undefined;
-    const origin = hostedDemo ? `https://${env.RAILWAY_PUBLIC_DOMAIN ?? ""}` :
+    const requireAccess = accessRequired(env);
+    const edge = requireAccess ? accessSettings(env) : undefined;
+    if (requireAccess && !edge) return undefined;
+    const origin = hostedDemo ? `https://${edge?.host ?? env.RAILWAY_PUBLIC_DOMAIN ?? ""}` :
       env.CHANGEGATE_TEAM_ORIGIN ?? (staging ? "" : "http://127.0.0.1:3190");
     let db: string;
     let config: unknown;
     if (staging || hostedDemo) {
       const url = new URL(origin);
-      if (url.protocol !== "https:" || url.origin !== origin || url.port || !url.hostname.endsWith(".up.railway.app")) {
+      if (url.protocol !== "https:" || url.origin !== origin || url.port ||
+          (!edge && !url.hostname.endsWith(".up.railway.app"))) {
         return undefined;
       }
       if (hostedDemo) {
@@ -75,7 +80,8 @@ export function teamWorkspace() {
       const square = demo ? undefined : configuredSquareSandbox();
       const paypal = demo ? undefined : configuredPayPalSandbox();
       return workspace = createTeamWorkspace(store, roster, origin, {
-        staging: staging || hostedDemo, hostedDemo: hostedDemo || invitePreview, ...(square && { square }), ...(paypal && { paypal }),
+        staging: staging || hostedDemo, hostedDemo: hostedDemo || invitePreview, ...(edge && { presenterEmail: edge.presenterEmail }),
+        ...(square && { square }), ...(paypal && { paypal }),
       });
     } catch (error) {
       store.close();

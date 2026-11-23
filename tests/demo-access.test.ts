@@ -22,14 +22,14 @@ beforeEach(() => {
 });
 afterEach(() => db.close());
 
-function post(body: unknown, actor = "guest", requestOrigin = origin) {
+function post(body: unknown, actor = "guest", requestOrigin = origin, verified: Record<string, string> = {}) {
   return api.post(new Request(origin + "/api/demo-access", {
-    method: "POST", headers: { host, origin: requestOrigin, "content-type": "application/json", "x-test-identity": actor },
+    method: "POST", headers: { host, origin: requestOrigin, "content-type": "application/json", "x-test-identity": actor, ...verified },
     body: JSON.stringify(body),
   }));
 }
-function get(cookie = "") {
-  return api.read(new Request(origin + "/api/demo-access", { headers: { host, cookie } }));
+function get(cookie = "", verified: Record<string, string> = {}) {
+  return api.read(new Request(origin + "/api/demo-access", { headers: { host, cookie, ...verified } }));
 }
 async function issue(minutes = 30) {
   const recipient = "Internal Reviewer";
@@ -44,6 +44,49 @@ async function issue(minutes = 30) {
 }
 
 describe("expiring investor guest access", () => {
+  it("binds an invite and its session to a verified Cloudflare identity without extending the deadline", async () => {
+    const legacy = await issue();
+    const verified = (email: string, subject: string) => ({
+      "x-changegate-access-email": email, "x-changegate-access-subject": subject,
+    });
+    const presenter = verified("presenter@example.test", "presenter-sub");
+    const guest = verified("invited@example.test", "guest-sub");
+    const different = verified("another@example.test", "other-sub");
+    api = createDemoAccess(new DemoInvites(db, () => clock), origin, true, headers => headers.get("host") === host,
+      headers => headers.get("x-changegate-access-email") === "presenter@example.test" ? admin : undefined, true);
+    expect((await post(legacy.input, "admin", origin, presenter)).status).toBe(400);
+    const recipientEmail = "Invited@example.test";
+    const input = { ...legacy.input, recipientEmail, id: randomUUID() };
+    const approved = await post(input, "admin", origin, presenter);
+    expect(approved.status).toBe(200);
+    const { token, code } = await approved.json();
+    const redeem = { ...legacy.redeem, token, code };
+    const second = await post({ ...input, id: randomUUID() }, "admin", origin, presenter);
+    const secondPass = await second.json();
+    clock = readTime("14:25:00");
+    expect((await post(legacy.redeem, "guest", origin, guest)).status).toBe(403);
+    expect((await post(redeem, "guest", origin, different)).status).toBe(403);
+    expect((await post(redeem)).status).toBe(403);
+    const result = await post(redeem, "guest", origin, guest);
+    expect(result.status).toBe(200);
+    expect((await post(redeem, "guest", origin, guest)).status).toBe(403);
+    const cookie = result.headers.get("set-cookie")!.split(";")[0]!;
+    expect(await get(cookie, guest).json()).toMatchObject({ expiresAt: readTime("14:30:00"),
+      remainingMs: 300_000, walkthrough: [{ title: "Held refund · Harbor Fuel" },
+        { title: "Recorded Square Sandbox result" }, { title: "Synthetic pilot scorecard" }] });
+    expect(get(cookie).status).toBe(401);
+    expect(get(cookie, different).status).toBe(401);
+    expect(get(cookie, verified("invited@example.test", "changed-sub")).status).toBe(401);
+    expect((await post({ action: "list" }, "guest", origin, guest)).status).toBe(403);
+    const secondSession = await post({ ...redeem, token: secondPass.token, code: secondPass.code }, "guest", origin, guest);
+    const secondCookie = secondSession.headers.get("set-cookie")!.split(";")[0]!;
+    expect(get(secondCookie, guest).status).toBe(200);
+    expect((await post({ action: "revoke", id: secondPass.id }, "admin", origin, presenter)).status).toBe(200);
+    expect(get(secondCookie, guest).status).toBe(401);
+    clock = readTime("14:30:00");
+    expect(get(cookie, guest).status).toBe(401);
+  });
+
   it("preserves the 2:30 deadline after a 2:25 redemption, refresh and repeat sign-in", async () => {
     const pass = await issue();
     expect(pass.startsAt).toBe(readTime("14:00:00"));
