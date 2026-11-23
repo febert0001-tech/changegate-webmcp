@@ -213,6 +213,7 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
       </div>
       {session && <div className={styles.profile}>
         {session.demoShift && <Link href="/shift-overview" prefetch={false} aria-current={overview ? "page" : undefined}>Shift Overview</Link>}
+        {session.demoShift && <Link href="/verified-square-example" prefetch={false}>View verified Square Sandbox example</Link>}
         <Link href="/transactions" prefetch={false}>Transactions</Link>
         {session.demoRegister && <Link href="/demo-sales" prefetch={false}>Record sale</Link>}
         {transaction && <Link href="/merchant" prefetch={false}>Reconciliation</Link>}
