@@ -291,7 +291,8 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   const demoCashier=session.demoShift && session.role==="cashier" && !provider;
   const cashierWaiting=demoCashier && status==="Needs manager decision";
   const cashierClosed=demoCashier && review?.decision==="Rejected";
-  const current=approvedDemo || cashierClosed ? "receipt" : currentStep(record);
+  const supervisorClosed=session.demoShift && manager && !provider && step==="approval" && review?.decision==="Rejected";
+  const current=approvedDemo || cashierClosed || supervisorClosed ? "receipt" : currentStep(record);
   const statusHeading=cashierWaiting ? "Waiting for supervisor review"
     : provider==="square"&&status==="Needs manager decision" ? "Supervisor approval required" : status;
   const customerUpdate=cashierWaiting ? "Your refund request is under review. No refund has been paid yet."
@@ -302,7 +303,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
     : attempt && !stopped ? name+" Sandbox outcome unconfirmed"
     : reported ? "Test cash payout reported" : "No payout recorded";
   const next=cashierWaiting ? "You sent the request for review. Wait for the supervisor’s decision."
-    : cashierClosed ? "This request is closed. Return to the transaction list."
+    : cashierClosed || supervisorClosed ? "This request is closed. Return to the transaction list."
     : status==="Needs manager decision" ? "A different supervisor must approve or reject this request."
     : check.route==="over-balance" ? "Cashier: check the balance and start a new request for an eligible amount."
     : review?.decision==="Rejected" ? "No payout action is available. Return to the transaction list."
@@ -326,6 +327,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
         <span>Current step · {transactionTabs.find(([tab])=>tab===current)?.[1]}</span>
       </p>
       {approvedDemo&&review&&<p>Approved by <strong>{review.actor}</strong></p>}
+      {supervisorClosed&&<p>Rejected by <strong>{review.actor}</strong></p>}
       <dl className={styles.moneySummary}>
         <div><dt>Requested</dt><dd>{money(cents(record.terms.amount))}</dd></div>
         <div><dt>Refundable at request</dt><dd>{check.balanceCents===null?"Unavailable":money(check.balanceCents)}</dd></div>

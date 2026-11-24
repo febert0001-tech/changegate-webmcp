@@ -20,6 +20,7 @@
       "feat/polish-demo-refund-receipt": false,
       "feat/approval-rule-evidence": false,
       "feat/cashier-refund-status": false,
+      "feat/late-supervisor-alert": false,
       "main": false
     }
   }

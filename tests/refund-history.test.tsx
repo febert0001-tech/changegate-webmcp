@@ -54,7 +54,7 @@ describe("receipt payment state", () => {
     },
   };
 
-  async function view(record: RefundRequest, step: TransactionStep = "receipt") {
+  async function view(record: RefundRequest, step: TransactionStep = "receipt", role: "cashier" | "manager" = "cashier") {
     const dom = new Window({ url: "http://localhost:3193" });
     vi.stubGlobal("window", dom);
     vi.stubGlobal("self", dom);
@@ -68,8 +68,9 @@ describe("receipt payment state", () => {
     };
     try {
       await act(async () => root.render(<TransactionWorkspace destination={{ id: record.id, step }}
-        session={{ sessionVersion: "local-test", username: "maya", name: "Maya Chen", merchantName: "Harbor Goods",
-          role: "cashier", demoShift: true, coworkers: [] }} send={send} onSessionError={() => false} />));
+        session={{ sessionVersion: "local-test", username: role === "manager" ? "jordan" : "maya",
+          name: role === "manager" ? "Jordan Lee" : "Maya Chen", merchantName: "Harbor Goods",
+          role, demoShift: true, coworkers: [] }} send={send} onSessionError={() => false} />));
       return {
         summary: document.querySelector('[aria-label="Refund status and next action"]')?.textContent,
         body: document.body.textContent,
@@ -115,6 +116,24 @@ describe("receipt payment state", () => {
     expect(receipt.body).toContain("Rejected by Jordan Lee");
     expect(receipt.summary).toContain("No payout action is available");
     expect((await view(rejected, "execution")).buttons).not.toContain("Execute Square Sandbox refund");
+  });
+
+  it.each(["Approved", "Rejected"] as const)("shows the saved %s decision when a supervisor opens the approval link late", async decision => {
+    const decided: RefundRequest = { ...request, events: [...request.events.slice(0, -1),
+      { kind: "Decision recorded", actor: "Backup Supervisor", occurredAt, decision },
+    ] };
+    const { summary, buttons } = await view(decided, "approval", "manager");
+    expect(summary).toContain(decision + " by Backup Supervisor");
+    expect(summary).toContain("Current step · Receipt");
+    if (decision === "Approved") {
+      expect(summary).toContain("Approved / Not submitted");
+      expect(summary).toContain("Confirmed payout$0.00");
+    } else {
+      expect(summary).toContain("This request is closed.");
+      expect(summary).toContain("No payout recorded");
+    }
+    expect(buttons).not.toContain("Approve");
+    expect(buttons).not.toContain("Reject");
   });
 
   it("tells the operator to submit an approved refund when submission is available", async () => {
