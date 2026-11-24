@@ -6,8 +6,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { TeamCommand, TeamSession } from "../../merchant-team/contracts";
 import type { DemoState } from "../../merchant-team/demo-shift";
 import type { DemoExplanation } from "../../merchant-team/refund-ai-explanation";
+import { repeatWatchThreshold } from "../../merchant-team/refund-monitor-rules";
 import { canReview, cents, checks, currentStep, executionStopped, money, payout, requestDecision, requestReceipt,
-  providerAttempt, providerName, providerResponse, providerVerification, saleProvider, type ElectronicProvider,
+  providerAttempt, providerName, providerResponse, providerVerification, saleProvider, type ElectronicProvider, type RefundWatchEntry,
   requestStatus, submitted, transactionTabs, type RefundRequest, type TestSale, type TransactionStep } from "../../merchant-team/refund-requests";
 import { PhoneAlerts } from "./phone-alerts";
 import { RefundHistory } from "./refund-history";
@@ -40,6 +41,21 @@ function SaleFacts({ sale }: { sale: TestSale }) {
     {sale.paypal&&<div><dt>PayPal order</dt><dd>{sale.paypal.orderId}</dd></div>}
     <div><dt>Original tender</dt><dd>{sale.tender}</dd></div>
   </dl>;
+}
+
+function WatchActivity({ heading, count, entries, currentId }: {
+  heading: string; count: number; entries: RefundWatchEntry[]; currentId: string;
+}) {
+  return <div>
+    <h5>{heading} · {count} unusual requests</h5>
+    {entries.length < count && <p className={styles.fieldHint}>Showing {entries.length} of {count} saved activity details.</p>}
+    <ul className={styles.rejections}>{entries.map(entry => <li key={entry.id}>
+      <time dateTime={entry.occurredAt}>{time(entry.occurredAt)}</time>
+      {" · "}{entry.actor}{entry.location && " · " + entry.location}
+      {" · "}{entry.register ?? "Register unavailable"}{" · "}{money(cents(entry.amount))}
+      {entry.id === currentId && <> · <strong>This request</strong></>}
+    </li>)}</ul>
+  </div>;
 }
 export function TransactionWorkspace({destination,session,send,onSessionError}: {
   destination:"list"|{id:string;step:TransactionStep}; session:TeamSession; send:Send; onSessionError:(e:unknown)=>boolean;
@@ -357,10 +373,23 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
         </dl>
         <p><strong>Reason</strong> {record.terms.reason}</p>
         {check.monitoring?.reasons.length ? <>
-          <h4>Rule evidence</h4>
+          <h4>Rules that triggered</h4>
           <ul className={styles.rejections}>{check.monitoring.reasons.map(reason=><li key={reason}>{reason}</li>)}</ul>
           {!check.monitoring.reasons.includes(check.explanation)&&<p><strong>Why it stopped</strong> {check.explanation}</p>}
         </> : <p><strong>Why it stopped</strong> {check.explanation}</p>}
+        {check.cumulativeCents !== null && check.cumulativeCents < check.thresholdCents && <p>
+          <strong>Below the store amount threshold.</strong> Refunds on this sale would total {money(check.cumulativeCents)},
+          against a {money(check.thresholdCents)} review threshold.
+        </p>}
+        {record.watchActivity && check.monitoring && <>
+          <h4>Activity counted toward the 15-minute rules</h4>
+          {check.monitoring.cashierWatchCount >= repeatWatchThreshold && <WatchActivity
+            heading={submitted(record).actor + " across registers"} count={check.monitoring.cashierWatchCount}
+            entries={record.watchActivity.cashier} currentId={record.id} />}
+          {check.monitoring.registerWatchCount >= repeatWatchThreshold && <WatchActivity
+            heading={(record.sale?.register ?? "This register") + " across cashiers"} count={check.monitoring.registerWatchCount}
+            entries={record.watchActivity.register} currentId={record.id} />}
+        </>}
         {includeExplanation&&alertStatus[0]?.explanation&&<section className={styles.importSection}>
           <h4>AI explanation</h4>
           {alertStatus[0].explanation.status==="complete" ? <>

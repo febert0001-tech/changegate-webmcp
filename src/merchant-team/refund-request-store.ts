@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Employee } from "./contracts";
 import type { RefundAlertStore } from "./refund-alert-store";
-import { assessSize, individualLimitCents, ruleVersion, syntheticRegisterDrift, watchWindowMs } from "./refund-monitor-rules";
+import { assessSize, individualLimitCents, repeatWatchThreshold, ruleVersion, syntheticRegisterDrift, watchWindowMs } from "./refund-monitor-rules";
 import { TeamError } from "./error";
 import { canReview, cents, checks, executionStopped, money, payout, providerName, providerResponse, providerVerification,
   requestDecision, requestStatus, saleProvider, squareApprovalReason, testSale, type ElectronicAttemptTerms,
   type ElectronicSaleEvidence, type ProviderRefundEvidence, type ProviderRefundResponse, type RefundCheck,
-  type RefundDecision, type RefundRequest, type RefundTerms, type RefundVerification, type TestSale, type TransactionEvent } from "./refund-requests";
+  type RefundDecision, type RefundRequest, type RefundTerms, type RefundVerification, type RefundWatchEntry, type TestSale, type TransactionEvent } from "./refund-requests";
 
 type RequestRow = { id: string; terms: string; sale: string; events: string };
 const project = (row: RequestRow): RefundRequest => ({
@@ -65,7 +65,30 @@ export class RefundRequestStore {
   open(employee: Employee, id: string) {
     const row = this.db.prepare(this.select()+" WHERE r.merchant_id=? AND r.id=?").get(employee.merchantId,id) as RequestRow | undefined;
     if (!row) throw new TeamError("TRANSACTION_NOT_FOUND",404);
-    return project(row);
+    const request = project(row);
+    const monitoring = checks(request).monitoring;
+    if (!canReview(employee.role) || !monitoring ||
+      Math.max(monitoring.cashierWatchCount, monitoring.registerWatchCount) < repeatWatchThreshold) return request;
+
+    const ids = [...monitoring.related, id];
+    const rows = this.db.prepare(`SELECT w.request_id AS id, w.cashier, w.register_scope AS scope, w.seen_at AS occurredAt,
+      json_extract(r.terms,'$.amount') AS amount, json_extract(r.sale,'$.location') AS location,
+      json_extract(r.sale,'$.register') AS register,
+      (SELECT json_extract(e.payload,'$.actor') FROM team_refund_request_events e
+        WHERE e.merchant_id=w.merchant_id AND e.request_id=w.request_id
+        AND json_extract(e.payload,'$.kind')='Request submitted' ORDER BY e.sequence LIMIT 1) AS actor
+      FROM team_refund_watch w JOIN team_refund_requests r ON r.merchant_id=w.merchant_id AND r.id=w.request_id
+      WHERE w.merchant_id=? AND w.request_id IN (${ids.map(() => "?").join(",")})
+      ORDER BY w.seen_at,w.request_id`).all(employee.merchantId, ...ids) as unknown as
+      Array<RefundWatchEntry & { cashier: string; scope: string }>;
+    const current = rows.find(entry => entry.id === id);
+    if (!current) return request;
+    const entry = ({ id, actor, occurredAt, amount, location, register }: RefundWatchEntry): RefundWatchEntry =>
+      ({ id, actor, occurredAt, amount, location, register });
+    return { ...request, watchActivity: {
+      cashier: rows.filter(row => row.cashier === current.cashier).map(entry),
+      register: rows.filter(row => current.scope && row.scope === current.scope).map(entry),
+    }};
   }
 
   policy(employee: Employee) {
@@ -137,8 +160,8 @@ export class RefundRequestStore {
     const reasons:string[]=[];
     if (size.absoluteHold) reasons.push("The amount meets the "+money(individualLimitCents)+" individual limit.");
     if (size.relativeHold) reasons.push("The amount is unusually large for the test baseline (score "+size.z?.toFixed(2)+").");
-    if (cashierWatchCount>=3) reasons.push(cashierWatchCount+" unusual refunds by this cashier across registers in 15 minutes.");
-    if (registerWatchCount>=3) reasons.push(registerWatchCount+" unusual refunds at this register across cashiers in 15 minutes.");
+    if (cashierWatchCount>=repeatWatchThreshold) reasons.push(cashierWatchCount+" unusual refunds by this cashier across registers in 15 minutes.");
+    if (registerWatchCount>=repeatWatchThreshold) reasons.push(registerWatchCount+" unusual refunds at this register across cashiers in 15 minutes.");
     const monitoring={ruleVersion,z:size.z,watch:size.watch,cashierWatchCount,registerWatchCount,related:recent.slice(0,8).map(row=>row.id),reasons,drift:syntheticRegisterDrift(terms.reference)};
     if (!sale) {
       check={route:"exception",balanceCents:null,cumulativeCents:null,thresholdCents,monitoring,

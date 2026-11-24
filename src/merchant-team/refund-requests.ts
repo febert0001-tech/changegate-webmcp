@@ -68,11 +68,15 @@ export type TransactionEvent =
   | { kind: "Square refund response" | "PayPal refund response" | "PayPal refund recovered"; actor: string; occurredAt: string; refund: ProviderRefundResponse }
   | { kind: `${"Square" | "PayPal"} independent lookup`; actor: string; occurredAt: string; refund: ProviderRefundEvidence | null;
       result: RefundVerification };
+export type RefundWatchEntry = {
+  id: string; actor: string; occurredAt: string; amount: string; location: string | null; register: string | null;
+};
 export interface RefundRequest {
   id: string;
   terms: RefundTerms;
   sale: TestSale | null;
   events: TransactionEvent[];
+  watchActivity?: { cashier: RefundWatchEntry[]; register: RefundWatchEntry[] };
 }
 export const transactionTabs = [
   ["sale", "Sale"], ["checks", "Checks"], ["approval", "Approval"],
