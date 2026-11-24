@@ -288,13 +288,22 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   const verified=verification?.result==="Verified", failed=verification?.result==="Failed";
   const status=requestStatus(record);
   const approvedDemo=approvedDemoWithoutSubmission(record, session.demoShift);
-  const current=approvedDemo ? "receipt" : currentStep(record);
-  const statusHeading=provider==="square"&&status==="Needs manager decision" ? "Supervisor approval required" : status;
+  const demoCashier=session.demoShift && session.role==="cashier" && !provider;
+  const cashierWaiting=demoCashier && status==="Needs manager decision";
+  const cashierClosed=demoCashier && review?.decision==="Rejected";
+  const current=approvedDemo || cashierClosed ? "receipt" : currentStep(record);
+  const statusHeading=cashierWaiting ? "Waiting for supervisor review"
+    : provider==="square"&&status==="Needs manager decision" ? "Supervisor approval required" : status;
+  const customerUpdate=cashierWaiting ? "Your refund request is under review. No refund has been paid yet."
+    : demoCashier && approvedDemo ? "Your refund was approved. It hasn’t been sent for payment."
+    : cashierClosed ? "A supervisor declined your refund request. No refund was paid." : null;
   const outcome=verified ? name+" Sandbox refund verified · No real money moved"
     : failed ? name+" Sandbox reports the refund failed"
     : attempt && !stopped ? name+" Sandbox outcome unconfirmed"
     : reported ? "Test cash payout reported" : "No payout recorded";
-  const next=status==="Needs manager decision" ? "A different supervisor must approve or reject this request."
+  const next=cashierWaiting ? "You sent the request for review. Wait for the supervisor’s decision."
+    : cashierClosed ? "This request is closed. Return to the transaction list."
+    : status==="Needs manager decision" ? "A different supervisor must approve or reject this request."
     : check.route==="over-balance" ? "Cashier: check the balance and start a new request for an eligible amount."
     : review?.decision==="Rejected" ? "No payout action is available. Return to the transaction list."
     : approvedDemo ? "No action needed. Payment submission is disabled in this demo."
@@ -324,6 +333,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
           <div><dt>Money movement</dt><dd>{outcome}</dd></div>}
       </dl>
       <p><strong>Next action</strong> {next}</p>
+      {customerUpdate && <p role="status"><strong>What to tell the customer</strong> {customerUpdate}</p>}
       {approvedDemo&&step==="receipt"&&<p><strong>Why it was held</strong> {check.explanation}</p>}
       {step!==current && status==="Ready for cash payout" && <Link href={url(record.id,current)}>Open execution</Link>}
     </section>
