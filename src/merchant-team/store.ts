@@ -532,7 +532,8 @@ export class TeamStore {
       if (manualOnly && (!sale?.recordedDemo || sale.tender !== "Cash")) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
       const result = this.refundRequests.reportCash(employee, id);
       if (sale?.recordedDemo && !payout(before)) {
-        this.drawers?.recordActivity(employee, sale, id, "payout", -cents(before.terms.amount));
+        if (!this.drawers?.active(employee, sale)) throw new TeamError("CASH_PAYOUT_DRAWER_REQUIRED", 409);
+        this.drawers.recordActivity(employee, sale, id, "payout", -cents(before.terms.amount));
       }
       return result;
     });
