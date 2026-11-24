@@ -22,6 +22,12 @@ const value = (form: FormData, key: string) => String(form.get(key) ?? "").trim(
 const url = (id: string, step?: TransactionStep) => "/transactions/" + id + (step ? "/" + step : "");
 const time = (value: string) => value.replace("T"," ").slice(0,19) + " UTC";
 
+function approvedDemoWithoutSubmission(request: RefundRequest, demoShift?: boolean) {
+  return demoShift === true && requestDecision(request)?.decision === "Approved" &&
+    requestStatus(request) === "Blocked · Processor not connected" &&
+    !providerAttempt(request) && !providerResponse(request) && !providerVerification(request);
+}
+
 function SaleFacts({ sale }: { sale: TestSale }) {
   const provider=saleProvider(sale);
   return <dl className={styles.facts}>
@@ -264,7 +270,10 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   const connected=provider!=="paypal"||session.paypalConnected;
   const attempt=providerAttempt(record), response=providerResponse(record), verification=providerVerification(record);
   const verified=verification?.result==="Verified", failed=verification?.result==="Failed";
-  const status=requestStatus(record), current=currentStep(record);
+  const status=requestStatus(record);
+  const approvedDemo=approvedDemoWithoutSubmission(record, session.demoShift);
+  const current=approvedDemo ? "receipt" : currentStep(record);
+  const statusHeading=provider==="square"&&status==="Needs manager decision" ? "Supervisor approval required" : status;
   const outcome=verified ? name+" Sandbox refund verified · No real money moved"
     : failed ? name+" Sandbox reports the refund failed"
     : attempt && !stopped ? name+" Sandbox outcome unconfirmed"
@@ -272,6 +281,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   const next=status==="Needs manager decision" ? "A different supervisor must approve or reject this request."
     : check.route==="over-balance" ? "Cashier: check the balance and start a new request for an eligible amount."
     : review?.decision==="Rejected" ? "No payout action is available. Return to the transaction list."
+    : approvedDemo ? "No action needed. Payment submission is disabled in this demo."
     : stopped ? stopped.reason
     : status==="Ready for cash payout" ? "Cashier: confirm and record the test cash payout in Execution."
     : reported ? "Cashier: open the receipt for the recorded employee report."
@@ -286,13 +296,19 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
     <p className={styles.caseReference}>{record.terms.reference} · {record.sale?.location??"Sale unverified"} · {name?name+" Sandbox":"Test data"}</p>
     {record.sale?.recordedDemo && <Link href={`/demo-sales/${record.sale.reference}`} prefetch={false}>Open recorded demo sale</Link>}
     <section className={styles.transactionSummary} aria-label="Refund status and next action">
-      <p className={styles.statusHeading}><strong>{provider==="square"&&status==="Needs manager decision"?"Supervisor approval required":status}</strong><span>Current step · {transactionTabs.find(([tab])=>tab===current)?.[1]}</span></p>
+      <p className={styles.statusHeading}>
+        <strong>{approvedDemo ? "Approved / Not submitted" : statusHeading}</strong>
+        <span>Current step · {transactionTabs.find(([tab])=>tab===current)?.[1]}</span>
+      </p>
+      {approvedDemo&&review&&<p>Approved by <strong>{review.actor}</strong></p>}
       <dl className={styles.moneySummary}>
         <div><dt>Requested</dt><dd>{money(cents(record.terms.amount))}</dd></div>
         <div><dt>Refundable at request</dt><dd>{check.balanceCents===null?"Unavailable":money(check.balanceCents)}</dd></div>
-        <div><dt>Money movement</dt><dd>{outcome}</dd></div>
+        {approvedDemo ? <div><dt>Confirmed payout</dt><dd>{money(0)}</dd></div> :
+          <div><dt>Money movement</dt><dd>{outcome}</dd></div>}
       </dl>
       <p><strong>Next action</strong> {next}</p>
+      {approvedDemo&&step==="receipt"&&<p><strong>Why it was held</strong> {check.explanation}</p>}
       {step!==current && status==="Ready for cash payout" && <Link href={url(record.id,current)}>Open execution</Link>}
     </section>
     <nav className={styles.transactionTabs} aria-label="Refund process">{transactionTabs.map(([tab,label])=>
@@ -372,7 +388,8 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
             void run(async()=>{
               const result=await api<RefundRequest>({action:"decideRefundRequest",id:record.id,decision,password});
               setRecord(result);setNotice("Decision saved.");
-              router.push(url(record.id,currentStep(result)));
+              const nextStep=approvedDemoWithoutSubmission(result, session.demoShift) ? "receipt" : currentStep(result);
+              router.push(url(record.id,nextStep));
             }).finally(()=>{decisionPending.current=false;});
           }}>
             <label>Confirm with your password<input name="supervisorPassword" type="password" autoComplete="current-password" required /></label>
@@ -422,7 +439,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
           {!connected&&!verified&&!failed&&<p>PayPal not connected</p>}
           {connected&&response&&!verified&&!failed&&<button disabled={busy} onClick={()=>void run(async()=>
             setRecord(await api<RefundRequest>({action:"verifyElectronicRefund",id:record.id})))}>Check {name} status</button>}
-        </>:<>
+        </>:!approvedDemo&&<>
           <p>{reported ? "Cash payout recorded. This is a test employee report." : "No payout or provider submission recorded."}</p>
           <p>Independent electronic readback unavailable. No electronic refund has been verified.</p>
         </>}
