@@ -141,6 +141,67 @@ describe("local Harbor Bar discount approval", () => {
     expect(groups.payouts).toEqual([]);
   });
 
+  it("requires an open drawer before recording a cash payout and posts it once to the paying shift", async () => {
+    const ownerAccount = { ...demoAccounts[2]!, username: "shop-owner", name: "Harbor Owner", role: "owner" };
+    const users = [...demoAccounts, ownerAccount].map(account => {
+      const salt = randomBytes(16);
+      return { ...account, salt: salt.toString("hex"), passwordHash: scryptSync(password, salt, 32).toString("hex") } as Employee;
+    });
+    let clock = "2026-11-24T23:00:00.000Z";
+    const server = app(undefined, users, () => clock, undefined, undefined, true);
+    const [maya, robin, jordan, owner] = await Promise.all(
+      ["maya", "qa-cashier-b", "jordan", "shop-owner"].map(user => signIn(server, user)),
+    );
+    await owner!.send({ action: "setRefundPolicy", thresholdCents: 2000 });
+    const shiftA = randomUUID(), shiftB = randomUUID();
+    const reference = "DEMO-SALE-" + randomUUID();
+    await maya!.send({ action: "openCashDrawer", id: shiftA, cents: 10000, register: "harbor-bar" });
+    await maya!.send(action({ operation: "start", reference, original: "100.00", discount: "30.00" }));
+    await jordan!.send(action({ operation: "decide", reference, revision: 1, decision: "Approved", password }));
+    await maya!.send(action({ operation: "finish", reference, revision: 1, choice: "discounted", tender: "Cash" }));
+    const refund = await maya!.send<RefundRequest>({ action: "createRefundRequest", submissionId: randomUUID(),
+      terms: { reference, amount: "20.00", currency: "USD", reason: "Synthetic later-shift cash refund" } });
+    const approved = await jordan!.send<RefundRequest>({
+      action: "decideRefundRequest", id: refund.id, decision: "Approved", password,
+    });
+    expect(requestReceipt(approved)).toMatchObject({
+      decision: { status: "Approved", reviewer: "Jordan Lee" }, execution: { status: "Not submitted" },
+    });
+    const first = await maya!.send<CashDrawerView>({ action: "closeCashDrawer", id: shiftA, cents: 17000 });
+    expect(first.drawer?.report).toMatchObject({
+      expected: 17000, firstCount: { cents: 17000 }, variance: 0,
+      entries: [{ kind: "sale", id: reference, cents: 7000 }],
+    });
+
+    clock = "2026-11-25T11:00:00.000Z";
+    const payout = { action: "reportCashPayout", id: refund.id };
+    const blocked = await robin!.request(payout);
+    expect(blocked.status).toBe(409);
+    expect(await blocked.json()).toEqual({ error: "CASH_PAYOUT_DRAWER_REQUIRED" });
+    const openRefund = { action: "openRefundRequest", id: refund.id };
+    expect(await maya!.send<RefundRequest>(openRefund)).toEqual(approved);
+    expect(await robin!.send({ action: "cashDrawers", register: "harbor-bar" })).toMatchObject({ activeId: null });
+
+    await robin!.send({ action: "openCashDrawer", id: shiftB, cents: 10000, register: "harbor-bar" });
+    const paid = await robin!.send<RefundRequest>(payout);
+    expect(await robin!.send<RefundRequest>(payout)).toEqual(paid);
+    expect(paid.events.filter(event => event.kind === "Cash payout reported")).toEqual([
+      { kind: "Cash payout reported", actor: "Robin Davis", occurredAt: clock },
+    ]);
+    const second = await robin!.send<CashDrawerView>({ action: "closeCashDrawer", id: shiftB, cents: 8000 });
+    expect(second.drawer?.report).toMatchObject({
+      expected: 8000, firstCount: { cents: 8000 }, variance: 0,
+      entries: [{ id: refund.id, kind: "payout", cents: -2000, actor: "Robin Davis", at: clock }],
+    });
+    expect(await robin!.send<RefundRequest>(payout)).toEqual(paid);
+    expect((await owner!.send<CashDrawerView>({ action: "cashDrawers", id: shiftA })).drawer).toEqual(first.drawer);
+    expect((await owner!.send<CashDrawerView>({ action: "cashDrawers", id: shiftB })).drawer).toEqual(second.drawer);
+    expect(requestReceipt(await owner!.send<RefundRequest>(openRefund))).toMatchObject({
+      transactionId: refund.id, decision: { status: "Approved", reviewer: "Jordan Lee" },
+      execution: { status: "Test cash payout reported", reportedBy: "Robin Davis" },
+    });
+  });
+
   it("exposes hosted discount review only to signed-in staff through presenter ingress", async () => {
     const users = demoAccounts.map(account => {
       const salt = randomBytes(16);

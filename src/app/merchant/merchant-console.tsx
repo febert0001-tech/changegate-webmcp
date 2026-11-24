@@ -61,6 +61,7 @@ const errors: Record<string, string> = {
   DISCOUNT_TERMS_CHANGED: "The terms changed. Review the latest proposal before acting.",
   DISCOUNT_DECISION_REQUIRED: "Wait for a supervisor decision before finishing this sale.",
   DISCOUNT_CASH_DRAWER_REQUIRED: "Open the Harbor Bar cash drawer before finishing a cash sale.",
+  CASH_PAYOUT_DRAWER_REQUIRED: "Open the cash drawer for this sale’s register before recording the payout.",
   CASE_NOT_FOUND: "This case could not be opened in your workspace.",
   CASE_CHANGED: "Someone updated this case. Reload to see the latest version before saving.",
   CASE_RESOLVED: "This case is already resolved. Reload to see its history.",
