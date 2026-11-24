@@ -322,6 +322,20 @@ describe("authenticated synthetic shift", () => {
     expect(first.routes).toEqual(["manager", "routine", "routine", "routine", "manager"]);
     const reviewer = users[2]!;
     const firstHeld = await jordan!.send<RefundRequest>({ action: "openRefundRequest", id: first.ids[4] });
+    expect(checks(firstHeld)).toMatchObject({ cumulativeCents: 3800, thresholdCents: 5000 });
+    const activity = firstHeld.watchActivity;
+    expect(activity?.cashier.map(({ id, occurredAt, register }) => [id, occurredAt, register])).toEqual([
+      [first.ids[1], first.events[3]!.at, "Register 1"],
+      [first.ids[3], first.events[5]!.at, "Bar 1"],
+      [first.ids[4], first.events[6]!.at, "Register 1"],
+    ]);
+    expect(activity?.register.map(({ id, occurredAt }) => [id, occurredAt])).toEqual([
+      [first.ids[1], first.events[3]!.at],
+      [first.ids[2], first.events[4]!.at],
+      [first.ids[4], first.events[6]!.at],
+    ]);
+    expect((await maya!.send<RefundRequest>({ action: "openRefundRequest", id: firstHeld.id })).watchActivity).toBeUndefined();
+    expect((await alex!.request({ action: "openRefundRequest", id: firstHeld.id })).status).toBe(404);
     vi.stubEnv("CHANGEGATE_MONITOR_AI_KEY", undefined);
     vi.stubEnv("CHANGEGATE_MONITOR_AI_MODEL", undefined);
     try {

@@ -1,4 +1,5 @@
 export const watchWindowMs = 15 * 60_000;
+export const repeatWatchThreshold = 3;
 export const ruleVersion = "staging-refund-monitor-v1";
 export const individualLimitCents = 10_000;
 
