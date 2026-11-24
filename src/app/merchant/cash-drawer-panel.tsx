@@ -16,8 +16,9 @@ function CashAmount({ label, required = true, min = 0 }: { label: string; requir
     step="0.01" required={required} /></label>;
 }
 
-export function CashDrawerPanel({ id, session, send, onSessionError }: {
+export function CashDrawerPanel({ id, register, session, send, onSessionError }: {
   id?: string;
+  register?: "harbor-bar";
   session: TeamSession;
   send: <T>(command: TeamCommand, options?: { signal?: AbortSignal; sessionVersion?: string }) => Promise<T>;
   onSessionError: (error: unknown) => boolean;
@@ -30,6 +31,8 @@ export function CashDrawerPanel({ id, session, send, onSessionError }: {
   const { sessionVersion, demoShift, demoRegister } = session;
   const drawer = view?.drawer;
   const report = drawer?.report;
+  const drawerHref = (id: string, location = drawer?.location) =>
+    `/cash-drawer?id=${id}${register || location === "Harbor Bar" ? "&register=harbor-bar" : ""}`;
 
   function submissionId(kind: keyof typeof submissions.current) {
     return submissions.current[kind] ??= crypto.randomUUID();
@@ -38,13 +41,14 @@ export function CashDrawerPanel({ id, session, send, onSessionError }: {
   useEffect(() => {
     if (!demoShift) return;
     const controller = new AbortController();
-    void send<CashDrawerView>({ action: "cashDrawers", ...(id && { id }) }, { sessionVersion, signal: controller.signal })
+    void send<CashDrawerView>({ action: "cashDrawers", ...(id && { id }), ...(register && { register }) },
+      { sessionVersion, signal: controller.signal })
       .then(result => { if (!controller.signal.aborted) setView(result); })
       .catch(error => {
         if (!controller.signal.aborted && !onSessionError(error)) setNotice("The drawer close could not be opened.");
       });
     return () => controller.abort();
-  }, [demoShift, id, sessionVersion, send, onSessionError]);
+  }, [demoShift, id, onSessionError, register, send, sessionVersion]);
 
   async function save(command: TeamCommand, form?: HTMLFormElement) {
     if (pending.current) return;
@@ -58,7 +62,7 @@ export function CashDrawerPanel({ id, session, send, onSessionError }: {
       if (command.action === "openCashDrawer" || command.action === "recordDrawerMovement" || command.action === "recordDrawerFollowUp")
         delete submissions.current[command.action];
       if (command.action === "openCashDrawer" && result.drawer) {
-        window.history.replaceState(null, "", `/cash-drawer?id=${result.drawer.id}`);
+        window.history.replaceState(null, "", drawerHref(result.drawer.id, result.drawer.location));
       }
     } catch (error) {
       if (!onSessionError(error)) setNotice("The drawer update could not be saved. Reopen the drawer and check its status before retrying.");
@@ -78,16 +82,21 @@ export function CashDrawerPanel({ id, session, send, onSessionError }: {
       <div><h2 id="drawer-heading">Close cash drawer</h2><p className={styles.fieldHint}>Fictional shift · USD</p></div>
       <Link href="/shift-overview" prefetch={false}>Back to Shift Overview</Link>
     </div>
+    {demoRegister && <div className={styles.actions} aria-label="Test registers">
+      <Link href="/cash-drawer" prefetch={false}>Harbor Fuel drawer</Link>
+      <Link href="/cash-drawer?register=harbor-bar" prefetch={false}>Harbor Bar drawer</Link>
+    </div>}
     {notice && <p role="alert" className={styles.formError}>{notice}</p>}
     {!demoShift && <p>Drawer reconciliation is unavailable in this workspace.</p>}
     {!view && demoShift && !notice && <p role="status">Loading drawer records…</p>}
     {view && !drawer && <p className={styles.emptyState}>Close incomplete. The opening float and first closing count are missing.</p>}
     {view && demoRegister && !view.activeId && <form className={styles.formRow} onSubmit={event =>
-      submit(event, data => ({ action: "openCashDrawer", id: submissionId("openCashDrawer"), cents: amount(data.get("amount")) }))}>
+      submit(event, data => ({ action: "openCashDrawer", id: submissionId("openCashDrawer"), cents: amount(data.get("amount")),
+        ...(register && { register }) }))}>
       <CashAmount label={drawer ? "Next shift opening float" : "Opening float"} />
       <button type="submit" className={styles.primary} disabled={busy}>Save opening float</button>
     </form>}
-    {view?.activeId && view.activeId !== drawer?.id && <Link href={`/cash-drawer?id=${view.activeId}`} prefetch={false}>Open current drawer</Link>}
+    {view?.activeId && view.activeId !== drawer?.id && <Link href={drawerHref(view.activeId)} prefetch={false}>Open current drawer</Link>}
     {drawer && <div className={styles.shiftOverview}>
       <div>
         <h3>{drawer.location} · {drawer.register}</h3>
@@ -96,7 +105,7 @@ export function CashDrawerPanel({ id, session, send, onSessionError }: {
       {!report ? <>
         <p className={styles.emptyState}>Close incomplete. Save the first closing count to reveal expected cash.</p>
         {demoRegister && <>
-          <div className={styles.actions}><Link href="/demo-sales" prefetch={false}>Record sale</Link><Link href="/transactions" prefetch={false}>Transactions</Link></div>
+          <div className={styles.actions}><Link href={drawer.location === "Harbor Bar" ? "/demo-sales?discount=1" : "/demo-sales"} prefetch={false}>Record sale</Link><Link href="/transactions" prefetch={false}>Transactions</Link></div>
           <details>
             <summary>Record a cash addition or removal</summary>
             <form className={styles.formRow} onSubmit={event => submit(event, data => ({
@@ -161,7 +170,7 @@ export function CashDrawerPanel({ id, session, send, onSessionError }: {
     {view && view.drawers.length > 1 && <details>
       <summary>Drawer shift history</summary>
       <ul className={styles.shiftRecords}>{view.drawers.map(item => <li key={item.id}>
-        <Link href={`/cash-drawer?id=${item.id}`} prefetch={false}>{item.location} · {item.register} · {stamp(item.openedAt)} · {item.isClosed ? "Closed" : "Open"}</Link>
+        <Link href={drawerHref(item.id, item.location)} prefetch={false}>{item.location} · {item.register} · {stamp(item.openedAt)} · {item.isClosed ? "Closed" : "Open"}</Link>
       </li>)}</ul>
     </details>}
   </section>;

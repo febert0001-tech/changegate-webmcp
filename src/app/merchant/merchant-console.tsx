@@ -60,6 +60,7 @@ const errors: Record<string, string> = {
   DISCOUNT_INVALID: "Enter a discount below the original subtotal.",
   DISCOUNT_TERMS_CHANGED: "The terms changed. Review the latest proposal before acting.",
   DISCOUNT_DECISION_REQUIRED: "Wait for a supervisor decision before finishing this sale.",
+  DISCOUNT_CASH_DRAWER_REQUIRED: "Open the Harbor Bar cash drawer before finishing a cash sale.",
   CASE_NOT_FOUND: "This case could not be opened in your workspace.",
   CASE_CHANGED: "Someone updated this case. Reload to see the latest version before saving.",
   CASE_RESOLVED: "This case is already resolved. Reload to see its history.",
@@ -136,12 +137,13 @@ function notifySessionChange() {
   channel.close();
 }
 
-export function MerchantConsole({ caseId, imports, importId, reviewSummary, transaction, overview, demoSale, discountSale, cashDrawer, cashWeek, overnight, pilot, inviteAdmin }: {
+export function MerchantConsole({ caseId, imports, importId, reviewSummary, transaction, overview, demoSale, discountSale, cashDrawer, cashDrawerRegister, cashWeek, overnight, pilot, inviteAdmin }: {
   caseId?: string; imports?: boolean; importId?: string; reviewSummary?: boolean; overview?: boolean;
   transaction?: { id: string; step: TransactionStep } | "list";
   demoSale?: string | true;
   discountSale?: boolean;
   cashDrawer?: string | true;
+  cashDrawerRegister?: "harbor-bar";
   cashWeek?: { week?: string; location?: string };
   overnight?: string | true;
   pilot?: string | true;
@@ -300,7 +302,8 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
       <p>Sign in with your assigned reviewer account to open the desk.</p></section> : cashWeek ? (
       <WeeklyCashReviewPanel key={session.sessionVersion} initial={cashWeek} session={session} send={send} onSessionError={clearOnSessionError} />
     ) : cashDrawer ? (
-      <CashDrawerPanel key={session.sessionVersion} {...(typeof cashDrawer === "string" && { id: cashDrawer })}
+      <CashDrawerPanel key={session.sessionVersion + (cashDrawerRegister ?? "")} {...(typeof cashDrawer === "string" && { id: cashDrawer })}
+        {...(cashDrawerRegister && { register: cashDrawerRegister })}
         session={session} send={send} onSessionError={clearOnSessionError} />
     ) : overview ? (
       <ShiftOverviewPanel key={session.sessionVersion} session={session} send={send} onSessionError={clearOnSessionError} />

@@ -99,6 +99,48 @@ async function signIn(server: Pick<ReturnType<typeof app>, "request">, username:
 describe("local Harbor Bar discount approval", () => {
   const action = (command: DiscountCommand) => ({ action: "demoDiscount", command });
 
+  it("adds one net cash sale to the Harbor Bar drawer and balances at close", async () => {
+    const users = demoAccounts.map(account => {
+      const salt = randomBytes(16);
+      return { ...account, salt: salt.toString("hex"), passwordHash: scryptSync(password, salt, 32).toString("hex") } as Employee;
+    });
+    const server = app(undefined, users, undefined, undefined, undefined, true);
+    const [maya, jordan, alex] = await Promise.all(["maya", "jordan", "alex"].map(user => signIn(server, user)));
+    const reference = "DEMO-SALE-" + randomUUID();
+    const fuelId = randomUUID(), barId = randomUUID();
+    await maya!.send({ action: "openCashDrawer", id: fuelId, cents: 10000 });
+    await maya!.send(action({ operation: "start", reference, original: "100.00", discount: "30.00" }));
+    await jordan!.send(action({ operation: "decide", reference, revision: 1, decision: "Approved", password }));
+    const finish = action({ operation: "finish", reference, revision: 1, choice: "discounted", tender: "Cash" });
+    expect(await (await maya!.request(finish)).json()).toEqual({error:"DISCOUNT_CASH_DRAWER_REQUIRED"});
+    expect((await maya!.request({ action: "openDemoSale", reference })).status).toBe(404);
+    const opened = await maya!.send({ action: "openCashDrawer", id: barId, cents: 10000, register: "harbor-bar" });
+    expect(opened).toMatchObject({ activeId: barId, drawer: { location: "Harbor Bar", register: "Bar 1",
+      opening: { cents: 10000 }, report: null } });
+    expect((await alex!.request({ action: "cashDrawers", id: barId, register: "harbor-bar" })).status).toBe(404);
+    const [sale, replay] = await Promise.all([maya!.send<DiscountSale>(finish), maya!.send<DiscountSale>(finish)]);
+    expect(sale).toEqual(replay);
+    expect(sale.completion).toMatchObject({ subtotalCents: 7000, tender: "Cash" });
+    expect(await maya!.send({ action: "openDemoSale", reference })).toMatchObject({ sale: { tender: "Cash",
+      originalCents: 7000, discountCents: 3000 } });
+    expect(await maya!.send({ action: "cashDrawers", id: barId, register: "harbor-bar" })).toMatchObject({ drawer: { report: null } });
+    const closed = await maya!.send({ action: "closeCashDrawer", id: barId, cents: 17000 });
+    expect(closed).toMatchObject({ drawer: { report: { variance: 0, expected: 17000,
+      firstCount: { cents: 17000 }, entries: [{ id: reference, kind: "sale", cents: 7000 }] } } });
+    expect(await maya!.send(finish)).toEqual(sale);
+    expect(await jordan!.send({ action: "cashDrawers", id: barId })).toMatchObject({ drawer: { report: {
+      expected: 17000, variance: 0, entries: [{ id: reference, kind: "sale", cents: 7000 }],
+    } } });
+    expect(await maya!.send({ action: "closeCashDrawer", id: fuelId, cents: 10000 })).toMatchObject({ drawer: {
+      report: { expected: 10000, variance: 0, entries: [] },
+    } });
+    const groups = shiftGroups(await jordan!.send<ShiftOverview>({ action: "shiftOverview", manual: true }), "Harbor Bar");
+    expect(groups.sales.map(row => row.amountCents)).toEqual([7000]);
+    expect(groups.discounts.map(row => row.amountCents)).toEqual([3000]);
+    expect(groups.refunds).toEqual([]);
+    expect(groups.payouts).toEqual([]);
+  });
+
   it("exposes hosted discount review only to signed-in staff through presenter ingress", async () => {
     const users = demoAccounts.map(account => {
       const salt = randomBytes(16);

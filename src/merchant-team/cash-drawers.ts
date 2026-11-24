@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Employee, TeamCaseDetail } from "./contracts";
 import { demoLocations, demoMerchant } from "./demo-shift";
 import { demoRegister } from "./demo-sales";
+import { discountPolicy } from "./discount-contracts";
 import { TeamError } from "./error";
 import { canReview } from "./refund-requests";
 import { addCashWeekDays, cashStoreDate, cashTimeZone, cashWeekMonday, drawerDispositions, type CashWeek, type DrawerDisposition } from "./weekly-cash-review";
@@ -64,17 +65,17 @@ export class CashDrawers {
       .get(employee.merchantId, scope.location, scope.register) as DrawerRow | undefined;
   }
 
-  assigned(employee: Employee) {
+  assigned(employee: Employee, register?: "harbor-bar") {
     const scope = demoRegister(employee);
     if (!scope) throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
-    return scope;
+    return register === "harbor-bar" ? discountPolicy : scope;
   }
 
   private assertAccess(employee: Employee, row?: Register) {
     if (employee.merchantId !== demoMerchant) throw new TeamError("DRAWER_NOT_FOUND", 404);
     if (canReview(employee.role)) return;
     const scope = this.assigned(employee);
-    if (row && (scope.location !== row.location || scope.register !== row.register))
+    if (row && ![scope, discountPolicy].some(register => register.location === row.location && register.register === row.register))
       throw new TeamError("DRAWER_NOT_FOUND", 404);
   }
 
@@ -107,9 +108,9 @@ export class CashDrawers {
     return { ...summary(row), opening: JSON.parse(row.opened) as Count, report: this.report(employee, row)! };
   }
 
-  view(employee: Employee, id?: string): CashDrawerView {
+  view(employee: Employee, id?: string, register?: "harbor-bar"): CashDrawerView {
     this.assertAccess(employee);
-    const scope = demoRegister(employee);
+    const scope = demoRegister(employee) && this.assigned(employee, register);
     const rows = (scope
       ? this.db.prepare(`SELECT ${this.columns} FROM team_cash_drawers
           WHERE merchant_id=? AND location=? AND register=? ORDER BY rowid DESC`)
@@ -154,13 +155,14 @@ export class CashDrawers {
     return disposition;
   }
 
-  open(employee: Employee, id: string, cents: number) {
-    const scope = this.assigned(employee);
+  open(employee: Employee, id: string, cents: number, register?: "harbor-bar") {
+    const scope = this.assigned(employee, register);
     const earlier = this.db.prepare("SELECT id FROM team_cash_drawers WHERE merchant_id=? AND id=?")
       .get(employee.merchantId, id);
     if (earlier) {
       const row = this.get(employee, id);
-      if ((JSON.parse(row.opened) as Count).cents !== cents) throw new TeamError("TRANSACTION_SUBMISSION_CHANGED", 409);
+      if (row.location !== scope.location || row.register !== scope.register || (JSON.parse(row.opened) as Count).cents !== cents)
+        throw new TeamError("TRANSACTION_SUBMISSION_CHANGED", 409);
       return id;
     }
     const active = this.active(employee, scope);
