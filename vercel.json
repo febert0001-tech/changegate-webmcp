@@ -23,6 +23,7 @@
       "feat/late-supervisor-alert": false,
       "feat/discount-approval": false,
       "feat/discounted-cash-drawer": false,
+      "feat/cash-payout-open-drawer": false,
       "main": false
     }
   }
