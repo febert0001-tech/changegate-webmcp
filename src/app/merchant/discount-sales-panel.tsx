@@ -51,7 +51,7 @@ export function DiscountSalesPanel({ reference, session, send, onSessionError }:
   reference?: string; session: TeamSession; send: Send; onSessionError: (error: unknown) => boolean;
 }) {
   const router = useRouter();
-  const enabled = session.demoShift && !session.syntheticOnly && (session.demoRegister || canReview(session.role));
+  const enabled = session.demoDiscountEnabled;
   const [records, setRecords] = useState<DiscountSale[]>();
   const [sale, setSale] = useState<DiscountSale | null>();
   const [error, setError] = useState("");

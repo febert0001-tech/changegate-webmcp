@@ -273,7 +273,7 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
         {session.demoInviteAdmin && !inviteAdmin && <Link href="/demo-access" prefetch={false}>Create demo invite</Link>}
         {session.pilotEnabled && !pilot && <Link href="/pilot-review" prefetch={false}>Start pilot review</Link>}
         <Link href="/transactions" prefetch={false}>Transactions</Link>
-        {(session.demoRegister || (session.demoShift && !session.syntheticOnly && canReview(session.role))) &&
+        {(session.demoRegister || session.demoDiscountEnabled) &&
           <Link href={session.demoRegister ? "/demo-sales" : "/demo-sales?discount=1"} prefetch={false}>
             {session.demoRegister ? "Record sale" : "Discount approvals"}</Link>}
         {transaction && <Link href="/merchant" prefetch={false}>Reconciliation</Link>}

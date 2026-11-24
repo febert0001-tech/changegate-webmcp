@@ -53,7 +53,7 @@ const hostedDemoActions = new Set([
   "overnightDesk", "overnightOwner", "coverageSettings", "grantCoverage", "startDemoCoverage", "revokeCoverage", "claimOvernightCase", "requestOvernightFollowUp", "replyOvernight", "reassignOvernightCase",
   "signIn", "signOut", "session", "workspace", "demoShift", "shiftOverview", "startDemoShift", "nextDemoEvent", "replayDemoShift",
   "replayHeldDemoRefund",
-  "recordDemoSale", "openDemoSale", "lookupOriginalSale",
+  "recordDemoSale", "openDemoSale", "lookupOriginalSale", "demoDiscount",
   "refundAlertStatus", "listRefundRequests", "openRefundRequest", "createRefundRequest", "decideRefundRequest",
   "reportCashPayout", "cashDrawers", "openCashDrawer", "closeCashDrawer", "recordDrawerMovement",
   "weeklyCashReview",
@@ -80,6 +80,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
   const expectedHost = new URL(origin).host;
   const expectedSalt = randomBytes(16);
   const expectedHash = randomBytes(32);
+  const discountModeEnabled = !hostedDemo || Boolean(presenterEmail);
 
   function providerFor(employee: Employee, source: ElectronicProvider) {
     const provider = providers[source];
@@ -123,6 +124,8 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
       reviewerConfigured: roster.some(member=>member.merchantId===employee.merchantId&&canReview(member.role)),
       paypalConnected: providers.paypal?.supports(employee.merchantId) ?? false,
       ...(employee.role !== "reviewer" && store.demo?.includes(employee) && { demoShift: true }),
+      ...(discountModeEnabled && store.demo?.includes(employee) &&
+        (assignment || canReview(employee.role)) && { demoDiscountEnabled: true }),
       ...(assignment && { demoRegister: assignment }),
       ...(store.demo && canReview(employee.role) && { pilotEnabled: true }),
       ...(hostedDemo && { syntheticOnly: true }),
@@ -282,6 +285,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "recordDemoSale": return json(store.recordDemoSale(employee,token,command));
             case "openDemoSale": return json(store.openDemoSale(employee,token,command.reference));
             case "demoDiscount": {
+              if (!discountModeEnabled) throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
               if (command.command.operation === "decide") await confirmSupervisor(employee, command.command.password);
               return json(store.demoDiscount(employee, token, command.command));
             }

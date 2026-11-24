@@ -149,6 +149,7 @@ export interface TeamSession {
   reviewerConfigured?: boolean;
   paypalConnected?: boolean;
   demoShift?: boolean;
+  demoDiscountEnabled?: boolean;
   demoRegister?: { location: string; register: string };
   syntheticOnly?: boolean;
   demoInviteAdmin?: boolean;

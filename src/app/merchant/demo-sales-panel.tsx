@@ -100,7 +100,7 @@ export function DemoSalesPanel({ reference, session, send, onSessionError }: {
         </form> : <button className={styles.primary} type="button" onClick={() => setRefunding(true)}>Request refund</button>)}
       </>}
     </> : <>
-      {!session.syntheticOnly && <p><Link href="/demo-sales?discount=1" prefetch={false}>
+      {session.demoDiscountEnabled && <p><Link href="/demo-sales?discount=1" prefetch={false}>
         {demoRegister ? "Harbor Bar discount review demo" : "Discount approvals"}</Link></p>}
       {demoRegister && <form className={styles.importSection} onSubmit={event => void submit(event, async form => {
         const result = await send<DemoSale>({ action: "recordDemoSale", submissionId: saleSubmission.current ??= crypto.randomUUID(),

@@ -99,6 +99,43 @@ async function signIn(server: Pick<ReturnType<typeof app>, "request">, username:
 describe("local Harbor Bar discount approval", () => {
   const action = (command: DiscountCommand) => ({ action: "demoDiscount", command });
 
+  it("exposes hosted discount review only to signed-in staff through presenter ingress", async () => {
+    const users = demoAccounts.map(account => {
+      const salt = randomBytes(16);
+      return { ...account, salt: salt.toString("hex"), passwordHash: scryptSync(password, salt, 32).toString("hex") } as Employee;
+    });
+    const server = app(undefined, users, undefined, undefined, undefined, true, true);
+    const unlocked = await signIn(server, "maya");
+    const list = action({ operation: "list" });
+    expect(unlocked.user.demoDiscountEnabled).toBeUndefined();
+    expect((await unlocked.request(list)).status).toBe(404);
+    const presenterEmail = "presenter@example.test";
+    const protectedApp = createTeamWorkspace(server.store, users, origin, { hostedDemo: true, presenterEmail });
+    const makeSession = (email: string) => ({
+      request(command: unknown, cookie = "", { sessionVersion = "" } = {}) {
+        return protectedApp.handle(new Request(origin + "/api/merchant", {
+          method: "POST", headers: { Origin: origin, Host: new URL(origin).host, Cookie: cookie,
+            "X-ChangeGate-Session": sessionVersion, "Content-Type": "application/json",
+            "x-changegate-access-email": email, "x-changegate-access-subject": "verified-test-subject" },
+          body: JSON.stringify(command),
+        }));
+      },
+    });
+    const presenter = makeSession(presenterEmail);
+    const guest = makeSession("guest@example.test");
+    const maya = await signIn(presenter, "maya");
+    expect(maya.user).toMatchObject({ demoDiscountEnabled: true, syntheticOnly: true });
+    expect((await presenter.request(list)).status).toBe(401);
+    expect((await guest.request(list, maya.key, { sessionVersion: maya.user.sessionVersion })).status).toBe(403);
+    const reference = "DEMO-SALE-" + randomUUID();
+    const started = await maya.send<DiscountSale>(action({ operation: "start", reference, original: "100.00", discount: "30.00" }));
+    const jordan = await signIn(presenter, "jordan");
+    expect(await jordan.send(list)).toEqual([started]);
+    await jordan.send(action({ operation: "decide", reference, revision: 1, decision: "Approved", password }));
+    const sale = await maya.send<DiscountSale>(action({ operation: "finish", reference, revision: 1, choice: "discounted" }));
+    expect(sale.completion?.subtotalCents).toBe(7000);
+  });
+
   it.each(["discounted", "full price", "cancel"] as const)("records the %s outcome once and preserves the decision", async choice => {
     const users = [...demoAccounts, { ...demoAccounts[2]!, username: "shop-owner", name: "Harbor Owner", role: "owner" }]
       .map(account => {
