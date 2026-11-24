@@ -62,7 +62,11 @@ export class DiscountSales {
     if (command.operation === "decide" ? !manager || owns : !register || !owns)
       throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
     if (current.completion) {
-      if (command.operation === "finish" && command.choice === current.completion.choice) return current;
+      if (command.operation === "finish" && command.choice === current.completion.choice) {
+        if (command.choice !== "cancel" && (command.tender ?? "Electronic") !== (current.completion.tender ?? "Electronic"))
+          throw new TeamError("TRANSACTION_SUBMISSION_CHANGED", 409);
+        return current;
+      }
       throw new TeamError("TRANSACTION_ACTION_UNAVAILABLE", 409);
     }
     switch (command.operation) {
@@ -81,10 +85,11 @@ export class DiscountSales {
           throw new TeamError("DISCOUNT_DECISION_REQUIRED", 409);
         const appliedCents = command.choice === "discounted" ? latest.discountCents : 0;
         const subtotalCents = command.choice === "cancel" ? null : latest.originalCents - appliedCents;
-        current.completion = { ...actor, choice: command.choice, subtotalCents };
+        const tender = command.tender ?? "Electronic";
+        current.completion = { ...actor, choice: command.choice, subtotalCents, ...(subtotalCents !== null && { tender }) };
         if (subtotalCents !== null) recordSale({ reference, cashier: employee.name, recordedDemo: true, recordedAt: actor.at,
           originalCents: subtotalCents, discountCents: appliedCents, location: discountPolicy.location,
-          register: discountPolicy.register, shift: "Manual demo", tender: "Electronic", priorCents: 0 });
+          register: discountPolicy.register, shift: "Manual demo", tender, priorCents: 0 });
         break;
       }
     }

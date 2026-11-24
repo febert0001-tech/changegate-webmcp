@@ -11,7 +11,7 @@ export const discountCommand = z.discriminatedUnion("operation", [
   z.strictObject({ operation: z.literal("decide"), reference: demoSaleReference, revision,
     decision: z.enum(["Approved", "Rejected"]), password: z.string().min(1).max(160) }),
   z.strictObject({ operation: z.literal("finish"), reference: demoSaleReference, revision,
-    choice: z.enum(["discounted", "full price", "cancel"]) }),
+    choice: z.enum(["discounted", "full price", "cancel"]), tender: z.enum(["Cash", "Electronic"]).optional() }),
 ]);
 
 export type DiscountCommand = z.infer<typeof discountCommand>;
@@ -23,5 +23,5 @@ export type DiscountSale = {
   reference: string;
   cashier: string;
   proposals: Proposal[];
-  completion?: Actor & { choice: "discounted" | "full price" | "cancel"; subtotalCents: number | null };
+  completion?: Actor & { choice: "discounted" | "full price" | "cancel"; subtotalCents: number | null; tender?: "Cash" | "Electronic" };
 };

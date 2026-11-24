@@ -58,6 +58,7 @@ export function DiscountSalesPanel({ reference, session, send, onSessionError }:
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
   const [password, setPassword] = useState("");
+  const [tender, setTender] = useState<"Cash" | "Electronic">("Electronic");
   const state = useRef({ generation: 0, pending: false, newReference: "" });
   const { sessionVersion } = session;
   useEffect(() => {
@@ -152,12 +153,18 @@ export function DiscountSalesPanel({ reference, session, send, onSessionError }:
           : "The cashier can continue at the original full price or cancel."}</p>}
         {sale.completion && sale.completion.subtotalCents !== null && <Link href={`/demo-sales/${reference}`} prefetch={false}>Open recorded sale</Link>}
         {!sale.completion && cashier && !editing && <>
+          {proposal.decision && <div className={styles.shiftOverviewActions}>
+            <label>Tender<select value={tender} onChange={event => setTender(event.target.value === "Cash" ? "Cash" : "Electronic")}>
+              <option>Electronic</option><option>Cash</option>
+            </select></label>
+            {tender === "Cash" && <Link href="/cash-drawer?register=harbor-bar" prefetch={false}>Open Harbor Bar drawer</Link>}
+          </div>}
           {proposal.decision?.result === "Approved" && <button className={styles.primary} type="button" disabled={busy}
-            onClick={() => void act({ operation: "finish", reference, revision: sale.proposals.length, choice: "discounted" })}>
+            onClick={() => void act({ operation: "finish", reference, revision: sale.proposals.length, choice: "discounted", tender })}>
             Finalize at {money(proposal.originalCents - proposal.discountCents)}</button>}
           {proposal.decision?.result === "Rejected" && <div className={styles.shiftOverviewActions}>
             <button className={styles.primary} type="button" disabled={busy}
-              onClick={() => void act({ operation: "finish", reference, revision: sale.proposals.length, choice: "full price" })}>
+              onClick={() => void act({ operation: "finish", reference, revision: sale.proposals.length, choice: "full price", tender })}>
               Continue at full price · {money(proposal.originalCents)}</button>
             <button type="button" disabled={busy}
               onClick={() => void act({ operation: "finish", reference, revision: sale.proposals.length, choice: "cancel" })}>Cancel sale</button>

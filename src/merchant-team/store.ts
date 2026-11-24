@@ -177,7 +177,13 @@ export class TeamStore {
       this.requireActiveSession(employee, token);
       if (!this.demo?.includes(employee) || !this.discounts || !this.demoSales)
         throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
-      return this.discounts.command(employee, command, sale => this.demoSales!.insert(employee, "discount:" + sale.reference, sale));
+      return this.discounts.command(employee, command, sale => {
+        if (sale.tender === "Cash") {
+          if (!this.drawers?.active(employee, sale)) throw new TeamError("DISCOUNT_CASH_DRAWER_REQUIRED", 409);
+          this.drawers.recordActivity(employee, sale, sale.reference, "sale", sale.originalCents);
+        }
+        this.demoSales!.insert(employee, "discount:" + sale.reference, sale);
+      });
     });
   }
 
@@ -187,7 +193,8 @@ export class TeamStore {
       const drawers = this.drawers;
       if (!drawers) throw new TeamError("DRAWER_NOT_FOUND", 404);
       switch (command.action) {
-        case "openCashDrawer": return drawers.view(employee, drawers.open(employee, command.id, command.cents));
+        case "cashDrawers": return drawers.view(employee, command.id, command.register);
+        case "openCashDrawer": return drawers.view(employee, drawers.open(employee, command.id, command.cents, command.register), command.register);
         case "closeCashDrawer": drawers.close(employee, command.id, command.cents); break;
         case "recordDrawerMovement":
           drawers.movement(employee, command.id, command.entryId, command.kind, command.cents, command.note);
