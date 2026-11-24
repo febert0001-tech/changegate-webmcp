@@ -5,10 +5,12 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { TeamCommand, TeamSession } from "../../merchant-team/contracts";
 import type { DemoSale } from "../../merchant-team/demo-sales";
+import type { DiscountSale } from "../../merchant-team/discount-contracts";
+import { DiscountAudit } from "./discount-sales-panel";
 import { cents, currentStep, money, requestStatus, type RefundRequest } from "../../merchant-team/refund-requests";
 import styles from "./merchant.module.css";
 
-type Lookup = { sale: DemoSale; balanceCents: number; paidCents: number; reservedCents: number; refunds: RefundRequest[] };
+type Lookup = { sale: DemoSale; discount?: DiscountSale; balanceCents: number; paidCents: number; reservedCents: number; refunds: RefundRequest[] };
 type Send = <T>(command: TeamCommand, options?: { signal?: AbortSignal; sessionVersion?: string }) => Promise<T>;
 const field = (form: FormData, name: string) => String(form.get(name) ?? "").trim();
 const usdPattern = "[0-9]{1,10}([.][0-9]{1,2})?";
@@ -65,7 +67,7 @@ export function DemoSalesPanel({ reference, session, send, onSessionError }: {
       {lookup && <>
         <p className={styles.caseReference}>{lookup.sale.reference}</p>
         <dl className={styles.facts}>
-          <div><dt>Sale amount</dt><dd>{money(lookup.sale.originalCents)}</dd></div>
+          <div><dt>{lookup.discount ? "Final recorded subtotal" : "Sale amount"}</dt><dd>{money(lookup.sale.originalCents)}</dd></div>
           <div><dt>Tender</dt><dd>{lookup.sale.tender}</dd></div>
           <div><dt>Cashier</dt><dd>{lookup.sale.cashier}</dd></div>
           <div><dt>Register</dt><dd>{lookup.sale.location} · {lookup.sale.register}</dd></div>
@@ -73,6 +75,7 @@ export function DemoSalesPanel({ reference, session, send, onSessionError }: {
           <div><dt>Reserved by ChangeGate</dt><dd>{money(lookup.reservedCents)}</dd></div>
           <div><dt>Processor paid</dt><dd>{money(lookup.paidCents)}</dd></div>
         </dl>
+        {lookup.discount && <DiscountAudit sale={lookup.discount} />}
         {lookup.refunds.length > 0 && <section className={styles.importSection}>
           <h3>Refund requests for this sale</h3>
           <ul className={styles.queue}>{lookup.refunds.map(refund => <li key={refund.id}>
@@ -97,6 +100,8 @@ export function DemoSalesPanel({ reference, session, send, onSessionError }: {
         </form> : <button className={styles.primary} type="button" onClick={() => setRefunding(true)}>Request refund</button>)}
       </>}
     </> : <>
+      {!session.syntheticOnly && <p><Link href="/demo-sales?discount=1" prefetch={false}>
+        {demoRegister ? "Harbor Bar discount review demo" : "Discount approvals"}</Link></p>}
       {demoRegister && <form className={styles.importSection} onSubmit={event => void submit(event, async form => {
         const result = await send<DemoSale>({ action: "recordDemoSale", submissionId: saleSubmission.current ??= crypto.randomUUID(),
           amount: field(form, "amount"), tender: field(form, "tender") === "Cash" ? "Cash" : "Electronic",

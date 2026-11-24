@@ -5,7 +5,7 @@ import { demoMerchant } from "./demo-shift";
 import { TeamError } from "./error";
 import type { TestSale } from "./refund-requests";
 
-export type DemoSale = TestSale & { recordedDemo: true; cashier: string; recordedAt: string };
+export type DemoSale = TestSale & { recordedDemo: true; cashier: string; recordedAt: string; discountCents?: number };
 const register = { location: "Harbor Fuel", register: "Register 1" };
 
 export function demoRegister(employee: Employee) {
@@ -35,10 +35,14 @@ export class DemoSales {
     }
     const sale: DemoSale = { ...assignment, reference: "DEMO-SALE-" + randomUUID(), shift: "Manual demo",
       originalCents, priorCents: 0, tender, recordedDemo: true, cashier: employee.name, recordedAt: this.now() };
-    this.db.prepare("INSERT INTO team_demo_sales VALUES (?,?,?,?,?)")
-      .run(employee.merchantId, sale.reference, employee.username, submissionId, JSON.stringify(sale));
+    this.insert(employee, submissionId, sale);
     onRecorded?.(sale);
     return sale;
+  }
+
+  insert(employee: Employee, submissionId: string, sale: DemoSale) {
+    this.db.prepare("INSERT INTO team_demo_sales VALUES (?,?,?,?,?)")
+      .run(employee.merchantId, sale.reference, employee.username, submissionId, JSON.stringify(sale));
   }
 
   open(employee: Employee, reference: string): DemoSale {

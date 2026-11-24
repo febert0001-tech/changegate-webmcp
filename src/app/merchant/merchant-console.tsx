@@ -17,6 +17,7 @@ import { canReview } from "../../merchant-team/refund-requests";
 import { WeeklyCashReviewPanel } from "./weekly-cash-review-panel";
 import { drawerDispositions } from "../../merchant-team/weekly-cash-review";
 import { DemoSalesPanel } from "./demo-sales-panel";
+import { DiscountSalesPanel } from "./discount-sales-panel";
 import type { TransactionStep } from "../../merchant-team/refund-requests";
 import { ReviewSummaryPanel } from "./review-summary-panel";
 import { RefundImportPanel } from "./refund-import-panel";
@@ -55,6 +56,10 @@ const errors: Record<string, string> = {
   DEMO_SHIFT_CHANGED: "The demo event changed. Wait for the current event to refresh.",
   DEMO_REFUND_REQUIRED: "Have the assigned cashier submit this refund before advancing the clock.",
   DEMO_SHIFT_UNAVAILABLE: "The synthetic shift is unavailable in this workspace.",
+  DISCOUNT_BELOW_DEMO_LIMIT: "Enter a discount of at least $25 to start this review demo.",
+  DISCOUNT_INVALID: "Enter a discount below the original subtotal.",
+  DISCOUNT_TERMS_CHANGED: "The terms changed. Review the latest proposal before acting.",
+  DISCOUNT_DECISION_REQUIRED: "Wait for a supervisor decision before finishing this sale.",
   CASE_NOT_FOUND: "This case could not be opened in your workspace.",
   CASE_CHANGED: "Someone updated this case. Reload to see the latest version before saving.",
   CASE_RESOLVED: "This case is already resolved. Reload to see its history.",
@@ -131,10 +136,11 @@ function notifySessionChange() {
   channel.close();
 }
 
-export function MerchantConsole({ caseId, imports, importId, reviewSummary, transaction, overview, demoSale, cashDrawer, cashWeek, overnight, pilot, inviteAdmin }: {
+export function MerchantConsole({ caseId, imports, importId, reviewSummary, transaction, overview, demoSale, discountSale, cashDrawer, cashWeek, overnight, pilot, inviteAdmin }: {
   caseId?: string; imports?: boolean; importId?: string; reviewSummary?: boolean; overview?: boolean;
   transaction?: { id: string; step: TransactionStep } | "list";
   demoSale?: string | true;
+  discountSale?: boolean;
   cashDrawer?: string | true;
   cashWeek?: { week?: string; location?: string };
   overnight?: string | true;
@@ -267,7 +273,9 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
         {session.demoInviteAdmin && !inviteAdmin && <Link href="/demo-access" prefetch={false}>Create demo invite</Link>}
         {session.pilotEnabled && !pilot && <Link href="/pilot-review" prefetch={false}>Start pilot review</Link>}
         <Link href="/transactions" prefetch={false}>Transactions</Link>
-        {session.demoRegister && <Link href="/demo-sales" prefetch={false}>Record sale</Link>}
+        {(session.demoRegister || (session.demoShift && !session.syntheticOnly && canReview(session.role))) &&
+          <Link href={session.demoRegister ? "/demo-sales" : "/demo-sales?discount=1"} prefetch={false}>
+            {session.demoRegister ? "Record sale" : "Discount approvals"}</Link>}
         {transaction && <Link href="/merchant" prefetch={false}>Reconciliation</Link>}
         {(imports || caseId) && <Link href="/merchant" prefetch={false}>Work queue</Link>}
         <span>{session.name}</span>
@@ -296,6 +304,9 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
         session={session} send={send} onSessionError={clearOnSessionError} />
     ) : overview ? (
       <ShiftOverviewPanel key={session.sessionVersion} session={session} send={send} onSessionError={clearOnSessionError} />
+    ) : demoSale && discountSale ? (
+      <DiscountSalesPanel key={versionKey(session.sessionVersion, typeof demoSale === "string" ? demoSale : undefined)}
+        {...(typeof demoSale === "string" && { reference: demoSale })} session={session} send={send} onSessionError={clearOnSessionError} />
     ) : demoSale ? (
       <DemoSalesPanel key={versionKey(session.sessionVersion, typeof demoSale === "string" ? demoSale : undefined)}
         {...(typeof demoSale === "string" && { reference: demoSale })}

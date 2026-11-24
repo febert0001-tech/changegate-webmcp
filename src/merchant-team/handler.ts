@@ -171,6 +171,16 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
       const identity = authenticate(request.headers);
       if (!identity) return json({ error: "SIGN_IN_REQUIRED" }, 401);
       const { employee, token, version } = identity;
+      async function confirmSupervisor(employee: Employee, password: string) {
+        if (!canReview(employee.role)) throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
+        if (staging) {
+          const ip = request.headers.get("x-real-ip");
+          if (!ip || !isIP(ip)) throw new TeamError("ORIGIN_DENIED", 403);
+          if (!store.allowSignIn(digest(ip))) throw new TeamError("SIGN_IN_LIMIT", 429);
+        }
+        const actual = await hash(password, Buffer.from(employee.salt,"hex"), 32) as Buffer;
+        if (!timingSafeEqual(actual,Buffer.from(employee.passwordHash,"hex"))) throw new TeamError("TRANSACTION_CONFIRMATION_FAILED", 403);
+      }
       if (employee.role === "reviewer" && !reviewerActions.has(command.action)) throw new TeamError("COVERAGE_DENIED", 403);
       switch (command.action) {
         case "session": return json(projectSession(employee, version));
@@ -271,6 +281,10 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "shiftOverview": return json(store.shiftOverview(employee,token,command.manual));
             case "recordDemoSale": return json(store.recordDemoSale(employee,token,command));
             case "openDemoSale": return json(store.openDemoSale(employee,token,command.reference));
+            case "demoDiscount": {
+              if (command.command.operation === "decide") await confirmSupervisor(employee, command.command.password);
+              return json(store.demoDiscount(employee, token, command.command));
+            }
             case "replayHeldDemoRefund": return json(store.replayHeldDemoRefund(employee,token,command.runId,roster));
             case "demoShift":
             case "startDemoShift":
@@ -292,14 +306,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
               return json(await store.executeElectronicRefund(employee,token,command.id,providers,command.action === "verifyElectronicRefund"));
             case "decideRefundRequest": {
               store.refundRequests.open(employee, command.id);
-              if (!canReview(employee.role)) throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
-              if (staging) {
-                const ip = request.headers.get("x-real-ip");
-                if (!ip || !isIP(ip)) throw new TeamError("ORIGIN_DENIED", 403);
-                if (!store.allowSignIn(digest(ip))) throw new TeamError("SIGN_IN_LIMIT", 429);
-              }
-              const actual = await hash(command.password, Buffer.from(employee.salt,"hex"), 32) as Buffer;
-              if (!timingSafeEqual(actual,Buffer.from(employee.passwordHash,"hex"))) throw new TeamError("TRANSACTION_CONFIRMATION_FAILED", 403);
+              await confirmSupervisor(employee, command.password);
               return json(store.decideRefundRequest(employee,token,command.id,command.decision));
             }
             case "listImports": return json(store.listImports(employee));
