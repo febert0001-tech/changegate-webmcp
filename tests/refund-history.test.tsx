@@ -1,7 +1,14 @@
+import { Window } from "happy-dom";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { RefundHistory } from "../src/app/transactions/refund-history";
-import type { RefundRequest } from "../src/merchant-team/refund-requests";
+import { TransactionWorkspace } from "../src/app/transactions/transaction-workspace";
+import type { TeamCommand } from "../src/merchant-team/contracts";
+import type { RefundRequest, TransactionStep } from "../src/merchant-team/refund-requests";
+
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 const occurredAt = "2026-11-22T19:30:00.000Z";
 const request: RefundRequest = {
@@ -34,5 +41,79 @@ describe("receipt history", () => {
     expect(html).toContain("Provider outcome unknown");
     expect(html).toContain("Verified · COMPLETED · 50.00 USD");
     expect(html).toContain("&lt;test&gt;");
+  });
+});
+
+describe("receipt payment state", () => {
+  const square: RefundRequest = {
+    ...request,
+    sale: {
+      reference: "sale-75", location: "Harbor Fuel", register: "Register 1", shift: "Evening",
+      originalCents: 7500, priorCents: 0, tender: "Electronic",
+      square: { merchantId: "test-merchant", locationId: "test-location" },
+    },
+  };
+
+  async function view(record: RefundRequest, step: TransactionStep = "receipt") {
+    const dom = new Window({ url: "http://localhost:3193" });
+    vi.stubGlobal("window", dom);
+    vi.stubGlobal("self", dom);
+    vi.stubGlobal("document", dom.document);
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const root = createRoot(document.body.appendChild(document.createElement("div")));
+    const send = async <T,>(command: TeamCommand): Promise<T> => {
+      if (command.action === "openRefundRequest") return record as T;
+      if (command.action === "refundAlertStatus") return [] as T;
+      throw Error(`Unexpected action: ${command.action}`);
+    };
+    try {
+      await act(async () => root.render(<TransactionWorkspace destination={{ id: record.id, step }}
+        session={{ sessionVersion: "local-test", username: "maya", name: "Maya Chen", merchantName: "Harbor Goods",
+          role: "cashier", demoShift: true, coworkers: [] }} send={send} onSessionError={() => false} />));
+      return {
+        summary: document.querySelector('[aria-label="Refund status and next action"]')?.textContent,
+        body: document.body.textContent,
+        buttons: Array.from(document.querySelectorAll("button"), button => button.textContent),
+      };
+    } finally {
+      await act(async () => root.unmount());
+      vi.unstubAllGlobals();
+      await dom.happyDOM.close();
+    }
+  }
+
+  it("shows zero confirmed payout and no action only when the approved demo has no submission path", async () => {
+    const { summary } = await view(request);
+    expect(summary).toContain("Approved / Not submitted");
+    expect(summary).toContain("Confirmed payout$0.00");
+    expect(summary).toContain("No action needed. Payment submission is disabled in this demo.");
+  });
+
+  it("keeps the rejection and shows no payment action", async () => {
+    const rejected: RefundRequest = { ...square, events: [...square.events.slice(0, -1),
+      { kind: "Decision recorded", actor: "Jordan Lee", occurredAt, decision: "Rejected" },
+    ] };
+    const receipt = await view(rejected);
+    expect(receipt.body).toContain("Rejected by Jordan Lee");
+    expect(receipt.summary).toContain("No payout action is available");
+    expect((await view(rejected, "execution")).buttons).not.toContain("Execute Square Sandbox refund");
+  });
+
+  it("tells the operator to submit an approved refund when submission is available", async () => {
+    const { summary } = await view(square);
+    expect(summary).toContain("Execute the refund in Square Sandbox.");
+    expect(summary).not.toContain("No action needed");
+    expect((await view(square, "execution")).buttons).toContain("Execute Square Sandbox refund");
+  });
+
+  it("leaves an attempted refund with a missing response unconfirmed", async () => {
+    const { summary, body } = await view({ ...square, events: [...square.events,
+      { kind: "Square attempt recorded", actor: "maya", occurredAt },
+      { kind: "Square response unavailable", actor: "maya", occurredAt },
+    ] });
+    expect(summary).toContain("Sandbox outcome unconfirmed");
+    expect(body).toContain("Provider outcome unknown");
+    expect(summary).not.toContain("Confirmed payout");
+    expect(summary).not.toContain("No action needed");
   });
 });

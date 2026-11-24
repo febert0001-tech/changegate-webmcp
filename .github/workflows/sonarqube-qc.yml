@@ -2,7 +2,7 @@ name: SonarQube repository scan
 
 on:
   pull_request:
-    branches: [feat/square-sandbox-refunds, feat/changegate-cloudflare-access]
+    branches: [feat/square-sandbox-refunds, feat/changegate-cloudflare-access, feat/changegate-guest-revocation]
 
 permissions:
   contents: read
