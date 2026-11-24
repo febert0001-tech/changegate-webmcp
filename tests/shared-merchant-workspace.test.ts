@@ -14,6 +14,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { assessSize, observeRefundShare } from "../src/merchant-team/refund-monitor-rules";
 import { checks, requestStatus, requestReceipt, type RefundRequest } from "../src/merchant-team/refund-requests";
 import { demoAccounts, generateDemoEvents, type DemoState } from "../src/merchant-team/demo-shift";
+import type { DiscountCommand, DiscountSale } from "../src/merchant-team/discount-contracts";
+import { shiftGroups, type ShiftOverview } from "../src/merchant-team/shift-overview";
 import { demoExplanation } from "../src/merchant-team/refund-ai-explanation";
 import type { Employee, TeamCase, TeamCaseDetail, TeamSession, TeamWorkspaceView } from "../src/merchant-team/contracts";
 import type { CashDrawerView } from "../src/merchant-team/cash-drawers";
@@ -93,6 +95,102 @@ async function signIn(server: Pick<ReturnType<typeof app>, "request">, username:
     },
   };
 }
+
+describe("local Harbor Bar discount approval", () => {
+  const action = (command: DiscountCommand) => ({ action: "demoDiscount", command });
+
+  it("exposes hosted discount review only to signed-in staff through presenter ingress", async () => {
+    const users = demoAccounts.map(account => {
+      const salt = randomBytes(16);
+      return { ...account, salt: salt.toString("hex"), passwordHash: scryptSync(password, salt, 32).toString("hex") } as Employee;
+    });
+    const server = app(undefined, users, undefined, undefined, undefined, true, true);
+    const unlocked = await signIn(server, "maya");
+    const list = action({ operation: "list" });
+    expect(unlocked.user.demoDiscountEnabled).toBeUndefined();
+    expect((await unlocked.request(list)).status).toBe(404);
+    const presenterEmail = "presenter@example.test";
+    const protectedApp = createTeamWorkspace(server.store, users, origin, { hostedDemo: true, presenterEmail });
+    const makeSession = (email: string) => ({
+      request(command: unknown, cookie = "", { sessionVersion = "" } = {}) {
+        return protectedApp.handle(new Request(origin + "/api/merchant", {
+          method: "POST", headers: { Origin: origin, Host: new URL(origin).host, Cookie: cookie,
+            "X-ChangeGate-Session": sessionVersion, "Content-Type": "application/json",
+            "x-changegate-access-email": email, "x-changegate-access-subject": "verified-test-subject" },
+          body: JSON.stringify(command),
+        }));
+      },
+    });
+    const presenter = makeSession(presenterEmail);
+    const guest = makeSession("guest@example.test");
+    const maya = await signIn(presenter, "maya");
+    expect(maya.user).toMatchObject({ demoDiscountEnabled: true, syntheticOnly: true });
+    expect((await presenter.request(list)).status).toBe(401);
+    expect((await guest.request(list, maya.key, { sessionVersion: maya.user.sessionVersion })).status).toBe(403);
+    const reference = "DEMO-SALE-" + randomUUID();
+    const started = await maya.send<DiscountSale>(action({ operation: "start", reference, original: "100.00", discount: "30.00" }));
+    const jordan = await signIn(presenter, "jordan");
+    expect(await jordan.send(list)).toEqual([started]);
+    await jordan.send(action({ operation: "decide", reference, revision: 1, decision: "Approved", password }));
+    const sale = await maya.send<DiscountSale>(action({ operation: "finish", reference, revision: 1, choice: "discounted" }));
+    expect(sale.completion?.subtotalCents).toBe(7000);
+  });
+
+  it.each(["discounted", "full price", "cancel"] as const)("records the %s outcome once and preserves the decision", async choice => {
+    const users = [...demoAccounts, { ...demoAccounts[2]!, username: "shop-owner", name: "Harbor Owner", role: "owner" }]
+      .map(account => {
+        const salt = randomBytes(16);
+        return { ...account, salt: salt.toString("hex"), passwordHash: scryptSync(password,salt,32).toString("hex") } as Employee;
+      });
+    const server = app(undefined, users, undefined, undefined, undefined, true);
+    const [maya, jordan, owner, alex] = await Promise.all(["maya", "jordan", "shop-owner", "alex"].map(user => signIn(server, user)));
+    const reference = "DEMO-SALE-" + randomUUID();
+    const start = action({ operation: "start", reference, original: "100.00", discount: "30.00" });
+    const open = action({ operation: "open", reference });
+    const finish = action({ operation: "finish", reference, revision: 1, choice });
+    const decision = action({ operation: "decide", reference, revision: 1,
+      decision: choice === "discounted" ? "Approved" : "Rejected", password });
+    const pending = await maya!.send<DiscountSale>(start);
+    expect(await maya!.send<DiscountSale>(start)).toEqual(pending);
+    expect(await jordan!.send<DiscountSale[]>(action({ operation: "list" }))).toEqual([pending]);
+    expect((await maya!.request(finish)).status).toBe(409);
+    expect((await maya!.request(decision)).status).toBe(403);
+    expect((await alex!.request(open)).status).toBe(404);
+    expect((await maya!.request({ action: "openDemoSale", reference })).status).toBe(404);
+    await jordan!.send<DiscountSale>(decision);
+    expect((await owner!.request(decision)).status).toBe(409);
+    const expected = choice === "discounted" ? 7000 : choice === "full price" ? 10000 : null;
+    if (choice === "discounted") {
+      const secondReference = "DEMO-SALE-" + randomUUID();
+      await maya!.send(action({ operation: "start", reference: secondReference, original: "100.00", discount: "30.00" }));
+      await jordan!.send(action({ operation: "decide", reference: secondReference, revision: 1, decision: "Approved", password }));
+      const revised = await maya!.send<DiscountSale>(action({ operation: "revise", reference: secondReference, revision: 1,
+        original: "110.00", discount: "35.00" }));
+      expect(revised.proposals).toHaveLength(2);
+      expect(revised.proposals[1]!.decision).toBeUndefined();
+      expect((await maya!.request(action({ operation: "finish", reference: secondReference, revision: 1, choice }))).status).toBe(409);
+      expect((await maya!.request(action({ operation: "finish", reference: secondReference, revision: 2, choice }))).status).toBe(409);
+      expect((await jordan!.request(action({ operation: "decide", reference: secondReference, revision: 1,
+        decision: "Approved", password }))).status).toBe(409);
+    } else {
+      expect((await maya!.request(action({ operation: "finish", reference, revision: 1, choice: "discounted" }))).status).toBe(409);
+    }
+    const outcomes = await Promise.all([maya!.send<DiscountSale>(finish), maya!.send<DiscountSale>(finish)]);
+    expect(outcomes[0]).toEqual(outcomes[1]);
+    expect(outcomes[0]?.completion?.subtotalCents).toBe(expected);
+    server.stop();
+    const restarted = app(server.path, users, undefined, undefined, undefined, true);
+    const opened = await Promise.all(["maya", "jordan", "shop-owner"].map(async name =>
+      (await signIn(restarted,name)).send<DiscountSale>(open)));
+    expect(opened).toEqual([outcomes[0], outcomes[0], outcomes[0]]);
+    const ownerSession = await signIn(restarted,"shop-owner");
+    const groups = shiftGroups(await ownerSession.send<ShiftOverview>({ action: "shiftOverview", manual: true }), "Harbor Bar");
+    expect(groups.sales.map(row => row.amountCents)).toEqual(expected === null ? [] : [expected]);
+    expect(groups.discounts.map(row => row.amountCents)).toEqual(choice === "discounted" ? [3000] : []);
+    expect(groups.refunds).toEqual([]);
+    expect(groups.payouts).toEqual([]);
+  });
+});
 
 describe("authenticated synthetic shift", () => {
   it("freezes a blind cash count and reuses one variance case across restart", async () => {

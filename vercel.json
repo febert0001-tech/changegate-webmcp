@@ -21,6 +21,7 @@
       "feat/approval-rule-evidence": false,
       "feat/cashier-refund-status": false,
       "feat/late-supervisor-alert": false,
+      "feat/discount-approval": false,
       "main": false
     }
   }

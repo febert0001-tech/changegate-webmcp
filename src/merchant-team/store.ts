@@ -19,6 +19,8 @@ import type { PayPalProvider } from "./paypal-provider";
 import { RefundNotSubmitted, RefundSubmissionRejected } from "./paypal-contracts";
 import { DemoShift, demoEscalationMs, demoReferencePrefix, demoMerchant } from "./demo-shift";
 import { DemoSales, demoRegister } from "./demo-sales";
+import { DiscountSales } from "./discount-sales";
+import type { DiscountCommand } from "./discount-contracts";
 import { summarizeShift } from "./shift-overview";
 import { CashDrawers } from "./cash-drawers";
 
@@ -56,6 +58,7 @@ export class TeamStore {
   private readonly overnight?: OvernightDesk;
   private readonly pilots: PilotReviews;
   private readonly demoSales?: DemoSales;
+  private readonly discounts?: DiscountSales;
   private readonly drawers?: CashDrawers;
 
   constructor(path: string, private readonly now = () => new Date().toISOString(), demo = false) {
@@ -136,6 +139,7 @@ export class TeamStore {
         this.demo = new DemoShift(this.db);
         this.demoInvites = new DemoInvites(this.db);
         this.demoSales = new DemoSales(this.db, this.now);
+        this.discounts = new DiscountSales(this.db, this.now);
         this.drawers = new CashDrawers(this.db, this.now);
         const overnight = new OvernightDesk(this.db, this.drawers, this.now);
         this.overnight = overnight;
@@ -165,6 +169,15 @@ export class TeamStore {
       return this.demoSales.record(employee, command.submissionId, cents(command.amount), command.tender, sale => {
         if (sale.tender === "Cash") this.drawers?.recordActivity(employee, sale, sale.reference, "sale", sale.originalCents);
       });
+    });
+  }
+
+  demoDiscount(employee: Employee, token: string, command: DiscountCommand) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      if (!this.demo?.includes(employee) || !this.discounts || !this.demoSales)
+        throw new TeamError("DEMO_SHIFT_UNAVAILABLE", 404);
+      return this.discounts.command(employee, command, sale => this.demoSales!.insert(employee, "discount:" + sale.reference, sale));
     });
   }
 
@@ -216,8 +229,9 @@ export class TeamStore {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
       const sale = this.requireDemoSale(employee, reference);
+      const discount = sale.discountCents !== undefined ? this.discounts?.recorded(employee.merchantId, reference) : null;
       return { ...this.refundRequests.lookup(employee, reference, { sale, countedRefunds: [] }),
-        sale, refunds: this.refundRequests.listForSale(employee, reference) };
+        sale, ...(discount && { discount }), refunds: this.refundRequests.listForSale(employee, reference) };
     });
   }
 
@@ -262,7 +276,7 @@ export class TeamStore {
         return summarizeShift({
           runId: null, seed: "Manual demo", locations: [...new Set(sales.map(sale => sale.location))],
           sales: sales.map(sale => ({ reference: sale.reference, location: sale.location, register: sale.register,
-            at: sale.recordedAt, netCents: sale.originalCents, discountCents: 0, recordedDemo: true })),
+            at: sale.recordedAt, netCents: sale.originalCents, discountCents: sale.discountCents ?? 0, recordedDemo: true })),
         }, this.refundRequests.list(employee).filter(request => request.sale?.recordedDemo));
       }
       return this.readShiftOverview(employee, demo);
