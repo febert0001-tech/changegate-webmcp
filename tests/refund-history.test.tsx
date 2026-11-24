@@ -87,6 +87,24 @@ describe("receipt payment state", () => {
     expect(summary).toContain("Approved / Not submitted");
     expect(summary).toContain("Confirmed payout$0.00");
     expect(summary).toContain("No action needed. Payment submission is disabled in this demo.");
+    expect(summary).toContain("Your refund was approved. It hasn’t been sent for payment.");
+  });
+
+  it("tells the cashier the request was sent and closes cashier action after rejection", async () => {
+    const waiting = { ...request, events: request.events.slice(0, -1) };
+    const held = await view(waiting, "approval");
+    expect(held.summary).toContain("Waiting for supervisor review");
+    expect(held.summary).toContain("You sent the request for review.");
+    expect(held.summary).toContain("No refund has been paid yet.");
+    expect(held.buttons).not.toContain("Approve");
+    expect(held.buttons).not.toContain("Reject");
+
+    const rejected = await view({ ...waiting, events: [...waiting.events,
+      { kind: "Decision recorded", actor: "Jordan Lee", occurredAt, decision: "Rejected" },
+    ] });
+    expect(rejected.summary).toContain("Current step · Receipt");
+    expect(rejected.summary).toContain("This request is closed.");
+    expect(rejected.summary).toContain("A supervisor declined your refund request. No refund was paid.");
   });
 
   it("keeps the rejection and shows no payment action", async () => {

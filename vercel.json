@@ -19,6 +19,7 @@
       "feat/changegate-guest-revocation": false,
       "feat/polish-demo-refund-receipt": false,
       "feat/approval-rule-evidence": false,
+      "feat/cashier-refund-status": false,
       "main": false
     }
   }
