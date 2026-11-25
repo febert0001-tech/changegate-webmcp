@@ -138,13 +138,14 @@ function notifySessionChange() {
   channel.close();
 }
 
-export function MerchantConsole({ caseId, imports, importId, reviewSummary, transaction, overview, demoSale, discountSale, cashDrawer, cashDrawerRegister, cashWeek, overnight, pilot, inviteAdmin }: {
+export function MerchantConsole({ caseId, imports, importId, reviewSummary, transaction, overview, demoSale, discountSale, cashDrawer, cashDrawerRegister, cashDrawerExample, cashWeek, overnight, pilot, inviteAdmin }: {
   caseId?: string; imports?: boolean; importId?: string; reviewSummary?: boolean; overview?: boolean;
   transaction?: { id: string; step: TransactionStep } | "list";
   demoSale?: string | true;
   discountSale?: boolean;
   cashDrawer?: string | true;
   cashDrawerRegister?: "harbor-bar";
+  cashDrawerExample?: boolean;
   cashWeek?: { week?: string; location?: string };
   overnight?: string | true;
   pilot?: string | true;
@@ -158,6 +159,11 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState<"Needs attention" | "Assigned to me" | "Resolved">("Needs attention");
   const session = workspace?.session;
+  const presenter = session?.demoShift && session.username === "jordan" && session.role === "manager";
+  // The presenter workspaces persist their synthetic records independently.
+  const harborBarExampleId = session?.syntheticOnly
+    ? "8e8db52f-2675-4297-a8fc-2be7dec4f9ef"
+    : "e8fb8968-dae7-496c-aec8-72275dadf220";
   const cases = workspace?.cases ?? [];
   const detail = workspace?.detail;
   const item = detail?.case;
@@ -273,6 +279,7 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
       {session && <div className={styles.profile}>
         {session.demoShift && <Link href="/shift-overview" prefetch={false} aria-current={overview ? "page" : undefined}>Shift Overview</Link>}
         {session.demoShift && <Link href="/verified-square-example" prefetch={false}>View verified Square Sandbox example</Link>}
+        {overview && presenter && <Link href="/cash-drawer?example=harbor-bar" prefetch={false}>View Harbor Bar cash example</Link>}
         {session.demoInviteAdmin && !inviteAdmin && <Link href="/demo-access" prefetch={false}>Create demo invite</Link>}
         {session.pilotEnabled && !pilot && <Link href="/pilot-review" prefetch={false}>Start pilot review</Link>}
         <Link href="/transactions" prefetch={false}>Transactions</Link>
@@ -303,6 +310,11 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
       <p>Sign in with your assigned reviewer account to open the desk.</p></section> : cashWeek ? (
       <WeeklyCashReviewPanel key={session.sessionVersion} initial={cashWeek} session={session} send={send} onSessionError={clearOnSessionError} />
     ) : cashDrawer ? (
+      cashDrawerExample ? (presenter
+        ? <CashDrawerPanel key={versionKey(session.sessionVersion, harborBarExampleId)} id={harborBarExampleId}
+          register="harbor-bar" example session={session} send={send} onSessionError={clearOnSessionError} />
+        : <section className={styles.card}><h2>Example unavailable</h2>
+          <Link href="/shift-overview" prefetch={false}>Back to Shift Overview</Link></section>) :
       <CashDrawerPanel key={session.sessionVersion + (cashDrawerRegister ?? "")} {...(typeof cashDrawer === "string" && { id: cashDrawer })}
         {...(cashDrawerRegister && { register: cashDrawerRegister })}
         session={session} send={send} onSessionError={clearOnSessionError} />

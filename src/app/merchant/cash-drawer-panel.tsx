@@ -16,9 +16,10 @@ function CashAmount({ label, required = true, min = 0 }: { label: string; requir
     step="0.01" required={required} /></label>;
 }
 
-export function CashDrawerPanel({ id, register, session, send, onSessionError }: {
+export function CashDrawerPanel({ id, register, example = false, session, send, onSessionError }: {
   id?: string;
   register?: "harbor-bar";
+  example?: boolean;
   session: TeamSession;
   send: <T>(command: TeamCommand, options?: { signal?: AbortSignal; sessionVersion?: string }) => Promise<T>;
   onSessionError: (error: unknown) => boolean;
@@ -29,7 +30,9 @@ export function CashDrawerPanel({ id, register, session, send, onSessionError }:
   const pending = useRef(false);
   const submissions = useRef<Partial<Record<"openCashDrawer" | "recordDrawerMovement" | "recordDrawerFollowUp", string>>>({});
   const { sessionVersion, demoShift, demoRegister } = session;
-  const drawer = view?.drawer;
+  const savedDrawer = view?.drawer;
+  const drawer = !example || (savedDrawer?.id === id && savedDrawer?.report?.entries.some(entry => entry.kind === "payout"))
+    ? savedDrawer : undefined;
   const report = drawer?.report;
   const drawerHref = (id: string, location = drawer?.location) =>
     `/cash-drawer?id=${id}${register || location === "Harbor Bar" ? "&register=harbor-bar" : ""}`;
@@ -45,10 +48,11 @@ export function CashDrawerPanel({ id, register, session, send, onSessionError }:
       { sessionVersion, signal: controller.signal })
       .then(result => { if (!controller.signal.aborted) setView(result); })
       .catch(error => {
-        if (!controller.signal.aborted && !onSessionError(error)) setNotice("The drawer close could not be opened.");
+        if (!controller.signal.aborted && !onSessionError(error))
+          setNotice(example ? "Example unavailable" : "The drawer close could not be opened.");
       });
     return () => controller.abort();
-  }, [demoShift, id, onSessionError, register, send, sessionVersion]);
+  }, [demoShift, example, id, onSessionError, register, send, sessionVersion]);
 
   async function save(command: TeamCommand, form?: HTMLFormElement) {
     if (pending.current) return;
@@ -79,24 +83,26 @@ export function CashDrawerPanel({ id, register, session, send, onSessionError }:
 
   return <section className={`${styles.card} ${styles.shiftOverview}`} aria-labelledby="drawer-heading">
     <div className={styles.screenHeading}>
-      <div><h2 id="drawer-heading">Close cash drawer</h2><p className={styles.fieldHint}>Fictional shift · USD</p></div>
+      <div><h2 id="drawer-heading">{example ? "Harbor Bar cash example" : "Close cash drawer"}</h2>
+        <p className={styles.fieldHint}>{example ? "Synthetic · USD" : "Fictional shift · USD"}</p></div>
       <Link href="/shift-overview" prefetch={false}>Back to Shift Overview</Link>
     </div>
-    {demoRegister && <div className={styles.actions} aria-label="Test registers">
+    {!example && demoRegister && <div className={styles.actions} aria-label="Test registers">
       <Link href="/cash-drawer" prefetch={false}>Harbor Fuel drawer</Link>
       <Link href="/cash-drawer?register=harbor-bar" prefetch={false}>Harbor Bar drawer</Link>
     </div>}
     {notice && <p role="alert" className={styles.formError}>{notice}</p>}
     {!demoShift && <p>Drawer reconciliation is unavailable in this workspace.</p>}
     {!view && demoShift && !notice && <p role="status">Loading drawer records…</p>}
-    {view && !drawer && <p className={styles.emptyState}>Close incomplete. The opening float and first closing count are missing.</p>}
-    {view && demoRegister && !view.activeId && <form className={styles.formRow} onSubmit={event =>
+    {view && !drawer && <p className={styles.emptyState}>{example ? "Example unavailable" :
+      "Close incomplete. The opening float and first closing count are missing."}</p>}
+    {!example && view && demoRegister && !view.activeId && <form className={styles.formRow} onSubmit={event =>
       submit(event, data => ({ action: "openCashDrawer", id: submissionId("openCashDrawer"), cents: amount(data.get("amount")),
         ...(register && { register }) }))}>
       <CashAmount label={drawer ? "Next shift opening float" : "Opening float"} />
       <button type="submit" className={styles.primary} disabled={busy}>Save opening float</button>
     </form>}
-    {view?.activeId && view.activeId !== drawer?.id && <Link href={drawerHref(view.activeId)} prefetch={false}>Open current drawer</Link>}
+    {!example && view?.activeId && view.activeId !== drawer?.id && <Link href={drawerHref(view.activeId)} prefetch={false}>Open current drawer</Link>}
     {drawer && <div className={styles.shiftOverview}>
       <div>
         <h3>{drawer.location} · {drawer.register}</h3>
@@ -133,7 +139,7 @@ export function CashDrawerPanel({ id, register, session, send, onSessionError }:
             `${money(Math.abs(report.variance))} ${report.variance < 0 ? "short" : "over"}`}</dd></div>
         </dl>
         <p>First count by {report.firstCount.actor} · <time dateTime={report.firstCount.at}>{stamp(report.firstCount.at)}</time></p>
-        {report.variance !== 0 && <div className={styles.actions}>
+        {!example && report.variance !== 0 && <div className={styles.actions}>
           <strong>Discrepancy requiring review</strong>
           {report.caseId ? <Link href={`/merchant/${report.caseId}`} prefetch={false}>Open review case</Link>
             : canReview(session.role) && <button disabled={busy} onClick={() => void save({ action: "openDrawerCase", id: drawer.id })}>Open variance review case</button>}
@@ -150,7 +156,7 @@ export function CashDrawerPanel({ id, register, session, send, onSessionError }:
             </li>)}
           </ul>
         </section>
-        <section aria-label="Recounts and explanations">
+        {!example && <section aria-label="Recounts and explanations">
           <h3>Recounts and explanations</h3>
           {report.followUps.length > 0 && <ul className={styles.shiftRecords}>{report.followUps.map(entry => <li key={entry.id}>
             <div><strong>{entry.cents === null ? "Explanation" : `Recount · ${money(entry.cents)}`}</strong>
@@ -164,10 +170,10 @@ export function CashDrawerPanel({ id, register, session, send, onSessionError }:
             <label>Explanation<input name="note" maxLength={240} required /></label>
             <button type="submit" disabled={busy}>Save follow-up</button>
           </form>
-        </section>
+        </section>}
       </>}
     </div>}
-    {view && view.drawers.length > 1 && <details>
+    {!example && view && view.drawers.length > 1 && <details>
       <summary>Drawer shift history</summary>
       <ul className={styles.shiftRecords}>{view.drawers.map(item => <li key={item.id}>
         <Link href={drawerHref(item.id, item.location)} prefetch={false}>{item.location} · {item.register} · {stamp(item.openedAt)} · {item.isClosed ? "Closed" : "Open"}</Link>
