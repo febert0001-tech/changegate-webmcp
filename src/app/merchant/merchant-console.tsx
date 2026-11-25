@@ -76,6 +76,7 @@ const errors: Record<string, string> = {
   ALERTS_UNAVAILABLE: "Device delivery is currently unavailable.",
   TRANSACTION_CONFIRMATION_FAILED: "Confirm the decision with your supervisor password.",
   TRANSACTION_ROLE_REQUIRED: "This action requires a manager or owner.",
+  REFUND_POLICY_PREVIEW_STALE: "This preview is out of date. Run a fresh preview before applying the threshold.",
   TRANSACTION_SELF_REVIEW: "Another manager must review this employee’s request.",
   TRANSACTION_ACTION_UNAVAILABLE: "This transaction cannot take that action.",
   TRANSACTION_NOT_FOUND: "This transaction is unavailable in your workspace.",

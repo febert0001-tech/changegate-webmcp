@@ -14,6 +14,7 @@ import { summarizeComparison, type ReviewDisposition, type ReviewFindingState } 
 import { RefundAlertStore } from "./refund-alert-store";
 import type { AlertEnrollment } from "./refund-alerts";
 import { RefundRequestStore } from "./refund-request-store";
+import type { RefundPreviewScope } from "./refund-threshold-preview";
 import { canReview, cents, checks, executionStopped, isDemoSaleReference, money, payout, providerVerification, type ElectronicSaleEvidence, type RefundDecision, type RefundTerms } from "./refund-requests";
 import { SquareSubmissionBlocked, type SquareSandbox } from "./square-sandbox";
 import type { PayPalProvider } from "./paypal-provider";
@@ -541,10 +542,17 @@ export class TeamStore {
     });
   }
 
-  setRefundPolicy(employee: Employee, token: string, thresholdCents: number) {
+  previewRefundPolicyChange(employee: Employee, token: string, scope: RefundPreviewScope) {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
-      return this.refundRequests.setPolicy(employee, thresholdCents);
+      return this.refundRequests.previewPolicyChange(employee, scope);
+    });
+  }
+
+  setRefundPolicy(employee: Employee, token: string, previewId: string) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      return this.refundRequests.setPolicy(employee, previewId);
     });
   }
 

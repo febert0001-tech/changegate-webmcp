@@ -4,7 +4,7 @@ import type { Employee } from "./contracts";
 import type { RefundAlertStore } from "./refund-alert-store";
 import { assessSize, individualLimitCents, repeatWatchThreshold, ruleVersion, syntheticRegisterDrift, watchWindowMs } from "./refund-monitor-rules";
 import { TeamError } from "./error";
-import { previewRefundThreshold, type RefundPreviewScope } from "./refund-threshold-preview";
+import { previewRefundThreshold, type RefundPolicyHistory, type RefundPreviewScope, type ThresholdPreview } from "./refund-threshold-preview";
 import { addCashWeekDays, cashStoreDate, cashTimeZone, cashWeekMonday } from "./weekly-cash-review";
 import { canReview, cents, checks, executionStopped, money, payout, providerName, providerResponse, providerVerification,
   requestDecision, requestStatus, routeVerifiedRefund, saleProvider, testSale, thresholdReason, type ElectronicAttemptTerms,
@@ -12,6 +12,7 @@ import { canReview, cents, checks, executionStopped, money, payout, providerName
   type RefundDecision, type RefundRequest, type RefundTerms, type RefundVerification, type RefundWatchEntry, type TestSale, type TransactionEvent } from "./refund-requests";
 
 type RequestRow = { id: string; terms: string; sale: string; events: string };
+const defaultThresholdCents = 5000;
 const project = (row: RequestRow): RefundRequest => ({
   id: row.id, terms: JSON.parse(row.terms), sale: JSON.parse(row.sale), events: JSON.parse(row.events),
 });
@@ -19,6 +20,17 @@ export class RefundRequestStore {
   constructor(private readonly db: DatabaseSync, private readonly now: () => string, private readonly demoWorkspace = false) {
     db.exec(`
       CREATE TABLE IF NOT EXISTS team_refund_policy (merchant_id TEXT PRIMARY KEY, threshold_cents INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS team_refund_policy_previews (
+        merchant_id TEXT NOT NULL, username TEXT NOT NULL, id TEXT NOT NULL,
+        location TEXT NOT NULL, revision INTEGER NOT NULL, old_cents INTEGER NOT NULL, new_cents INTEGER NOT NULL,
+        PRIMARY KEY (merchant_id, username)
+      );
+      CREATE TABLE IF NOT EXISTS team_refund_policy_changes (
+        sequence INTEGER PRIMARY KEY, merchant_id TEXT NOT NULL, preview_id TEXT NOT NULL,
+        username TEXT NOT NULL, actor TEXT NOT NULL, location TEXT NOT NULL, effective_at TEXT NOT NULL,
+        old_cents INTEGER NOT NULL, new_cents INTEGER NOT NULL, UNIQUE (merchant_id, preview_id)
+      );
+      CREATE INDEX IF NOT EXISTS team_refund_policy_changes_by_merchant ON team_refund_policy_changes(merchant_id, sequence);
       CREATE TABLE IF NOT EXISTS team_refund_requests (
         merchant_id TEXT NOT NULL, id TEXT NOT NULL, submission_id TEXT NOT NULL, requester TEXT NOT NULL,
         terms TEXT NOT NULL, sale TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -95,7 +107,7 @@ export class RefundRequestStore {
 
   policy(employee: Employee) {
     const row=this.db.prepare("SELECT threshold_cents AS threshold FROM team_refund_policy WHERE merchant_id=?").get(employee.merchantId);
-    return { thresholdCents: typeof row?.threshold === "number" ? row.threshold : 5000 };
+    return { thresholdCents: typeof row?.threshold === "number" ? row.threshold : defaultThresholdCents };
   }
   previewThreshold(employee: Employee, { location, shift, week, thresholdCents }: RefundPreviewScope) {
     const currentCents = this.policy(employee).thresholdCents;
@@ -120,11 +132,59 @@ export class RefundRequestStore {
     return { ...previewRefundThreshold(requests, currentCents, thresholdCents),
       period: { start, end: addCashWeekDays(start, 6), timeZone: cashTimeZone } };
   }
-  setPolicy(employee: Employee, thresholdCents: number) {
-    if (employee.role !== "owner") throw new TeamError("TRANSACTION_ROLE_REQUIRED",403);
+  policyHistory(employee: Employee): RefundPolicyHistory {
+    if (employee.role !== "owner") throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
+    const { merchantId } = employee;
+    // Read the active amount and its history in one SQLite snapshot.
+    const snapshot = this.db.prepare(`SELECT
+      COALESCE((SELECT threshold_cents FROM team_refund_policy WHERE merchant_id=?), ?) AS thresholdCents,
+      (SELECT json_group_array(json_object(
+        'id', preview_id, 'location', location, 'actor', actor, 'effectiveAt', effective_at,
+        'oldCents', old_cents, 'newCents', new_cents
+      )) FROM (
+        SELECT preview_id, location, actor, effective_at, old_cents, new_cents
+        FROM team_refund_policy_changes WHERE merchant_id=? ORDER BY sequence DESC
+      )) AS changes`).get(merchantId, defaultThresholdCents, merchantId) as { thresholdCents: number; changes: string };
+    return { thresholdCents: snapshot.thresholdCents, changes: JSON.parse(snapshot.changes) };
+  }
+
+  private policyRevision(merchantId: string) {
+    return Number(this.db.prepare("SELECT COALESCE(MAX(sequence), 0) AS revision FROM team_refund_policy_changes WHERE merchant_id=?")
+      .get(merchantId)?.revision);
+  }
+
+  previewPolicyChange(employee: Employee, scope: RefundPreviewScope): ThresholdPreview {
+    if (employee.role !== "owner") throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
+    const preview = this.previewThreshold(employee, scope);
+    const id = randomUUID();
+    this.db.prepare(`INSERT INTO team_refund_policy_previews VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(merchant_id, username) DO UPDATE SET id=excluded.id, location=excluded.location,
+      revision=excluded.revision, old_cents=excluded.old_cents, new_cents=excluded.new_cents`)
+      .run(employee.merchantId, employee.username, id, scope.location, this.policyRevision(employee.merchantId),
+        preview.currentCents, preview.proposedCents);
+    return { ...preview, changePreviewId: id };
+  }
+
+  setPolicy(employee: Employee, previewId: string) {
+    if (employee.role !== "owner") throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
+    const { merchantId, username, name } = employee;
+    const committed = this.db.prepare("SELECT 1 FROM team_refund_policy_changes WHERE merchant_id=? AND username=? AND preview_id=?")
+      .get(merchantId, username, previewId);
+    if (committed) return this.policyHistory(employee);
+    const preview = this.db.prepare(`SELECT location, revision, old_cents AS oldCents, new_cents AS newCents
+      FROM team_refund_policy_previews WHERE merchant_id=? AND username=? AND id=?`)
+      .get(merchantId, username, previewId) as { location: string; revision: number; oldCents: number; newCents: number } | undefined;
+    if (!preview || preview.revision !== this.policyRevision(merchantId) || preview.oldCents !== this.policy(employee).thresholdCents) {
+      throw new TeamError("REFUND_POLICY_PREVIEW_STALE", 409);
+    }
+    if (preview.oldCents === preview.newCents) return this.policyHistory(employee);
     this.db.prepare(`INSERT INTO team_refund_policy VALUES (?,?) ON CONFLICT(merchant_id)
-      DO UPDATE SET threshold_cents=excluded.threshold_cents`).run(employee.merchantId,thresholdCents);
-    return this.policy(employee);
+      DO UPDATE SET threshold_cents=excluded.threshold_cents`).run(merchantId, preview.newCents);
+    this.db.prepare(`INSERT INTO team_refund_policy_changes
+      (merchant_id, preview_id, username, actor, location, effective_at, old_cents, new_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(merchantId, previewId, username, name, preview.location, this.now(), preview.oldCents, preview.newCents);
+    this.db.prepare("DELETE FROM team_refund_policy_previews WHERE merchant_id=? AND username=?").run(merchantId, username);
+    return this.policyHistory(employee);
   }
   private saleUsage(employee: Employee, sale: TestSale, countedRefunds: ProviderRefundEvidence[] = [], excludeId?: string) {
     let paidCents=0, reservedCents=0;

@@ -276,6 +276,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
               return json(store.lookupRefundSale(employee,token,command.reference,evidence));
             }
             case "refundPolicy": return json(store.refundRequests.policy(employee));
+            case "refundPolicyHistory": return json(store.refundRequests.policyHistory(employee));
             case "previewSyntheticRefundWeek":
               if (!canPreviewSyntheticRefundWeek(employee, Boolean(store.demo?.includes(employee)))) {
                 throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
@@ -285,8 +286,11 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
               if (!canPreviewRefundThreshold(employee, Boolean(store.demo?.includes(employee)))) {
                 throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
               }
+              if (command.prepareChange && !hostedDemo) {
+                return json(store.previewRefundPolicyChange(employee, token, command));
+              }
               return json(store.refundRequests.previewThreshold(employee, command));
-            case "setRefundPolicy": return json(store.setRefundPolicy(employee,token,command.thresholdCents));
+            case "setRefundPolicy": return json(store.setRefundPolicy(employee, token, command.previewId));
             case "reportCashPayout": return json(store.reportCashPayout(employee,token,command.id,hostedDemo));
             case "cashDrawers":
             case "openCashDrawer":
