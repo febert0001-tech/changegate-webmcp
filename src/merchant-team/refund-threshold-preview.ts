@@ -35,7 +35,10 @@ export function receiptThresholdEvidence(request: RefundRequest, history?: Refun
   const thresholdCents = typeof saved === "number" && Number.isSafeInteger(saved) && saved >= 0 ? saved : undefined;
   const evidence = { thresholdCents, whenHeld: hold !== undefined };
   const checkedAt = Date.parse(governingCheck?.occurredAt ?? "");
-  if (!history || thresholdCents === undefined || !Number.isFinite(checkedAt)) return evidence;
+  // Seeded replay checks use a fictional event clock, while policy changes use the real clock.
+  if (!history || thresholdCents === undefined || !Number.isFinite(checkedAt) || request.sale?.shift === "Demo shift") {
+    return evidence;
+  }
 
   // The audit log is newest first. An identical timestamp cannot establish which write came first.
   let newest = Infinity;

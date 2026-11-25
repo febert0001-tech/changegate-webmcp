@@ -49,4 +49,13 @@ describe("receipt threshold evidence", () => {
     ] })).toEqual({ thresholdCents: 3600, whenHeld: true });
     expect(receiptThresholdEvidence({ ...held, events: [] }, policy)).toEqual({ thresholdCents: undefined, whenHeld: false });
   });
+
+  it("does not attribute a seeded replay check to an audit entry based on its fictional time", () => {
+    const replay: RefundRequest = { ...held, sale: {
+      reference: held.terms.reference, location: "Harbor Fuel", register: "Register 1", shift: "Demo shift",
+      originalCents: 25000, priorCents: 0, tender: "Electronic",
+    } };
+
+    expect(receiptThresholdEvidence(replay, policy)).toEqual({ thresholdCents: 3600, whenHeld: true });
+  });
 });
