@@ -29,6 +29,7 @@
       "feat/refund-threshold-preview": false,
       "feat/closed-week-threshold-preview": false,
       "feat/refund-threshold-audit": false,
+      "feat/receipt-threshold-history": false,
       "main": false
     }
   }
