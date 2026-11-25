@@ -14,7 +14,8 @@ import { PhoneAlerts } from "./phone-alerts";
 import { RefundHistory } from "./refund-history";
 import { useTransactionTools } from "./use-transaction-tools";
 import { RefundThresholdPreview } from "./refund-threshold-preview";
-import { canPreviewRefundThreshold, canPreviewSyntheticRefundWeek, type RefundPolicyHistory, type ThresholdPreview } from "../../merchant-team/refund-threshold-preview";
+import { canPreviewRefundThreshold, canPreviewSyntheticRefundWeek, receiptThresholdEvidence,
+  type RefundPolicyHistory, type ThresholdPreview } from "../../merchant-team/refund-threshold-preview";
 import styles from "../merchant/merchant.module.css";
 
 type Send = <T>(command: TeamCommand, options?: { signal?: AbortSignal; sessionVersion?: string }) => Promise<T>;
@@ -24,6 +25,21 @@ type AlertView = { phase: number; status: string; advisory: string | null; expla
 const value = (form: FormData, key: string) => String(form.get(key) ?? "").trim();
 const url = (id: string, step?: TransactionStep) => "/transactions/" + id + (step ? "/" + step : "");
 const time = (value: string) => value.replace("T"," ").slice(0,19) + " UTC";
+const thresholdChangeAnchor = (id: string) => "threshold-change-" + id;
+
+function ReceiptThreshold({ request, policy }: { request: RefundRequest; policy: RefundPolicyHistory | undefined }) {
+  const { thresholdCents, whenHeld, change } = receiptThresholdEvidence(request, policy);
+  return <section aria-label="Refund threshold evidence">
+    <h4>Refund threshold evidence</h4>
+    <dl className={styles.facts}>
+      <div><dt>{whenHeld ? "Threshold when held" : "Threshold when checked"}</dt><dd>{thresholdCents === undefined ? "Unavailable" : money(thresholdCents)}</dd></div>
+      <div><dt>Current threshold</dt><dd>{policy ? money(policy.thresholdCents) : "Unavailable"}</dd></div>
+    </dl>
+    {change ? <p><Link href={"/transactions#" + thresholdChangeAnchor(change.id)} prefetch={false}>View threshold change</Link>
+      {" · "}{change.actor}{" · "}<time dateTime={change.effectiveAt}>{time(change.effectiveAt)}</time></p> :
+      policy && <p>Change attribution unknown from saved history.</p>}
+  </section>;
+}
 
 function approvedDemoWithoutSubmission(request: RefundRequest, demoShift?: boolean) {
   return demoShift === true && requestDecision(request)?.decision === "Approved" &&
@@ -84,6 +100,8 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   const [notice,setNotice]=useState("");
   const [demo,setDemo]=useState<DemoView>();
   const id=destination==="list" ? undefined : destination.id;
+  const showPolicyHistory=session.role==="owner" && !session.syntheticOnly;
+  const loadPolicy=showPolicyHistory && (destination==="list" || destination.step==="receipt");
   const version=session.sessionVersion;
   const manager=canReview(session.role);
   const includeExplanation=Boolean(session.syntheticOnly&&manager&&destination!=="list"&&destination.step==="approval");
@@ -121,12 +139,18 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       }
     }
     void load();
-    if(!id&&session.role==="owner"&&!session.syntheticOnly)void send<RefundPolicyHistory>({action:"refundPolicyHistory"},options)
+    if(loadPolicy)void send<RefundPolicyHistory>({action:"refundPolicyHistory"},options)
       .then(result=>{if(!controller.signal.aborted)setPolicy(result);})
       .catch(e=>{if(!controller.signal.aborted&&!onSessionError(e))setError("Could not load the refund policy.");});
     const timer=id||manager||session.demoShift ? window.setInterval(()=>{if(document.visibilityState==="visible")void load();},5000):undefined;
     return()=>{controller.abort();if(timer!==undefined)window.clearInterval(timer);};
-  },[id,includeExplanation,includeSavedExplanation,manager,onSessionError,send,session.demoShift,session.role,session.syntheticOnly,version]);
+  },[id,includeExplanation,includeSavedExplanation,loadPolicy,manager,onSessionError,send,session.demoShift,session.role,session.syntheticOnly,version]);
+
+  useEffect(()=>{
+    if(id || !policy || !window.location.hash.startsWith("#threshold-change-")) return;
+    const entry=document.getElementById(window.location.hash.slice(1));
+    entry?.focus();
+  },[id,policy]);
 
   async function run(work:()=>Promise<void>){
     setBusy(true);setError("");setNotice("");
@@ -260,11 +284,11 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
             setPolicy(await api<RefundPolicyHistory>({action:"setRefundPolicy",previewId}));
             setNotice("Approval threshold applied.");
           } : undefined} />
-        {session.role==="owner"&&!session.syntheticOnly&&<><h4>Owner activity</h4>
+        {showPolicyHistory&&<><h4>Owner activity</h4>
         {policy&&<section aria-label="Refund threshold history">
           <p>Active threshold <strong>{money(policy.thresholdCents)}</strong></p>
           <h5>Refund threshold history</h5>
-          {policy.changes.length ? <ul>{policy.changes.map(change=><li key={change.id}>
+          {policy.changes.length ? <ul>{policy.changes.map(change=><li key={change.id} id={thresholdChangeAnchor(change.id)} tabIndex={-1}>
             <strong>{money(change.oldCents)} → {money(change.newCents)}</strong> · {change.actor} ·{" "}
             <time dateTime={change.effectiveAt}>{time(change.effectiveAt)}</time> · Previewed store {change.location}
           </li>)}</ul> : <p>No threshold changes recorded.</p>}
@@ -471,6 +495,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       </>}
       {step==="receipt"&&<>
         <h3>Receipt and verification</h3>
+        {showPolicyHistory&&<ReceiptThreshold request={record} policy={policy}/>}
         {provider?<><p>{response?.kind==="PayPal refund recovered" ? "Recovered original PayPal refund reference." :
           response ? response.refund.status ? name+" returned "+response.refund.status : name+" refund reference recorded." :
           attempt && !stopped ? name+" response unavailable." : "No "+name+" refund recorded."}</p>

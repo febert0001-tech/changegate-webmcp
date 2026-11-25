@@ -22,6 +22,36 @@ export type RefundPolicyHistory = {
   thresholdCents: number;
   changes: { id: string; location: string; actor: string; effectiveAt: string; oldCents: number; newCents: number }[];
 };
+
+export function receiptThresholdEvidence(request: RefundRequest, history?: RefundPolicyHistory): {
+  thresholdCents: number | undefined;
+  whenHeld: boolean;
+  change?: RefundPolicyHistory["changes"][number] | undefined;
+} {
+  const checks = request.events.filter(event => event.kind === "Checks recorded");
+  const hold = checks.find(({ check }) => check.route === "manager" || check.route === "exception");
+  const governingCheck = hold ?? checks[0];
+  const saved = governingCheck?.check.thresholdCents;
+  const thresholdCents = typeof saved === "number" && Number.isSafeInteger(saved) && saved >= 0 ? saved : undefined;
+  const evidence = { thresholdCents, whenHeld: hold !== undefined };
+  const checkedAt = Date.parse(governingCheck?.occurredAt ?? "");
+  // Seeded replay checks use a fictional event clock, while policy changes use the real clock.
+  if (!history || thresholdCents === undefined || !Number.isFinite(checkedAt) || request.sale?.shift === "Demo shift") {
+    return evidence;
+  }
+
+  // The audit log is newest first. An identical timestamp cannot establish which write came first.
+  let newest = Infinity;
+  let change: RefundPolicyHistory["changes"][number] | undefined;
+  for (const entry of history.changes) {
+    const changedAt = Date.parse(entry.effectiveAt);
+    if (!Number.isFinite(changedAt) || changedAt === checkedAt || changedAt > newest) return evidence;
+    if (!change && changedAt < checkedAt) change = entry;
+    newest = changedAt;
+  }
+  return { ...evidence, change: change?.newCents === thresholdCents ? change : undefined };
+}
+
 export type ThresholdPreview = {
   currentCents: number; proposedCents: number; currentReview: number; projectedReview: number;
   added: number; removed: number; insufficient: number; rows: Row[];
