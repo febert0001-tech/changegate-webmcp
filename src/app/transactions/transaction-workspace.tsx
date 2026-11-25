@@ -13,6 +13,8 @@ import { canReview, cents, checks, currentStep, executionStopped, money, payout,
 import { PhoneAlerts } from "./phone-alerts";
 import { RefundHistory } from "./refund-history";
 import { useTransactionTools } from "./use-transaction-tools";
+import { RefundThresholdPreview } from "./refund-threshold-preview";
+import { canPreviewRefundThreshold, type ThresholdPreview } from "../../merchant-team/refund-threshold-preview";
 import styles from "../merchant/merchant.module.css";
 
 type Send = <T>(command: TeamCommand, options?: { signal?: AbortSignal; sessionVersion?: string }) => Promise<T>;
@@ -247,8 +249,11 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
         {!!overBalance.length&&<details><summary>{overBalance.length} over-balance {overBalance.length===1?"request":"requests"} blocked</summary>
           {list(overBalance.slice(0,10))}</details>}
       </section>}
-      {session.role==="owner"&&!session.syntheticOnly&&<section className={styles.importSection}>
-        <h3>Owner activity</h3>
+      {canPreviewRefundThreshold(session, Boolean(session.demoShift))&&<section className={styles.importSection}>
+        <h3>Owner settings</h3>
+        <RefundThresholdPreview requests={rows} preview={(location,shift,thresholdCents)=>
+          api<ThresholdPreview>({action:"previewRefundThreshold",location,shift,thresholdCents})} />
+        {session.role==="owner"&&!session.syntheticOnly&&<><h4>Owner activity</h4>
         {threshold!==undefined&&<form className={styles.formRow} onSubmit={event=>{
           event.preventDefault();
           const amount=value(new FormData(event.currentTarget),"threshold");
@@ -269,7 +274,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
           ["Employee",employee,setEmployee,rows.map(r=>submitted(r).actor)],
         ] as const).map(([label,selected,set,items])=><label key={label}>{label}<select value={selected} onChange={e=>set(e.target.value)}>
           <option value="">All</option>{[...new Set(items.filter(Boolean))].map(item=><option key={item}>{item}</option>)}
-        </select></label>)}</div>
+        </select></label>)}</div></>}
       </section>}
       <section className={styles.importSection}><h3>Refund activity</h3>
         <label>Search transactions<input type="search" value={query} onChange={e=>setQuery(e.target.value)} /></label>
