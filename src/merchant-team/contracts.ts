@@ -71,6 +71,7 @@ export const teamCommand = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("executeElectronicRefund"), id }),
   z.strictObject({ action: z.literal("verifyElectronicRefund"), id }),
   z.strictObject({ action: z.literal("refundPolicy") }),
+  z.strictObject({ action: z.literal("previewSyntheticRefundWeek"), thresholdCents: z.number().int().min(0).max(999999999999) }),
   z.strictObject({ action: z.literal("previewRefundThreshold"), location: text(200),
     shift: text(200).optional(), week: z.iso.date().optional(),
     thresholdCents: z.number().int().min(0).max(999999999999) })

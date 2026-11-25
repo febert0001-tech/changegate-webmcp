@@ -2,8 +2,14 @@ import { ruleVersion } from "./refund-monitor-rules";
 import { cents, money, routeVerifiedRefund, thresholdReason, type RefundCheck, type RefundRequest } from "./refund-requests";
 
 export function canPreviewRefundThreshold(user: { username: string; role?: string | undefined }, demo: boolean) {
-  return user.role === "owner" || (demo && user.role === "manager" && user.username === "jordan");
+  return user.role === "owner" || canPreviewSyntheticRefundWeek(user, demo);
 }
+
+export function canPreviewSyntheticRefundWeek(user: { username: string; role?: string | undefined }, demo: boolean) {
+  return demo && user.role === "manager" && user.username === "jordan";
+}
+
+export const syntheticRefundWeek = { location: "Harbor Fuel", start: "2026-11-16", end: "2026-11-22" };
 
 export function refundPreviewScope(request: RefundRequest) {
   return { location: request.sale?.location ?? "Unavailable", shift: request.sale?.shift ?? "Unavailable" };

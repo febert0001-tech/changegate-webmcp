@@ -2157,6 +2157,40 @@ describe("shared merchant workspace", () => {
     expect((await save()).batch.summary.id).toBe(original.batch.summary.id);
   });
 
+  it("replays the synthetic closed week without reading or changing the saved threshold or requests", async () => {
+    const users: Employee[] = roster.map(employee => ({
+      ...employee, role: employee.username === "jordan" ? "manager" : employee.username === "alex" ? "owner" : "cashier",
+    }));
+    const hosted = app(undefined, users, undefined, undefined, undefined, true, true);
+    const local = app(undefined, users);
+    const jordan = await signIn(hosted, "jordan");
+    const preview = { action: "previewSyntheticRefundWeek", thresholdCents: 5001 };
+    const db = new DatabaseSync(hosted.path);
+    try {
+      db.prepare("INSERT INTO team_refund_policy VALUES (?,?)").run("harbor", 6000);
+      const saved = { action: "previewRefundThreshold", location: "Harbor Fuel", week: "2026-11-18", thresholdCents: 5001 };
+      expect(await jordan.send(saved)).toMatchObject({ currentCents: 6000, rows: [] });
+      const result = await jordan.send<import("../src/merchant-team/refund-threshold-preview").ThresholdPreview>(preview);
+      expect(result).toMatchObject({
+        period: { start: "2026-11-16", end: "2026-11-22", timeZone: "America/New_York" },
+        currentCents: 5000, proposedCents: 5001, currentReview: 2, projectedReview: 1,
+        added: 0, removed: 1, insufficient: 1,
+      });
+      expect(result.rows.find(row => row.current !== row.proposed)).toMatchObject({
+        current: "Supervisor review", proposed: "Routine", reason: expect.stringContaining("$50.00 in cumulative refunds"),
+      });
+      expect(await jordan.send(preview)).toEqual(result);
+      expect(await jordan.send({ ...preview, thresholdCents: 5000 })).toMatchObject({ projectedReview: 2, removed: 0 });
+      expect(await jordan.send(saved)).toMatchObject({ currentCents: 6000, rows: [] });
+      expect(db.prepare("SELECT * FROM team_refund_request_events").all()).toEqual([]);
+    } finally {
+      db.close();
+    }
+    for (const [server, username] of [[hosted, "maya"], [hosted, "alex"], [local, "jordan"]] as const) {
+      expect((await (await signIn(server, username)).request(preview)).status).toBe(403);
+    }
+  });
+
   it("combines two shifts in a closed refund preview week and excludes adjacent records", async () => {
     const users: Employee[] = roster.map(employee => ({
       ...employee, role: employee.username === "jordan" ? "owner" : "cashier",
