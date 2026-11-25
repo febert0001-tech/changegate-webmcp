@@ -91,7 +91,9 @@ export function RefundThresholdPreview({ requests, preview, previewExample }: {
       <p role="status">Holds added: {result.added} · Holds removed: {result.removed} · Insufficient evidence: {result.insufficient}</p>
       {result.rows.length ? <ul className={styles.queue}>{result.rows.map(row => <li key={row.id}>
         {example ? <strong>{money(row.amountCents)} synthetic refund request</strong> :
-          <Link href={"/transactions/" + row.id + "/receipt"} prefetch={false}>View {money(row.amountCents)} refund receipt</Link>}
+          <Link href={"/transactions/" + row.id + "/receipt"} prefetch={false} target="_blank" rel="noopener">
+            View {money(row.amountCents)} refund receipt (opens in a new tab)
+          </Link>}
         <dl className={styles.facts}>
           <div><dt>Current policy</dt><dd>{row.current}</dd></div>
           <div><dt>Proposed policy</dt><dd>{row.proposed}</dd></div>
