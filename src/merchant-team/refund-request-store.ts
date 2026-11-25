@@ -4,8 +4,9 @@ import type { Employee } from "./contracts";
 import type { RefundAlertStore } from "./refund-alert-store";
 import { assessSize, individualLimitCents, repeatWatchThreshold, ruleVersion, syntheticRegisterDrift, watchWindowMs } from "./refund-monitor-rules";
 import { TeamError } from "./error";
+import { previewRefundThreshold, refundPreviewScope } from "./refund-threshold-preview";
 import { canReview, cents, checks, executionStopped, money, payout, providerName, providerResponse, providerVerification,
-  requestDecision, requestStatus, saleProvider, squareApprovalReason, testSale, type ElectronicAttemptTerms,
+  requestDecision, requestStatus, routeVerifiedRefund, saleProvider, testSale, thresholdReason, type ElectronicAttemptTerms,
   type ElectronicSaleEvidence, type ProviderRefundEvidence, type ProviderRefundResponse, type RefundCheck,
   type RefundDecision, type RefundRequest, type RefundTerms, type RefundVerification, type RefundWatchEntry, type TestSale, type TransactionEvent } from "./refund-requests";
 
@@ -95,6 +96,14 @@ export class RefundRequestStore {
     const row=this.db.prepare("SELECT threshold_cents AS threshold FROM team_refund_policy WHERE merchant_id=?").get(employee.merchantId);
     return { thresholdCents: typeof row?.threshold === "number" ? row.threshold : 5000 };
   }
+  previewThreshold(employee: Employee, location: string, shift: string, proposedCents: number) {
+    const currentCents = this.policy(employee).thresholdCents;
+    const requests = this.list(employee).filter(request => {
+      const scope = refundPreviewScope(request);
+      return scope.location === location && scope.shift === shift;
+    });
+    return previewRefundThreshold(requests, currentCents, proposedCents);
+  }
   setPolicy(employee: Employee, thresholdCents: number) {
     if (employee.role !== "owner") throw new TeamError("TRANSACTION_ROLE_REQUIRED",403);
     this.db.prepare(`INSERT INTO team_refund_policy VALUES (?,?) ON CONFLICT(merchant_id)
@@ -170,16 +179,11 @@ export class RefundRequestStore {
       const { balanceCents, reservedCents }=this.saleUsage(employee,sale,evidence?.countedRefunds);
       const cumulativeCents=sale.originalCents-balanceCents+amount;
       if(cumulativeCents>=thresholdCents) {
-        const reason = "Cumulative refunds would reach "+money(cumulativeCents)+
-          ", meeting or exceeding the "+money(thresholdCents)+" store threshold.";
+        const reason = thresholdReason(cumulativeCents, thresholdCents);
         if (sale.recordedDemo) reasons.unshift(reason); else reasons.push(reason);
       }
       const base={balanceCents,cumulativeCents,thresholdCents,monitoring,...(sale.recordedDemo&&{reservedCents})};
-      if(amount>balanceCents) check={...base,route:"over-balance",
-        explanation:"Only "+money(balanceCents)+" remains refundable. This request is blocked."};
-      else if(reasons.length) check={...base,route:"manager",explanation:reasons[0]!};
-      else if(sale.square) check={...base,route:"manager",explanation:squareApprovalReason};
-      else check={...base,route:"routine",explanation:"The request fits the refundable balance and configured review limits."};
+      check={...base,...routeVerifiedRefund(sale, amount, balanceCents, reasons)};
     }
     this.db.prepare("INSERT INTO team_refund_requests VALUES (?,?,?,?,?,?,?)")
       .run(employee.merchantId,id,submissionId,employee.username,payload,JSON.stringify(sale),occurredAt);

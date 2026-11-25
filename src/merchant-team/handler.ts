@@ -6,6 +6,7 @@ import { accessIdentity } from "./cloudflare-access";
 import { canManageDemoInvites, createDemoAccess } from "./demo-access";
 import type { TeamStore } from "./store";
 import { canReplayOvernight } from "./overnight-replay";
+import { canPreviewRefundThreshold } from "./refund-threshold-preview";
 import { alertPublicKey } from "./refund-alerts";
 import { canReview, isDemoSaleReference } from "./refund-requests";
 import { demoRegister } from "./demo-sales";
@@ -54,6 +55,7 @@ const hostedDemoActions = new Set([
   "overnightDesk", "overnightOwner", "coverageSettings", "grantCoverage", "startDemoCoverage", "revokeCoverage", "claimOvernightCase", "requestOvernightFollowUp", "replyOvernight", "reassignOvernightCase",
   "signIn", "signOut", "session", "workspace", "demoShift", "shiftOverview", "startDemoShift", "nextDemoEvent", "replayDemoShift",
   "replayHeldDemoRefund", "startOvernightReplay",
+  "previewRefundThreshold",
   "recordDemoSale", "openDemoSale", "lookupOriginalSale", "demoDiscount",
   "refundAlertStatus", "listRefundRequests", "openRefundRequest", "createRefundRequest", "decideRefundRequest",
   "reportCashPayout", "cashDrawers", "openCashDrawer", "closeCashDrawer", "recordDrawerMovement",
@@ -273,6 +275,11 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
               return json(store.lookupRefundSale(employee,token,command.reference,evidence));
             }
             case "refundPolicy": return json(store.refundRequests.policy(employee));
+            case "previewRefundThreshold":
+              if (!canPreviewRefundThreshold(employee, Boolean(store.demo?.includes(employee)))) {
+                throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
+              }
+              return json(store.refundRequests.previewThreshold(employee, command.location, command.shift, command.thresholdCents));
             case "setRefundPolicy": return json(store.setRefundPolicy(employee,token,command.thresholdCents));
             case "reportCashPayout": return json(store.reportCashPayout(employee,token,command.id,hostedDemo));
             case "cashDrawers":

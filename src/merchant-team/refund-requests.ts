@@ -103,6 +103,18 @@ export const testSale = (reference: string) => sales.find(sale => sale.reference
 export const submitted = (request: RefundRequest) => request.events.find(event => event.kind === "Request submitted")!;
 export const unavailableSaleLocation = "Unavailable";
 export const squareApprovalReason = "Every Square refund requires approval from a separate supervisor.";
+export const thresholdReason = (cumulativeCents: number, thresholdCents: number) =>
+  "Cumulative refunds would reach " + money(cumulativeCents) +
+  ", meeting or exceeding the " + money(thresholdCents) + " store threshold.";
+
+export function routeVerifiedRefund(sale: TestSale, amount: number, balance: number, reasons: readonly string[]):
+  Pick<RefundCheck, "route" | "explanation"> {
+  if (amount > balance) return { route: "over-balance", explanation: "Only " + money(balance) + " remains refundable. This request is blocked." };
+  if (reasons.length) return { route: "manager", explanation: reasons[0]! };
+  if (sale.square) return { route: "manager", explanation: squareApprovalReason };
+  return { route: "routine", explanation: "The request fits the refundable balance and configured review limits." };
+}
+
 export function checks(request: RefundRequest): RefundCheck {
   const check = request.events.findLast(event => event.kind === "Checks recorded")!.check;
   // Apply the current approval policy to requests saved before it was introduced.

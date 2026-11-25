@@ -524,6 +524,16 @@ describe("authenticated synthetic shift", () => {
     const reviewer = users[2]!;
     const firstHeld = await jordan!.send<RefundRequest>({ action: "openRefundRequest", id: first.ids[4] });
     expect(checks(firstHeld)).toMatchObject({ cumulativeCents: 3800, thresholdCents: 5000 });
+    const preview = { action: "previewRefundThreshold", location: "Harbor Fuel", shift: "Demo shift", thresholdCents: 10000 };
+    const report = await jordan!.send<import("../src/merchant-team/refund-threshold-preview").ThresholdPreview>(preview);
+    expect(report).toMatchObject({ currentCents: 5000, proposedCents: 10000, added: 0, removed: 0 });
+    expect(report.rows.find(row => row.id === firstHeld.id)).toMatchObject({
+      current: "Supervisor review", proposed: "Supervisor review",
+      reason: expect.stringMatching(/cashier across registers.*register across cashiers/),
+    });
+    expect(await jordan!.send<RefundRequest>({ action: "openRefundRequest", id: firstHeld.id })).toEqual(firstHeld);
+    expect((await maya!.request(preview)).status).toBe(403);
+    expect(await alex!.send(preview)).toMatchObject({ rows: [], added: 0, removed: 0 });
     const activity = firstHeld.watchActivity;
     expect(activity?.cashier.map(({ id, occurredAt, register }) => [id, occurredAt, register])).toEqual([
       [first.ids[1], first.events[3]!.at, "Register 1"],
@@ -2147,6 +2157,55 @@ describe("shared merchant workspace", () => {
     expect((await save()).batch.summary.id).toBe(original.batch.summary.id);
   });
 
+  it("previews the submission check and preserves a later refund recheck", async () => {
+    const users: Employee[] = roster.map(employee => ({
+      ...employee, role: employee.username === "jordan" ? "owner" : "cashier",
+    }));
+    const server = app(undefined, users, () => "2026-11-25T14:00:00.000Z");
+    const cashier = await signIn(server, "maya");
+    const owner = await signIn(server, "jordan");
+    const request = await cashier.send<RefundRequest>({
+      action: "createRefundRequest", submissionId: randomUUID(),
+      terms: { reference: "TEST-SALE-PARTIAL", amount: "21.00", currency: "USD", reason: "Synthetic preview replay" },
+    });
+    const original = request.events.find(event => event.kind === "Checks recorded")!;
+    expect(request.sale?.tender).toBe("Cash");
+    expect(original.check).toMatchObject({
+      cumulativeCents: 5000, balanceCents: 6100, thresholdCents: 5000, route: "manager",
+      monitoring: { watch: false, cashierWatchCount: 0, registerWatchCount: 0, reasons: [original.check.explanation] },
+    });
+    expect(original.check.explanation).toContain("$50.00 store threshold");
+
+    // Append a later check as saved history without executing a refund.
+    const explanation = "Cumulative refunds would reach $50.01, meeting or exceeding the $50.00 store threshold.";
+    const later = {
+      ...original, occurredAt: "2026-11-25T14:05:00.000Z",
+      check: {
+        ...original.check, cumulativeCents: 5001, balanceCents: 6099, explanation,
+        monitoring: { ...original.check.monitoring!, reasons: [explanation] },
+      },
+    };
+    const db = new DatabaseSync(server.path);
+    try {
+      db.prepare(`INSERT INTO team_refund_request_events (merchant_id, request_id, username, payload)
+        VALUES (?, ?, ?, ?)`).run("harbor", request.id, "jordan", JSON.stringify(later));
+    } finally {
+      db.close();
+    }
+
+    const open = { action: "openRefundRequest", id: request.id };
+    const before = await owner.send<RefundRequest>(open);
+    expect(before.events.filter(event => event.kind === "Checks recorded")).toEqual([original, later]);
+    const preview = await owner.send({
+      action: "previewRefundThreshold", location: "Harbor Bar", shift: "Evening", thresholdCents: 5001,
+    });
+    expect(preview).toMatchObject({
+      currentCents: 5000, proposedCents: 5001, added: 0, removed: 1, insufficient: 0,
+      rows: [{ id: request.id, current: "Supervisor review", proposed: "Routine" }],
+    });
+    expect(await owner.send(open)).toEqual(before);
+  });
+
   it("enforces cumulative limits, persisted cash reports, separate managers and merchant isolation", async () => {
     const roles: Employee[] = roster.map(employee => ({ ...employee, role: employee.username === "jordan" ? "manager" as const : "cashier" as const }));
     roles.push({ ...roles[0]!, username: "owner", role: "owner", name: "Store Owner" });
@@ -2159,6 +2218,20 @@ describe("shared merchant workspace", () => {
     expect(await owner.send({ action: "setRefundPolicy", thresholdCents: 5000 })).toEqual({ thresholdCents: 5000 });
     const command = (reference: string, amount: string) => ({ action: "createRefundRequest", submissionId: randomUUID(),
       terms: { reference, amount, currency: "USD", reason: "Test correction" } });
+    const preview = (thresholdCents: number, location = "Harbor Bar", shift = "Evening") =>
+      ({ action: "previewRefundThreshold", location, shift, thresholdCents });
+    const isolated = await cashier.send<RefundRequest>(command("TEST-SALE-PARTIAL", "21.00"));
+    expect(checks(isolated)).toMatchObject({ route: "manager", monitoring: { reasons: [expect.stringContaining("$50.00 store threshold")] } });
+    expect(await owner.send(preview(5001))).toMatchObject({ currentCents: 5000, proposedCents: 5001, added: 0, removed: 1,
+      rows: [{ id: isolated.id, current: "Supervisor review", proposed: "Routine" }] });
+    expect(await owner.send(preview(5000))).toMatchObject({ removed: 0, rows: [{ proposed: "Supervisor review" }] });
+    expect(await owner.send({ action: "refundPolicy" })).toEqual({ thresholdCents: 5000 });
+    expect(await cashier.send({ action: "openRefundRequest", id: isolated.id })).toEqual(isolated);
+    await manager.send({ action: "decideRefundRequest", id: isolated.id, decision: "Rejected", password });
+    const missing = await cashier.send<RefundRequest>(command("TEST-SALE-UNKNOWN", "1.00"));
+    expect(await owner.send(preview(5001, "Unavailable", "Unavailable"))).toMatchObject({ added: 0, removed: 0, insufficient: 1,
+      rows: [{ id: missing.id, proposed: "Insufficient evidence" }] });
+    expect(await owner.send(preview(5001, "Harbor Fuel", "Morning"))).toMatchObject({ rows: [] });
     const initial = command("TEST-SALE-PARTIAL", "18.00");
     const first = await cashier.send<RefundRequest>(initial);
     expect(requestStatus(first)).toBe("Ready for cash payout");
