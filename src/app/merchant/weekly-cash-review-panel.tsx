@@ -12,7 +12,7 @@ const metrics = [
   ["balanced", "Balanced drawers"], ["unresolved", "Unresolved review cases"],
 ] as const;
 type Metric = typeof metrics[number][0];
-type Filters = { week?: string; location?: string };
+type Filters = { week?: string; location?: string; replay?: string };
 
 function varianceLabel(cents: number) {
   if (!cents) return "Balanced";
@@ -102,7 +102,8 @@ export function WeeklyCashReviewPanel({ initial, session, send, onSessionError }
     {!allowed && <p>Weekly cash review is available to supervisors in this demo workspace.</p>}
     {error && <p className={styles.formError} role="alert">{error}</p>}
     {!report && allowed && !error && <p role="status">Loading weekly cash review…</p>}
-    {report && allowed && <>
+    {initial.replay && <p className={styles.fieldHint}>Synthetic overnight review · Harbor Fuel</p>}
+    {report && allowed && !initial.replay && <>
       <form className={styles.formRow} key={report.start + (filters.location ?? "")} onSubmit={filter}>
         <label>Date in reporting week<input name="week" type="date" defaultValue={report.start} required /></label>
         <label>Location<select name="location" defaultValue={filters.location ?? ""}>

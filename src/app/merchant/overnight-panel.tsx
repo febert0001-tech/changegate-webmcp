@@ -1,11 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import type { TeamCommand, TeamSession } from "../../merchant-team/contracts";
 import type { OvernightOwner, OvernightQueue } from "../../merchant-team/overnight";
 import { coverageUpdated } from "../../merchant-team/coverage-time";
 import { money } from "../../merchant-team/refund-requests";
+import { canReplayOvernight, overnightReplayHref } from "../../merchant-team/overnight-replay";
 import styles from "./merchant.module.css";
 
 type Props = {
@@ -128,7 +130,9 @@ export function OvernightReviewer({ id, session, send, onSessionError }: Props &
   </section>;
 }
 
-export function OvernightOwnerPanel({ session, send, onSessionError }: Props) {
+export function OvernightOwnerPanel({ session, send, onSessionError, replay }: Props & { replay?: string }) {
+  const router = useRouter();
+  const pendingReplay = useRef<string | undefined>(undefined);
   const [view, setView] = useState<OvernightOwner>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -140,7 +144,8 @@ export function OvernightOwnerPanel({ session, send, onSessionError }: Props) {
       if (loading || controller.signal.aborted) return;
       loading = true;
       try {
-        const data = await send<OvernightOwner>({ action: "overnightOwner" }, { sessionVersion, signal: controller.signal });
+        const data = await send<OvernightOwner>({ action: "overnightOwner", ...(replay && { replay }) },
+          { sessionVersion, signal: controller.signal });
         if (!controller.signal.aborted) setView(data);
       } catch (error) {
         if (!controller.signal.aborted && !onSessionError(error)) setError(message(error));
@@ -155,7 +160,21 @@ export function OvernightOwnerPanel({ session, send, onSessionError }: Props) {
       window.clearInterval(timer);
       window.removeEventListener(coverageUpdated, refresh);
     };
-  }, [sessionVersion, send, onSessionError, busy]);
+  }, [sessionVersion, send, onSessionError, busy, replay]);
+
+  async function startReplay() {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const id = pendingReplay.current ??= crypto.randomUUID();
+      const started = await send<{ id: string }>({ action: "startOvernightReplay", id }, { sessionVersion });
+      router.push(overnightReplayHref(started.id));
+    } catch (error) {
+      if (!onSessionError(error)) setError(message(error));
+      setBusy(false);
+    }
+  }
 
   async function write(command: TeamCommand) {
     setBusy(true);
@@ -168,6 +187,17 @@ export function OvernightOwnerPanel({ session, send, onSessionError }: Props) {
   return <section className={styles.card + " " + styles.overnightPanel} aria-label="Overnight handoff">
     <h2>Overnight handoff</h2>
     <p className={styles.fieldHint}>Managed-service demonstration · Simulated coverage</p>
+    {canReplayOvernight(session) && <div className={styles.actions}>
+      <button type="button" className={styles.primary} disabled={busy} onClick={() => void startReplay()}>Replay overnight review</button>
+      {Boolean(view?.replays?.length) && <details>
+        <summary>Saved overnight replays</summary>
+        <ul>{view?.replays?.map((run, index, runs) => <li key={run.id}>
+          <Link href={overnightReplayHref(run.id)} prefetch={false} aria-current={run.id === replay ? "page" : undefined}>
+            Replay {runs.length - index} · {when(run.createdAt)}
+          </Link>
+        </li>)}</ul>
+      </details>}
+    </div>}
     {error && <p className={styles.formError} role="alert">{error}</p>}
     {!view && !error && <p role="status">Loading handoffs…</p>}
     {view && <>

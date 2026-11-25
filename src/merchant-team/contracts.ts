@@ -75,7 +75,8 @@ export const teamCommand = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("reportCashPayout"), id }),
   z.strictObject({ action: z.literal("cashDrawers"), id: id.optional(), register: z.literal("harbor-bar").optional() }),
   z.strictObject({ action: z.literal("overnightDesk"), id: id.optional() }),
-  z.strictObject({ action: z.literal("overnightOwner") }),
+  z.strictObject({ action: z.literal("overnightOwner"), replay: id.optional() }),
+  z.strictObject({ action: z.literal("startOvernightReplay"), id }),
   z.strictObject({ action: z.literal("coverageSettings") }),
   z.strictObject({ action: z.literal("grantCoverage"), id, location: text(120), reviewer: slug,
     start: z.string().max(16), end: z.string().max(16) }),
@@ -85,7 +86,7 @@ export const teamCommand = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("reassignOvernightCase"), id, reviewer: slug, endedAt: z.iso.datetime() }),
   z.strictObject({ action: z.literal("requestOvernightFollowUp"), id, grantId: id, requestId: id, checked: text(1200), question: text(1200) }),
   z.strictObject({ action: z.literal("replyOvernight"), id, requestId: id, text: text(1200) }),
-  z.strictObject({ action: z.literal("weeklyCashReview"), week: z.iso.date().optional(), location: text(120).optional() }),
+  z.strictObject({ action: z.literal("weeklyCashReview"), week: z.iso.date().optional(), location: text(120).optional(), replay: id.optional() }),
   z.strictObject({ action: z.literal("openCashDrawer"), id, cents: drawerCount, register: z.literal("harbor-bar").optional() }),
   z.strictObject({ action: z.literal("closeCashDrawer"), id, cents: drawerCount }),
   z.strictObject({ action: z.literal("recordDrawerMovement"), id, entryId: id,
@@ -139,6 +140,7 @@ export interface TeamCaseDetail {
   history: CaseHistory[];
   evidence?: CaseEvidence;
   drawerId?: string;
+  overnightReplayId?: string;
 }
 export interface TeamSession {
   sessionVersion: string;

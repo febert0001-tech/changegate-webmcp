@@ -4,6 +4,7 @@ import { PilotReviews } from "./pilot-review";
 import type { PilotCommand } from "./pilot-contracts";
 import { DemoInvites } from "./demo-invites";
 import { OvernightDesk } from "./overnight";
+import { canReplayOvernight, overnightReplayWeek } from "./overnight-replay";
 import { TeamError, type CaseHistory, type Employee, type HistoryKind, type TeamCase, type TeamCaseDetail, type TeamCommand } from "./contracts";
 
 import type { CaseComparison, CaseEvidence, ComparisonEvidence, ImportSummary, RefundFinding, RefundImport, RefundImportResult, Rejection, SavedFinding } from "./refund-csv";
@@ -81,6 +82,13 @@ export class TeamStore {
           PRIMARY KEY (merchant_id, id)
         );
         CREATE INDEX IF NOT EXISTS team_case_queue ON team_cases(merchant_id, updated_at DESC);
+        CREATE TABLE IF NOT EXISTS team_overnight_replays (
+          merchant_id TEXT NOT NULL, id TEXT NOT NULL, open_case_id TEXT NOT NULL,
+          resolved_case_id TEXT NOT NULL, created_at TEXT NOT NULL,
+          PRIMARY KEY (merchant_id, id),
+          FOREIGN KEY (merchant_id, open_case_id) REFERENCES team_cases(merchant_id, id),
+          FOREIGN KEY (merchant_id, resolved_case_id) REFERENCES team_cases(merchant_id, id)
+        );
         CREATE TABLE IF NOT EXISTS team_refund_imports (
           merchant_id TEXT NOT NULL, id TEXT NOT NULL, fingerprint TEXT NOT NULL, imported_at TEXT NOT NULL,
           accepted_count INTEGER NOT NULL, rejected_count INTEGER NOT NULL, finding_count INTEGER NOT NULL,
@@ -219,11 +227,41 @@ export class TeamStore {
     });
   }
 
-  weeklyCashReview(employee: Employee, token: string, week?: string, location?: string) {
+  weeklyCashReview(employee: Employee, token: string, week?: string, location?: string, replay?: string) {
     return this.atomic(() => {
       this.requireActiveSession(employee, token);
       if (!this.drawers) throw new TeamError("DRAWER_NOT_FOUND", 404);
-      return this.drawers.week(employee, week, location, id => this.open(employee, id));
+      if (replay && !canReplayOvernight(employee)) throw new TeamError("COVERAGE_DENIED", 403);
+      return this.drawers.week(employee, week, location, id => this.open(employee, id), replay);
+    });
+  }
+
+  startOvernightReplay(employee: Employee, token: string, id: string, roster: readonly Employee[]) {
+    return this.atomic(() => {
+      this.requireActiveSession(employee, token);
+      if (!this.demo?.includes(employee) || !this.drawers || !this.overnight || !canReplayOvernight(employee))
+        throw new TeamError("COVERAGE_DENIED", 403);
+      if (this.db.prepare("SELECT 1 FROM team_overnight_replays WHERE merchant_id=? AND id=?").get(employee.merchantId, id)) return { id };
+      const cashier = roster.find(member => member.username === "maya" && member.merchantId === employee.merchantId);
+      const reviewer = roster.find(member => member.role === "reviewer" && member.merchantId === employee.merchantId);
+      if (!cashier || !reviewer) throw new TeamError("COVERAGE_DENIED", 403);
+      const at = overnightReplayWeek + "T12:00:00.000Z";
+      const [resolved, pending] = [500, 700].map(shortage => {
+        const caseId = randomUUID();
+        const finding = "Cash drawer discrepancy requiring review · " + money(shortage) + " short";
+        const resolved = shortage === 500;
+        this.db.prepare("INSERT INTO team_cases VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+          .run(employee.merchantId, caseId, "Cash drawer close", resolved ? 2 : 1, employee.username,
+            employee.name, resolved ? "Resolved" : "Investigating", finding, "Confirm the first count and record the investigation outcome.", at);
+        this.addEvent(employee, caseId, "Opened", finding, at);
+        if (resolved) this.addEvent(employee, caseId, "Resolved", "Closed with difference unexplained", at);
+        this.drawers!.insertReplayClose(cashier, randomUUID(), caseId, at, 10000, 10000 - shortage);
+        return caseId;
+      });
+      this.db.prepare("INSERT INTO team_overnight_replays VALUES (?, ?, ?, ?, ?)")
+        .run(employee.merchantId, id, pending!, resolved!, this.now());
+      this.overnight.seedReplayHandoff(reviewer, pending!, randomUUID(), at);
+      return { id };
     });
   }
 
@@ -550,7 +588,7 @@ export class TeamStore {
       desk.settle(employee.merchantId);
       switch (command.action) {
         case "overnightDesk": return desk.desk(employee, command.id);
-        case "overnightOwner": return desk.owner(employee, roster);
+        case "overnightOwner": return desk.owner(employee, roster, command.replay);
         case "coverageSettings": return desk.settings(employee, roster);
         case "grantCoverage": return desk.grant(employee, roster, command.id, command.location, command.reviewer, command);
         case "startDemoCoverage": return desk.grant(employee, roster, command.id, command.location, command.reviewer);
@@ -666,6 +704,9 @@ export class TeamStore {
          WHERE merchant_id=c.merchant_id AND case_id=c.id) AS differenceCents
       FROM team_cases AS c WHERE merchant_id=? AND NOT EXISTS (
         SELECT 1 FROM team_pilot_cases p WHERE p.merchant_id=c.merchant_id AND p.case_id=c.id
+      ) AND NOT EXISTS (
+        SELECT 1 FROM team_overnight_replays r WHERE r.merchant_id=c.merchant_id
+          AND c.id IN (r.open_case_id, r.resolved_case_id)
       ) ORDER BY updated_at DESC, id`)
       .all(employee.merchantId) as unknown as (Omit<TeamCase, "differenceCents"> & { differenceCents: number | null })[];
     return rows.map(({ differenceCents, ...item }) => ({ ...item, ...(differenceCents !== null && { differenceCents }) }));
@@ -685,7 +726,11 @@ export class TeamStore {
       ...(typeof comparison === "string" && { comparison: JSON.parse(comparison) as CaseComparison }),
     } : undefined;
     const drawerId = this.drawers?.forCase(employee, id);
-    return { case: item, history: this.caseHistory(employee.merchantId, id), ...(evidence && { evidence }), ...(drawerId && { drawerId }) };
+    const overnightReplayId = this.db.prepare(`SELECT id FROM team_overnight_replays
+      WHERE merchant_id=? AND ? IN (open_case_id, resolved_case_id)`).get(employee.merchantId, id)?.id as string | undefined;
+    if (overnightReplayId && !canReplayOvernight(employee)) throw new TeamError("CASE_NOT_FOUND", 404);
+    return { case: item, history: this.caseHistory(employee.merchantId, id), ...(evidence && { evidence }),
+      ...(drawerId && { drawerId }), ...(overnightReplayId && { overnightReplayId }) };
   }
 
   isDrawerCase(employee: Employee, id: string) {

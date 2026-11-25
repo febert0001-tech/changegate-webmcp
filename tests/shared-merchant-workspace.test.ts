@@ -2273,6 +2273,53 @@ describe("managed-service demonstration", () => {
     expect(coverageInstant("2026-11-01T01:30")).toBeNull();
     expect(coverageInstant("2026-02-31T22:00")).toBeNull();
   });
+  it("replays a clean overnight review without changing the normal week or prior case history", async () => {
+    const now = () => "2026-11-24T14:00:00.000Z";
+    const users: Employee[] = roster.map(member => ({ ...member, role: member.username === "maya" ? "cashier" : "manager" }));
+    users.push({ ...users[0]!, ...overnightAccounts[0], role: "reviewer" });
+    const server = app(undefined, users, now, undefined, undefined, true, true);
+    const [jordan, maya, alex] = await Promise.all(["jordan", "maya", "alex"].map(username => signIn(server, username)));
+    const first = randomUUID(), second = randomUUID();
+    const start = (id: string) => ({ action: "startOvernightReplay", id });
+    const owner = (replay?: string) => ({ action: "overnightOwner", ...(replay && { replay }) });
+    const week = (replay?: string) => ({ action: "weeklyCashReview", week: "2026-11-23", location: "Harbor Fuel",
+      ...(replay && { replay }) });
+    const totals = async (replay: string) => {
+      const groups = cashWeekGroups((await jordan!.send<CashWeek>(week(replay))).rows);
+      return { short: originalVarianceTotal(groups.short), unresolved: groups.unresolved.length, rows: groups.short.length };
+    };
+    expect((await maya!.request(start(first))).status).toBe(403);
+    expect((await alex!.request(start(first))).status).toBe(403);
+    const baseline = await jordan!.send<CashWeek>(week());
+    expect(await jordan!.send(start(first))).toEqual({ id: first });
+    expect(await jordan!.send(start(first))).toEqual({ id: first });
+    expect(await totals(first)).toEqual({ short: 1200, unresolved: 1, rows: 2 });
+    expect((await jordan!.send<OvernightOwner>(owner())).cases).toEqual([]);
+    const initial = await jordan!.send<OvernightOwner>(owner(first));
+    const pending = initial.cases[0]!;
+    expect(initial.cases).toHaveLength(1);
+    expect(pending).toMatchObject({ variance: -700, responsible: "Store owner",
+      progress: { handoff: { question: "Can you confirm that Maya’s first drawer count was $93.00?" } } });
+    const reply = { action: "replyOvernight", id: pending.id, requestId: pending.progress!.handoff!.requestId,
+      text: "I confirm Maya’s first count was $93.00." };
+    await jordan!.send(reply);
+    expect(await totals(first)).toEqual({ short: 1200, unresolved: 1, rows: 2 });
+    const revision = server.store.open(users[1]!, pending.id).case.revision;
+    await jordan!.send({ action: "resolve", id: pending.id, revision, drawerDisposition: "Closed with difference unexplained" });
+    expect(await totals(first)).toEqual({ short: 1200, unresolved: 0, rows: 2 });
+    await jordan!.send(start(second));
+    expect(await totals(second)).toEqual({ short: 1200, unresolved: 1, rows: 2 });
+    expect(await totals(first)).toEqual({ short: 1200, unresolved: 0, rows: 2 });
+    expect(await jordan!.send<CashWeek>(week())).toEqual(baseline);
+    const archived = server.store.open(users[1]!, pending.id);
+    expect(archived).toMatchObject({ overnightReplayId: first, case: { status: "Resolved" } });
+    expect(archived.history).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "Owner replied", actor: "Jordan Lee", detail: reply.text }),
+      expect.objectContaining({ kind: "Resolved", detail: "Closed with difference unexplained" }),
+    ]));
+    expect((await jordan!.send<OvernightOwner>(owner(second))).replays.map(run => run.id)).toEqual([second, first]);
+  });
+
   it("claims one open drawer case, keeps the owner handoff, and revokes expired access", async () => {
     let now = "2026-11-24T02:59:00.000Z";
     const clock = () => now;

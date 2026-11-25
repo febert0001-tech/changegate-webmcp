@@ -4,6 +4,7 @@ import { demoLocations, demoMerchant } from "./demo-shift";
 import { demoRegister } from "./demo-sales";
 import { discountPolicy } from "./discount-contracts";
 import { TeamError } from "./error";
+import { canReplayOvernight, overnightReplayLocation, overnightReplayWeek } from "./overnight-replay";
 import { canReview } from "./refund-requests";
 import { addCashWeekDays, cashStoreDate, cashTimeZone, cashWeekMonday, drawerDispositions, type CashWeek, type DrawerDisposition } from "./weekly-cash-review";
 
@@ -58,6 +59,15 @@ export class CashDrawers {
   }
 
   private readonly columns = "id, location, register, opened, first_count AS firstCount, case_id AS caseId";
+  private readonly replay = `COALESCE((SELECT r.id FROM team_overnight_replays r
+    WHERE r.merchant_id=team_cash_drawers.merchant_id AND team_cash_drawers.case_id IN (r.open_case_id, r.resolved_case_id)), '')`;
+
+  insertReplayClose(cashier: Employee, id: string, caseId: string, at: string, opening: number, count: number) {
+    this.db.prepare("INSERT INTO team_cash_drawers VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(cashier.merchantId, id, overnightReplayLocation, "Register 1",
+        JSON.stringify({ cents: opening, actor: cashier.name, at }),
+        JSON.stringify({ cents: count, actor: cashier.name, at }), caseId);
+  }
 
   active(employee: Employee, scope: Register) {
     return this.db.prepare(`SELECT ${this.columns} FROM team_cash_drawers
@@ -80,8 +90,9 @@ export class CashDrawers {
   }
 
   private get(employee: Employee, id: string) {
-    const row = this.db.prepare(`SELECT ${this.columns} FROM team_cash_drawers WHERE merchant_id=? AND id=?`)
-      .get(employee.merchantId, id) as DrawerRow | undefined;
+    const row = this.db.prepare(`SELECT ${this.columns} FROM team_cash_drawers
+      WHERE merchant_id=? AND id=? AND (? OR ${this.replay}='')`)
+      .get(employee.merchantId, id, Number(canReplayOvernight(employee))) as DrawerRow | undefined;
     if (!row) throw new TeamError("DRAWER_NOT_FOUND", 404);
     this.assertAccess(employee, row);
     return row;
@@ -113,9 +124,9 @@ export class CashDrawers {
     const scope = demoRegister(employee) && this.assigned(employee, register);
     const rows = (scope
       ? this.db.prepare(`SELECT ${this.columns} FROM team_cash_drawers
-          WHERE merchant_id=? AND location=? AND register=? ORDER BY rowid DESC`)
+          WHERE merchant_id=? AND location=? AND register=? AND ${this.replay}='' ORDER BY rowid DESC`)
         .all(employee.merchantId, scope.location, scope.register)
-      : this.db.prepare(`SELECT ${this.columns} FROM team_cash_drawers WHERE merchant_id=? ORDER BY rowid DESC`)
+      : this.db.prepare(`SELECT ${this.columns} FROM team_cash_drawers WHERE merchant_id=? AND ${this.replay}='' ORDER BY rowid DESC`)
         .all(employee.merchantId)) as unknown as DrawerRow[];
     const active = rows.find(row => !row.firstCount);
     const row = id ? this.get(employee, id) : active ?? rows[0];
@@ -125,15 +136,17 @@ export class CashDrawers {
   }
 
   week(employee: Employee, week: string | undefined, location: string | undefined,
-    openCase: (id: string) => TeamCaseDetail): CashWeek {
+    openCase: (id: string) => TeamCaseDetail, replay?: string): CashWeek {
     this.assertAccess(employee);
     if (!canReview(employee.role)) throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
-    const start = cashWeekMonday(week ?? cashStoreDate(this.now()));
+    if (replay && !this.db.prepare("SELECT 1 FROM team_overnight_replays WHERE merchant_id=? AND id=?").get(employee.merchantId, replay))
+      throw new TeamError("CASE_NOT_FOUND", 404);
+    const start = cashWeekMonday(replay ? overnightReplayWeek : week ?? cashStoreDate(this.now()));
     const end = addCashWeekDays(start, 6);
     const records = this.db.prepare(`SELECT ${this.columns} FROM team_cash_drawers
-      WHERE merchant_id=? AND json_extract(opened, '$.at')>=? AND json_extract(opened, '$.at')<?
+      WHERE merchant_id=? AND ${this.replay}=? AND json_extract(opened, '$.at')>=? AND json_extract(opened, '$.at')<?
       ORDER BY json_extract(opened, '$.at') DESC, id`).all(employee.merchantId,
-        addCashWeekDays(start, -1), addCashWeekDays(end, 2)) as unknown as DrawerRow[];
+        replay ?? "", addCashWeekDays(start, -1), addCashWeekDays(end, 2)) as unknown as DrawerRow[];
     const rows = records.flatMap(row => {
       const item = summary(row);
       const day = cashStoreDate(item.openedAt);

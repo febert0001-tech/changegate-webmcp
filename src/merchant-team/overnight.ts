@@ -6,6 +6,7 @@ import { coverageTimeZone, type CoverageGrant } from "./coverage-time";
 import { demoLocations, demoMerchant } from "./demo-shift";
 import { TeamError } from "./error";
 import { canReview } from "./refund-requests";
+import { canReplayOvernight } from "./overnight-replay";
 
 export const overnightAccounts = [
   { username: "ivy-night", name: "Ivy Brooks" },
@@ -49,7 +50,7 @@ export class OvernightDesk {
     return locations;
   }
 
-  private rows(merchantId: string, location: string) {
+  private rows(merchantId: string, location: string, replay?: string) {
     return this.db.prepare(`
       SELECT c.id, d.location, d.id AS drawerId, c.finding AS reason,
         (SELECT MIN(h.occurred_at) FROM team_history h WHERE h.merchant_id=c.merchant_id AND h.case_id=c.id) AS openedAt,
@@ -58,8 +59,10 @@ export class OvernightDesk {
       JOIN team_cash_drawers d ON d.merchant_id=c.merchant_id AND d.case_id=c.id
       LEFT JOIN team_overnight_cases o ON o.merchant_id=c.merchant_id AND o.case_id=c.id
       WHERE c.merchant_id=? AND d.location=? AND d.first_count IS NOT NULL AND c.status != 'Resolved'
+        AND COALESCE((SELECT r.id FROM team_overnight_replays r
+          WHERE r.merchant_id=c.merchant_id AND r.open_case_id=c.id), '')=?
       ORDER BY openedAt, c.id
-    `).all(merchantId, location) as unknown as CaseRow[];
+    `).all(merchantId, location, replay ?? "") as unknown as CaseRow[];
   }
 
   private summary(row: CaseRow, variance: number) {
@@ -122,11 +125,13 @@ export class OvernightDesk {
       .map(({ username, name }) => ({ username, name }));
   }
 
-  owner(employee: Employee, roster: readonly Employee[]) {
+  owner(employee: Employee, roster: readonly Employee[], replay?: string) {
     this.requireOwner(employee);
+    const presenter = canReplayOvernight(employee);
+    if (replay && !presenter) throw new TeamError("COVERAGE_DENIED", 403);
     const reviewers = this.reviewers(employee, roster);
     const grants = this.grants.list(employee.merchantId);
-    const cases = demoLocations.flatMap(location => this.rows(employee.merchantId, location)).filter(row => row.progress)
+    const cases = demoLocations.flatMap(location => this.rows(employee.merchantId, location, replay)).filter(row => row.progress)
       .map(row => {
         const item = this.queueItem(employee, row);
         const lastAction = this.db.prepare(`
@@ -138,7 +143,16 @@ export class OvernightDesk {
             grant.status === "Active" && grant.location === row.location && grant.reviewer === reviewer.username)) : [];
         return { ...item, lastAction, eligible };
       });
-    return { cases };
+    const replays = presenter ? this.db.prepare(`SELECT id, created_at AS createdAt FROM team_overnight_replays
+      WHERE merchant_id=? ORDER BY rowid DESC`).all(employee.merchantId) as unknown as { id: string; createdAt: string }[] : [];
+    return { cases, replays };
+  }
+
+  seedReplayHandoff(reviewer: Employee, caseId: string, requestId: string, at: string) {
+    const checked = "Compared the opening float and Maya’s first drawer count.";
+    const question = "Can you confirm that Maya’s first drawer count was $93.00?";
+    this.save(reviewer, caseId, { handoff: { requestId, checked, question, actor: reviewer.name, at } },
+      "Owner follow-up requested", `Checked: ${checked}\nQuestion: ${question}`, at);
   }
 
   settings(employee: Employee, roster: readonly Employee[]) {
@@ -229,18 +243,20 @@ export class OvernightDesk {
 
   reply(employee: Employee, roster: readonly Employee[], id: string, requestId: string, text: string) {
     this.requireOwner(employee);
-    const item = this.owner(employee, roster).cases.find(item => item.id === id);
+    const replay = this.db.prepare("SELECT id FROM team_overnight_replays WHERE merchant_id=? AND open_case_id=?")
+      .get(employee.merchantId, id)?.id as string | undefined;
+    const item = this.owner(employee, roster, replay).cases.find(item => item.id === id);
     const progress = item?.progress;
     const handoff = progress?.handoff;
     if (!handoff || handoff.requestId !== requestId) throw new TeamError("CASE_NOT_FOUND", 404);
     if (handoff.reply) {
-      if (handoff.reply.text === text) return this.owner(employee, roster);
+      if (handoff.reply.text === text) return this.owner(employee, roster, replay);
       throw new TeamError("COVERAGE_ALREADY_ANSWERED", 409);
     }
     const at = this.now();
     this.save(employee, id, { ...progress, handoff: { ...handoff, reply: { actor: employee.name, at, text } } },
       "Owner replied", text, at);
-    return this.owner(employee, roster);
+    return this.owner(employee, roster, replay);
   }
 }
 

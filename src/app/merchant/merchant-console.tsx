@@ -14,6 +14,7 @@ import { PilotReviewPanel } from "./pilot-review-panel";
 import { CoverageSettings } from "./coverage-settings";
 import { OvernightOwnerPanel, OvernightReviewer } from "./overnight-panel";
 import { canReview } from "../../merchant-team/refund-requests";
+import { overnightReplayHref } from "../../merchant-team/overnight-replay";
 import { WeeklyCashReviewPanel } from "./weekly-cash-review-panel";
 import { drawerDispositions } from "../../merchant-team/weekly-cash-review";
 import { DemoSalesPanel } from "./demo-sales-panel";
@@ -146,7 +147,7 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
   cashDrawer?: string | true;
   cashDrawerRegister?: "harbor-bar";
   cashDrawerExample?: boolean;
-  cashWeek?: { week?: string; location?: string };
+  cashWeek?: { week?: string; location?: string; replay?: string };
   overnight?: string | true;
   pilot?: string | true;
   inviteAdmin?: boolean;
@@ -308,7 +309,11 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
       <section className={styles.card}><h2>Demo invitations</h2><p>A demo administrator manages invites.</p></section>) : pilot ? <PilotReviewPanel key={String(pilot)} session={session} send={send} onSessionError={clearOnSessionError}
       {...(typeof pilot === "string" && { id: pilot })} /> : overnight ? <section className={styles.card}><h2>Overnight review desk</h2>
       <p>Sign in with your assigned reviewer account to open the desk.</p></section> : cashWeek ? (
-      <WeeklyCashReviewPanel key={session.sessionVersion} initial={cashWeek} session={session} send={send} onSessionError={clearOnSessionError} />
+      <div key={cashWeek.replay ?? "weekly-cash-review"}>
+        {cashWeek.replay && presenter && <OvernightOwnerPanel replay={cashWeek.replay}
+          session={session} send={send} onSessionError={clearOnSessionError} />}
+        <WeeklyCashReviewPanel key={session.sessionVersion} initial={cashWeek} session={session} send={send} onSessionError={clearOnSessionError} />
+      </div>
     ) : cashDrawer ? (
       cashDrawerExample ? (presenter
         ? <CashDrawerPanel key={versionKey(session.sessionVersion, harborBarExampleId)} id={harborBarExampleId}
@@ -388,6 +393,7 @@ export function MerchantConsole({ caseId, imports, importId, reviewSummary, tran
             <div><dt>Status</dt><dd>{item.status}</dd></div>
             <div><dt>Next action</dt><dd>{item.nextAction || "Add a next action."}</dd></div>
           </dl>
+          {detail.overnightReplayId && <Link href={overnightReplayHref(detail.overnightReplayId)} prefetch={false}>Back to overnight replay</Link>}
           {detail.evidence && <section className={styles.importSection} aria-labelledby="import-evidence">
             <h3 id="import-evidence">Source evidence</h3>
             {item.finding !== detail.evidence.finding.explanation && <p>{detail.evidence.finding.explanation}</p>}

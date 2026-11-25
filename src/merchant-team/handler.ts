@@ -52,7 +52,7 @@ const hostedDemoActions = new Set([
   "listPilots", "openPilot", "startPilot", "loadFictionalPilotFile", "savePilotBaseline", "revealPilot", "decidePilotIssue", "addPilotMiss", "savePilotTime", "savePilotDecision",
   "overnightDesk", "overnightOwner", "coverageSettings", "grantCoverage", "startDemoCoverage", "revokeCoverage", "claimOvernightCase", "requestOvernightFollowUp", "replyOvernight", "reassignOvernightCase",
   "signIn", "signOut", "session", "workspace", "demoShift", "shiftOverview", "startDemoShift", "nextDemoEvent", "replayDemoShift",
-  "replayHeldDemoRefund",
+  "replayHeldDemoRefund", "startOvernightReplay",
   "recordDemoSale", "openDemoSale", "lookupOriginalSale", "demoDiscount",
   "refundAlertStatus", "listRefundRequests", "openRefundRequest", "createRefundRequest", "decideRefundRequest",
   "reportCashPayout", "cashDrawers", "openCashDrawer", "closeCashDrawer", "recordDrawerMovement",
@@ -279,7 +279,8 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
             case "recordDrawerMovement":
             case "recordDrawerFollowUp":
             case "openDrawerCase": return json(store.cashDrawer(employee, token, command));
-            case "weeklyCashReview": return json(store.weeklyCashReview(employee, token, command.week, command.location));
+            case "weeklyCashReview": return json(store.weeklyCashReview(employee, token, command.week, command.location, command.replay));
+            case "startOvernightReplay": return json(store.startOvernightReplay(employee, token, command.id, roster));
             case "listRefundRequests": return json(store.refundRequests.list(employee));
             case "shiftOverview": return json(store.shiftOverview(employee,token,command.manual));
             case "recordDemoSale": return json(store.recordDemoSale(employee,token,command));
