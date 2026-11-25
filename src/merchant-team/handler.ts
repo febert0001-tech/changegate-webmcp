@@ -5,6 +5,7 @@ import { TeamError, teamCommand, type Employee, type TeamSession } from "./contr
 import { accessIdentity } from "./cloudflare-access";
 import { canManageDemoInvites, createDemoAccess } from "./demo-access";
 import type { TeamStore } from "./store";
+import { canReplayOvernight } from "./overnight-replay";
 import { alertPublicKey } from "./refund-alerts";
 import { canReview, isDemoSaleReference } from "./refund-requests";
 import { demoRegister } from "./demo-sales";
@@ -189,7 +190,8 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
         case "session": return json(projectSession(employee, version));
         case "workspace": {
           const cases = employee.role === "reviewer" ? [] : store.list(employee);
-          const detail = command.id && cases.some(({ id }) => id === command.id)
+          const detail = command.id && (cases.some(({ id }) => id === command.id) ||
+            (canReplayOvernight(employee) && store.overnightReplayForCase(employee, command.id)))
             ? store.open(employee, command.id) : null;
           return json({ session: projectSession(employee, version), cases, detail });
         }

@@ -2304,7 +2304,13 @@ describe("managed-service demonstration", () => {
       text: "I confirm Maya’s first count was $93.00." };
     await jordan!.send(reply);
     expect(await totals(first)).toEqual({ short: 1200, unresolved: 1, rows: 2 });
-    const revision = server.store.open(users[1]!, pending.id).case.revision;
+    const request = { action: "workspace", id: pending.id };
+    const workspace = await jordan!.send<TeamWorkspaceView>(request);
+    expect(workspace.cases).toEqual([]);
+    expect(workspace.detail).toMatchObject({ overnightReplayId: first, case: { id: pending.id } });
+    expect((await maya!.send<TeamWorkspaceView>(request)).detail).toBeNull();
+    expect((await alex!.send<TeamWorkspaceView>(request)).detail).toBeNull();
+    const revision = workspace.detail!.case.revision;
     await jordan!.send({ action: "resolve", id: pending.id, revision, drawerDisposition: "Closed with difference unexplained" });
     expect(await totals(first)).toEqual({ short: 1200, unresolved: 0, rows: 2 });
     await jordan!.send(start(second));

@@ -712,6 +712,11 @@ export class TeamStore {
     return rows.map(({ differenceCents, ...item }) => ({ ...item, ...(differenceCents !== null && { differenceCents }) }));
   }
 
+  overnightReplayForCase(employee: Employee, id: string): string | undefined {
+    return this.db.prepare(`SELECT id FROM team_overnight_replays
+      WHERE merchant_id=? AND ? IN (open_case_id, resolved_case_id)`).get(employee.merchantId, id)?.id as string | undefined;
+  }
+
   open(employee: Employee, id: string): TeamCaseDetail {
     const item = this.db.prepare(`SELECT ${caseColumns} FROM team_cases AS c WHERE merchant_id=? AND id=? AND NOT EXISTS (
         SELECT 1 FROM team_pilot_cases p WHERE p.merchant_id=c.merchant_id AND p.case_id=c.id
@@ -726,8 +731,7 @@ export class TeamStore {
       ...(typeof comparison === "string" && { comparison: JSON.parse(comparison) as CaseComparison }),
     } : undefined;
     const drawerId = this.drawers?.forCase(employee, id);
-    const overnightReplayId = this.db.prepare(`SELECT id FROM team_overnight_replays
-      WHERE merchant_id=? AND ? IN (open_case_id, resolved_case_id)`).get(employee.merchantId, id)?.id as string | undefined;
+    const overnightReplayId = this.overnightReplayForCase(employee, id);
     if (overnightReplayId && !canReplayOvernight(employee)) throw new TeamError("CASE_NOT_FOUND", 404);
     return { case: item, history: this.caseHistory(employee.merchantId, id), ...(evidence && { evidence }),
       ...(drawerId && { drawerId }), ...(overnightReplayId && { overnightReplayId }) };
