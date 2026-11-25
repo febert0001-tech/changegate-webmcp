@@ -11,7 +11,12 @@ export function refundPreviewScope(request: RefundRequest) {
 
 type Outcome = "Supervisor review" | "Routine" | "Blocked" | "Insufficient evidence";
 type Row = { id: string; amountCents: number; current: Outcome; proposed: Outcome; reason: string };
-export type ThresholdPreview = { currentCents: number; proposedCents: number; added: number; removed: number; insufficient: number; rows: Row[] };
+export type RefundPreviewScope = { location: string; shift?: string | undefined; week?: string | undefined; thresholdCents: number };
+export type ThresholdPreview = {
+  currentCents: number; proposedCents: number; currentReview: number; projectedReview: number;
+  added: number; removed: number; insufficient: number; rows: Row[];
+  period?: { start: string; end: string; timeZone: string };
+};
 
 function outcome(route: RefundCheck["route"]): Outcome {
   if (route === "over-balance") return "Blocked";
@@ -19,7 +24,8 @@ function outcome(route: RefundCheck["route"]): Outcome {
 }
 
 export function previewRefundThreshold(requests: RefundRequest[], currentCents: number, proposedCents: number): ThresholdPreview {
-  const result: ThresholdPreview = { currentCents, proposedCents, added: 0, removed: 0, insufficient: 0, rows: [] };
+  const result: ThresholdPreview = { currentCents, proposedCents, currentReview: 0, projectedReview: 0,
+    added: 0, removed: 0, insufficient: 0, rows: [] };
   for (const request of requests) {
     const amountCents = cents(request.terms.amount);
     const saved = request.events.find(event => event.kind === "Checks recorded")?.check;
@@ -41,6 +47,8 @@ export function previewRefundThreshold(requests: RefundRequest[], currentCents: 
     const current = outcome(evaluate(currentCents).route);
     const proposedCheck = evaluate(proposedCents);
     const proposed = outcome(proposedCheck.route);
+    if (current === "Supervisor review") result.currentReview++;
+    if (proposed === "Supervisor review") result.projectedReview++;
     if (proposed === "Supervisor review" && current !== "Supervisor review") result.added++;
     if (current === "Supervisor review" && proposed !== "Supervisor review") result.removed++;
     const reason = current === "Supervisor review" && proposed === "Routine"

@@ -2157,6 +2157,60 @@ describe("shared merchant workspace", () => {
     expect((await save()).batch.summary.id).toBe(original.batch.summary.id);
   });
 
+  it("combines two shifts in a closed refund preview week and excludes adjacent records", async () => {
+    const users: Employee[] = roster.map(employee => ({
+      ...employee, role: employee.username === "jordan" ? "owner" : "cashier",
+    }));
+    let now = "2026-03-02T05:00:00.000Z";
+    const server = app(undefined, users, () => now);
+    const cashier = await signIn(server, "maya");
+    const owner = await signIn(server, "jordan");
+    const refund = (reference: string, amount: string) => cashier.send<RefundRequest>({
+      action: "createRefundRequest", submissionId: randomUUID(),
+      terms: { reference, amount, currency: "USD", reason: "Synthetic weekly preview" },
+    });
+    const preview = { action: "previewRefundThreshold", location: "Harbor Fuel", thresholdCents: 5001 };
+    const weekly = { ...preview, week: "2026-03-08" };
+    const earlier = await refund("TEST-MONITOR-1", "25.00");
+    const morning = await refund("TEST-MONITOR-1", "25.00");
+    const incomplete = await refund("TEST-MONITOR-3", "3.00");
+    const db = new DatabaseSync(server.path);
+    try {
+      db.prepare(`UPDATE team_refund_request_events SET payload=json_set(payload,'$.check.monitoring.ruleVersion','older-rules')
+        WHERE merchant_id=? AND request_id=? AND json_extract(payload,'$.kind')='Checks recorded'`).run("harbor", incomplete.id);
+    } finally {
+      db.close();
+    }
+    const otherStore = await refund("TEST-SALE-PARTIAL", "21.00");
+    now = "2026-03-09T03:59:59.000Z";
+    const evening = await refund("TEST-SALE-CASH", "50.00");
+    expect((await owner.request(weekly)).status).toBe(422);
+    const before = await Promise.all([morning, evening].map(({ id }) => owner.send({ action: "openRefundRequest", id })));
+    const morningPreview = await owner.send<import("../src/merchant-team/refund-threshold-preview").ThresholdPreview>({ ...preview, shift: "Morning" });
+    const eveningPreview = await owner.send<typeof morningPreview>({ ...preview, shift: "Evening" });
+
+    now = "2026-03-09T04:00:00.000Z";
+    const nextWeek = await refund("TEST-MONITOR-2", "50.00");
+    const result = await owner.send<typeof morningPreview>(weekly);
+    expect(result).toMatchObject({
+      period: { start: "2026-03-02", end: "2026-03-08", timeZone: "America/New_York" },
+      currentCents: 5000, proposedCents: 5001, currentReview: 2, projectedReview: 1,
+      added: 0, removed: 1, insufficient: 1,
+    });
+    for (const count of ["currentReview", "projectedReview", "added", "removed", "insufficient"] as const) {
+      expect(result[count]).toBe(morningPreview[count] + eveningPreview[count]);
+    }
+    expect(result.rows.map(row => row.id).sort()).toEqual([earlier.id, morning.id, incomplete.id, evening.id].sort());
+    expect(result.rows.find(row => row.id === morning.id)).toMatchObject({
+      current: "Supervisor review", proposed: "Routine", reason: expect.stringContaining("$50.00 in cumulative refunds"),
+    });
+    expect(result.rows.some(row => [otherStore.id, nextWeek.id].includes(row.id))).toBe(false);
+    expect((await owner.request({ ...weekly, shift: "Morning" })).status).toBe(400);
+    expect((await owner.request({ ...preview, week: "2026-03-09" })).status).toBe(422);
+    expect(await owner.send({ action: "refundPolicy" })).toEqual({ thresholdCents: 5000 });
+    expect(await Promise.all([morning, evening].map(({ id }) => owner.send({ action: "openRefundRequest", id })))).toEqual(before);
+  });
+
   it("previews the submission check and preserves a later refund recheck", async () => {
     const users: Employee[] = roster.map(employee => ({
       ...employee, role: employee.username === "jordan" ? "owner" : "cashier",

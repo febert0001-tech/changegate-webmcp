@@ -2,15 +2,17 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { refundPreviewScope, type ThresholdPreview } from "../../merchant-team/refund-threshold-preview";
+import { refundPreviewScope, type RefundPreviewScope, type ThresholdPreview } from "../../merchant-team/refund-threshold-preview";
 import { cents, money, type RefundRequest } from "../../merchant-team/refund-requests";
+import { addCashWeekDays, cashStoreDate, cashTimeZone, cashWeekMonday } from "../../merchant-team/weekly-cash-review";
 import styles from "../merchant/merchant.module.css";
 
 export function RefundThresholdPreview({ requests, preview }: {
   requests: RefundRequest[];
-  preview: (location: string, shift: string, thresholdCents: number) => Promise<ThresholdPreview>;
+  preview: (scope: RefundPreviewScope) => Promise<ThresholdPreview>;
 }) {
   const [location, setLocation] = useState("");
+  const [scope, setScope] = useState<"shift" | "week">("shift");
   const [result, setResult] = useState<ThresholdPreview>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -34,7 +36,8 @@ export function RefundThresholdPreview({ requests, preview }: {
       setResult(undefined);
       setError("");
       try {
-        setResult(await preview(location, String(fields.get("shift")), cents(amount)));
+        const selection = scope === "week" ? { week: String(fields.get("week")) } : { shift: String(fields.get("shift")) };
+        setResult(await preview({ location, ...selection, thresholdCents: cents(amount) }));
       } catch (error) {
         setError(error instanceof Error ? error.message : "Preview unavailable.");
       } finally {
@@ -45,18 +48,29 @@ export function RefundThresholdPreview({ requests, preview }: {
         <option value="">Select a store</option>
         {locations.map(item => <option key={item}>{item}</option>)}
       </select></label>
-      <label>Shift<select name="shift" key={location} defaultValue="" required disabled={busy || !location}>
+      <label>Reporting scope<select value={scope} onChange={event => setScope(event.target.value === "week" ? "week" : "shift")} disabled={busy}>
+        <option value="shift">Shift</option>
+        <option value="week">Closed week</option>
+      </select></label>
+      {scope === "shift" ? <label>Shift<select name="shift" key={location} defaultValue="" required disabled={busy || !location}>
         <option value="">Select a shift</option>
         {shifts.map(item => <option key={item}>{item}</option>)}
-      </select></label>
+      </select></label> : <label>Date in closed reporting week
+        <input name="week" type="date" max={addCashWeekDays(cashWeekMonday(cashStoreDate(new Date().toISOString())), -1)}
+          required disabled={busy} />
+        <span className={styles.fieldHint}>Monday through Sunday · {cashTimeZone}</span>
+      </label>}
       <label>Proposed threshold (USD)<input name="proposed" inputMode="decimal" required disabled={busy} /></label>
       <button type="submit" disabled={busy || !location}>Run preview</button>
     </form>
     {error && <p role="alert" className={styles.formError}>{error}</p>}
     {result && <section aria-label="Refund threshold preview results">
+      {result.period && <p>{result.period.start} through {result.period.end} · {result.period.timeZone} · By request submission date</p>}
       <dl className={styles.facts}>
         <div><dt>Current threshold</dt><dd>{money(result.currentCents)}</dd></div>
         <div><dt>Proposed threshold</dt><dd>{money(result.proposedCents)}</dd></div>
+        <div><dt>Current supervisor reviews</dt><dd>{result.currentReview}</dd></div>
+        <div><dt>Projected supervisor reviews</dt><dd>{result.projectedReview}</dd></div>
       </dl>
       <p role="status">Holds added: {result.added} · Holds removed: {result.removed} · Insufficient evidence: {result.insufficient}</p>
       {result.rows.length ? <ul className={styles.queue}>{result.rows.map(row => <li key={row.id}>
@@ -65,8 +79,9 @@ export function RefundThresholdPreview({ requests, preview }: {
           <div><dt>Current policy</dt><dd>{row.current}</dd></div>
           <div><dt>Proposed policy</dt><dd>{row.proposed}</dd></div>
         </dl>
-        <p>{row.reason}</p>
-      </li>)}</ul> : <p>No saved requests for this store and shift.</p>}
+        {row.current !== row.proposed ? <details><summary>Why this changes</summary><p>{row.reason}</p></details> :
+          <p>{row.reason}</p>}
+      </li>)}</ul> : <p>No saved requests for this store and reporting period.</p>}
     </section>}
   </details>;
 }

@@ -251,8 +251,8 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       </section>}
       {canPreviewRefundThreshold(session, Boolean(session.demoShift))&&<section className={styles.importSection}>
         <h3>Owner settings</h3>
-        <RefundThresholdPreview requests={rows} preview={(location,shift,thresholdCents)=>
-          api<ThresholdPreview>({action:"previewRefundThreshold",location,shift,thresholdCents})} />
+        <RefundThresholdPreview requests={rows} preview={scope=>
+          api<ThresholdPreview>({action:"previewRefundThreshold",...scope})} />
         {session.role==="owner"&&!session.syntheticOnly&&<><h4>Owner activity</h4>
         {threshold!==undefined&&<form className={styles.formRow} onSubmit={event=>{
           event.preventDefault();

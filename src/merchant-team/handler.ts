@@ -279,7 +279,7 @@ export function createTeamWorkspace(store: TeamStore, roster: readonly Employee[
               if (!canPreviewRefundThreshold(employee, Boolean(store.demo?.includes(employee)))) {
                 throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
               }
-              return json(store.refundRequests.previewThreshold(employee, command.location, command.shift, command.thresholdCents));
+              return json(store.refundRequests.previewThreshold(employee, command));
             case "setRefundPolicy": return json(store.setRefundPolicy(employee,token,command.thresholdCents));
             case "reportCashPayout": return json(store.reportCashPayout(employee,token,command.id,hostedDemo));
             case "cashDrawers":

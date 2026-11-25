@@ -4,7 +4,8 @@ import type { Employee } from "./contracts";
 import type { RefundAlertStore } from "./refund-alert-store";
 import { assessSize, individualLimitCents, repeatWatchThreshold, ruleVersion, syntheticRegisterDrift, watchWindowMs } from "./refund-monitor-rules";
 import { TeamError } from "./error";
-import { previewRefundThreshold, refundPreviewScope } from "./refund-threshold-preview";
+import { previewRefundThreshold, type RefundPreviewScope } from "./refund-threshold-preview";
+import { addCashWeekDays, cashStoreDate, cashTimeZone, cashWeekMonday } from "./weekly-cash-review";
 import { canReview, cents, checks, executionStopped, money, payout, providerName, providerResponse, providerVerification,
   requestDecision, requestStatus, routeVerifiedRefund, saleProvider, testSale, thresholdReason, type ElectronicAttemptTerms,
   type ElectronicSaleEvidence, type ProviderRefundEvidence, type ProviderRefundResponse, type RefundCheck,
@@ -50,7 +51,7 @@ export class RefundRequestStore {
   }
 
   private select() {
-    return `SELECT r.id,r.terms,r.sale,
+    return `SELECT r.id,r.terms,r.sale,r.created_at AS createdAt,
       (SELECT json_group_array(json(e.payload)) FROM (
         SELECT payload FROM team_refund_request_events WHERE merchant_id=r.merchant_id AND request_id=r.id ORDER BY sequence
       ) e) AS events FROM team_refund_requests r`;
@@ -96,13 +97,27 @@ export class RefundRequestStore {
     const row=this.db.prepare("SELECT threshold_cents AS threshold FROM team_refund_policy WHERE merchant_id=?").get(employee.merchantId);
     return { thresholdCents: typeof row?.threshold === "number" ? row.threshold : 5000 };
   }
-  previewThreshold(employee: Employee, location: string, shift: string, proposedCents: number) {
+  previewThreshold(employee: Employee, { location, shift, week, thresholdCents }: RefundPreviewScope) {
     const currentCents = this.policy(employee).thresholdCents;
-    const requests = this.list(employee).filter(request => {
-      const scope = refundPreviewScope(request);
-      return scope.location === location && scope.shift === shift;
-    });
-    return previewRefundThreshold(requests, currentCents, proposedCents);
+    const scope = this.select() + " WHERE r.merchant_id=? AND COALESCE(json_extract(r.sale,'$.location'),'Unavailable')=?";
+    if (week === undefined) {
+      const rows = this.db.prepare(scope + " AND COALESCE(json_extract(r.sale,'$.shift'),'Unavailable')=? ORDER BY r.created_at DESC,r.id")
+        .all(employee.merchantId, location, shift!) as unknown as RequestRow[];
+      return previewRefundThreshold(rows.map(project), currentCents, thresholdCents);
+    }
+
+    const start = cashWeekMonday(week);
+    const next = addCashWeekDays(start, 7);
+    if (next > cashStoreDate(this.now())) throw new TeamError("REFUND_PREVIEW_WEEK_OPEN", 422);
+    // Narrow the UTC query, then apply the reporting calendar at the store's local midnight.
+    const rows = this.db.prepare(scope + " AND r.created_at>=? AND r.created_at<? ORDER BY r.created_at DESC,r.id")
+      .all(employee.merchantId, location, start, addCashWeekDays(next, 1)) as unknown as (RequestRow & { createdAt: string })[];
+    const requests = rows.filter(row => {
+      const day = cashStoreDate(row.createdAt);
+      return day >= start && day < next;
+    }).map(project);
+    return { ...previewRefundThreshold(requests, currentCents, thresholdCents),
+      period: { start, end: addCashWeekDays(start, 6), timeZone: cashTimeZone } };
   }
   setPolicy(employee: Employee, thresholdCents: number) {
     if (employee.role !== "owner") throw new TeamError("TRANSACTION_ROLE_REQUIRED",403);
