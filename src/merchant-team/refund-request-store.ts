@@ -12,6 +12,7 @@ import { canReview, cents, checks, executionStopped, money, payout, providerName
   type RefundDecision, type RefundRequest, type RefundTerms, type RefundVerification, type RefundWatchEntry, type TestSale, type TransactionEvent } from "./refund-requests";
 
 type RequestRow = { id: string; terms: string; sale: string; events: string };
+const defaultThresholdCents = 5000;
 const project = (row: RequestRow): RefundRequest => ({
   id: row.id, terms: JSON.parse(row.terms), sale: JSON.parse(row.sale), events: JSON.parse(row.events),
 });
@@ -106,7 +107,7 @@ export class RefundRequestStore {
 
   policy(employee: Employee) {
     const row=this.db.prepare("SELECT threshold_cents AS threshold FROM team_refund_policy WHERE merchant_id=?").get(employee.merchantId);
-    return { thresholdCents: typeof row?.threshold === "number" ? row.threshold : 5000 };
+    return { thresholdCents: typeof row?.threshold === "number" ? row.threshold : defaultThresholdCents };
   }
   previewThreshold(employee: Employee, { location, shift, week, thresholdCents }: RefundPreviewScope) {
     const currentCents = this.policy(employee).thresholdCents;
@@ -133,10 +134,18 @@ export class RefundRequestStore {
   }
   policyHistory(employee: Employee): RefundPolicyHistory {
     if (employee.role !== "owner") throw new TeamError("TRANSACTION_ROLE_REQUIRED", 403);
-    const changes = this.db.prepare(`SELECT preview_id AS id, location, actor, effective_at AS effectiveAt,
-      old_cents AS oldCents, new_cents AS newCents FROM team_refund_policy_changes WHERE merchant_id=? ORDER BY sequence DESC`)
-      .all(employee.merchantId) as unknown as RefundPolicyHistory["changes"];
-    return { ...this.policy(employee), changes };
+    const { merchantId } = employee;
+    // Read the active amount and its history in one SQLite snapshot.
+    const snapshot = this.db.prepare(`SELECT
+      COALESCE((SELECT threshold_cents FROM team_refund_policy WHERE merchant_id=?), ?) AS thresholdCents,
+      (SELECT json_group_array(json_object(
+        'id', preview_id, 'location', location, 'actor', actor, 'effectiveAt', effective_at,
+        'oldCents', old_cents, 'newCents', new_cents
+      )) FROM (
+        SELECT preview_id, location, actor, effective_at, old_cents, new_cents
+        FROM team_refund_policy_changes WHERE merchant_id=? ORDER BY sequence DESC
+      )) AS changes`).get(merchantId, defaultThresholdCents, merchantId) as { thresholdCents: number; changes: string };
+    return { thresholdCents: snapshot.thresholdCents, changes: JSON.parse(snapshot.changes) };
   }
 
   private policyRevision(merchantId: string) {

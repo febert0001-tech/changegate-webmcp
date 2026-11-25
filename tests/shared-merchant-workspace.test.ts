@@ -2173,8 +2173,9 @@ describe("shared merchant workspace", () => {
       { ...roles[0]!, username: "second-owner", name: "Harbor Co-owner", role: "owner" });
     let now = "2026-11-25T15:00:00.000Z";
     const server = app(undefined, roles, () => now);
+    const secondConnection = app(server.path, roles, () => now);
     const owner = await signIn(server, "owner");
-    const coOwner = await signIn(server, "second-owner");
+    const coOwner = await signIn(secondConnection, "second-owner");
     const cashier = await signIn(server, "maya");
     const manager = await signIn(server, "jordan");
     const ridge = await signIn(server, "alex");
@@ -2190,13 +2191,23 @@ describe("shared merchant workspace", () => {
     const stale = await prepareThreshold(coOwner, 4500);
     expect(await owner.send(history)).toEqual({ thresholdCents: 5000, changes: [] });
     expect((await cashier.request(change)).status).toBe(403);
+    expect((await cashier.request(history)).status).toBe(403);
+    expect((await manager.request(change)).status).toBe(403);
+    expect((await coOwner.request(change)).status).toBe(409);
     expect((await ridge.request(change)).status).toBe(409);
     now = "2026-11-25T15:01:00.000Z";
     const applied = { thresholdCents: 3600, changes: [{
       id: change.previewId, location: "Harbor Fuel", actor: "Harbor Owner",
       effectiveAt: now, oldCents: 5000, newCents: 3600,
     }] };
-    expect(await Promise.all([owner.send(change), owner.send(change)])).toEqual([applied, applied]);
+    const [firstSave, retry] = await Promise.all([
+      owner.send(change),
+      secondConnection.request(change, owner.key, { sessionVersion: owner.user.sessionVersion }),
+    ]);
+    expect(firstSave).toEqual(applied);
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toEqual(applied);
+    expect(await coOwner.send(history)).toEqual(applied);
     const rejection = await coOwner.request(stale);
     expect(rejection.status).toBe(409);
     expect(await rejection.json()).toEqual({ error: "REFUND_POLICY_PREVIEW_STALE" });
@@ -2252,6 +2263,12 @@ describe("shared merchant workspace", () => {
     for (const [server, username] of [[hosted, "maya"], [hosted, "alex"], [local, "jordan"]] as const) {
       expect((await (await signIn(server, username)).request(preview)).status).toBe(403);
     }
+    const hostedOwner = await signIn(hosted, "alex");
+    const hostedPreview = await hostedOwner.send({
+      action: "previewRefundThreshold", location: "Harbor Fuel", week: "2026-11-18", thresholdCents: 3600, prepareChange: true,
+    });
+    expect(hostedPreview).not.toHaveProperty("changePreviewId");
+    expect((await hostedOwner.request({ action: "setRefundPolicy", previewId: randomUUID() })).status).toBe(404);
   });
 
   it("combines two shifts in a closed refund preview week and excludes adjacent records", async () => {
