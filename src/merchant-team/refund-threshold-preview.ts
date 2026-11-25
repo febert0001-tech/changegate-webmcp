@@ -22,6 +22,26 @@ export type RefundPolicyHistory = {
   thresholdCents: number;
   changes: { id: string; location: string; actor: string; effectiveAt: string; oldCents: number; newCents: number }[];
 };
+
+export function receiptThresholdEvidence(request: RefundRequest, history?: RefundPolicyHistory) {
+  const firstCheck = request.events.find(event => event.kind === "Checks recorded");
+  const saved = firstCheck?.check.thresholdCents;
+  const thresholdCents = typeof saved === "number" && Number.isSafeInteger(saved) && saved >= 0 ? saved : undefined;
+  const checkedAt = Date.parse(firstCheck?.occurredAt ?? "");
+  if (!history || thresholdCents === undefined || !Number.isFinite(checkedAt)) return { thresholdCents };
+
+  // The audit log is newest first. An identical timestamp cannot establish which write came first.
+  let newest = Infinity;
+  let change: RefundPolicyHistory["changes"][number] | undefined;
+  for (const entry of history.changes) {
+    const changedAt = Date.parse(entry.effectiveAt);
+    if (!Number.isFinite(changedAt) || changedAt === checkedAt || changedAt > newest) return { thresholdCents };
+    if (!change && changedAt < checkedAt) change = entry;
+    newest = changedAt;
+  }
+  return { thresholdCents, change: change?.newCents === thresholdCents ? change : undefined };
+}
+
 export type ThresholdPreview = {
   currentCents: number; proposedCents: number; currentReview: number; projectedReview: number;
   added: number; removed: number; insufficient: number; rows: Row[];
