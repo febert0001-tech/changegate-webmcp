@@ -27,6 +27,7 @@
       "feat/pinned-harbor-cash-example": false,
       "feat/overnight-review-replay": false,
       "feat/refund-threshold-preview": false,
+      "feat/closed-week-threshold-preview": false,
       "main": false
     }
   }

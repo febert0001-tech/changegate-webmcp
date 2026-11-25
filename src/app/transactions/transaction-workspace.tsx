@@ -14,7 +14,7 @@ import { PhoneAlerts } from "./phone-alerts";
 import { RefundHistory } from "./refund-history";
 import { useTransactionTools } from "./use-transaction-tools";
 import { RefundThresholdPreview } from "./refund-threshold-preview";
-import { canPreviewRefundThreshold, type ThresholdPreview } from "../../merchant-team/refund-threshold-preview";
+import { canPreviewRefundThreshold, canPreviewSyntheticRefundWeek, type ThresholdPreview } from "../../merchant-team/refund-threshold-preview";
 import styles from "../merchant/merchant.module.css";
 
 type Send = <T>(command: TeamCommand, options?: { signal?: AbortSignal; sessionVersion?: string }) => Promise<T>;
@@ -251,8 +251,10 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       </section>}
       {canPreviewRefundThreshold(session, Boolean(session.demoShift))&&<section className={styles.importSection}>
         <h3>Owner settings</h3>
-        <RefundThresholdPreview requests={rows} preview={(location,shift,thresholdCents)=>
-          api<ThresholdPreview>({action:"previewRefundThreshold",location,shift,thresholdCents})} />
+        <RefundThresholdPreview requests={rows} preview={scope=>
+          api<ThresholdPreview>({action:"previewRefundThreshold",...scope})}
+          previewExample={canPreviewSyntheticRefundWeek(session, Boolean(session.demoShift)) ? thresholdCents=>
+            api<ThresholdPreview>({action:"previewSyntheticRefundWeek",thresholdCents}) : undefined} />
         {session.role==="owner"&&!session.syntheticOnly&&<><h4>Owner activity</h4>
         {threshold!==undefined&&<form className={styles.formRow} onSubmit={event=>{
           event.preventDefault();

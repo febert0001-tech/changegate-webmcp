@@ -69,6 +69,7 @@ const errors: Record<string, string> = {
   ASSIGNEE_UNAVAILABLE: "Select an employee from your merchant workspace.",
   FINDING_REQUIRED: "Record a finding and next action before resolving this case.",
   INVALID_COMMAND: "Check the required fields and try again.",
+  REFUND_PREVIEW_WEEK_OPEN: "Choose a reporting week that has already ended.",
   IMPORT_NOT_FOUND: "This import is unavailable in your workspace.",
   DISPOSITION_CHANGED: "A coworker updated this disposition. Reload the summary before saving again.",
   ALERT_DEVICE_IN_USE: "This device belongs to another supervisor. Unsubscribe from that account first.",
