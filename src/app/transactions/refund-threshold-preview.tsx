@@ -7,10 +7,12 @@ import { cents, money, type RefundRequest } from "../../merchant-team/refund-req
 import { addCashWeekDays, cashStoreDate, cashTimeZone, cashWeekMonday } from "../../merchant-team/weekly-cash-review";
 import styles from "../merchant/merchant.module.css";
 
-export function RefundThresholdPreview({ requests, preview, previewExample }: {
+export function RefundThresholdPreview({ requests, preview, previewExample, applyChange, merchantName }: {
   requests: RefundRequest[];
   preview: (scope: RefundPreviewScope) => Promise<ThresholdPreview>;
   previewExample?: ((thresholdCents: number) => Promise<ThresholdPreview>) | undefined;
+  applyChange?: ((previewId: string) => Promise<void>) | undefined;
+  merchantName: string;
 }) {
   const [location, setLocation] = useState("");
   const [scope, setScope] = useState<"shift" | "week">("shift");
@@ -18,14 +20,29 @@ export function RefundThresholdPreview({ requests, preview, previewExample }: {
   const [result, setResult] = useState<ThresholdPreview>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [confirming, setConfirming] = useState(false);
   const scopes = requests.map(refundPreviewScope);
   const locations = [...new Set(scopes.map(scope => scope.location))].sort();
   const shifts = [...new Set(scopes.filter(scope => scope.location === location).map(scope => scope.shift))].sort();
 
+  async function confirmChange() {
+    if (busy || !applyChange || !result?.changePreviewId) return;
+    setBusy(true);
+    try {
+      await applyChange(result.changePreviewId);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Could not apply the threshold.");
+    } finally {
+      setConfirming(false);
+      setResult(undefined);
+      setBusy(false);
+    }
+  }
+
   return <details className={styles.importSection}>
     <summary>Preview refund threshold</summary>
     <p>Compare the current policy with a proposed USD threshold using the evidence saved when each request was submitted.</p>
-    <form className={styles.formRow} onChange={() => { setResult(undefined); setError(""); }} onSubmit={async event => {
+    <form className={styles.formRow} onChange={() => { setResult(undefined); setError(""); setConfirming(false); }} onSubmit={async event => {
       event.preventDefault();
       if (busy) return;
       const fields = new FormData(event.currentTarget);
@@ -37,6 +54,7 @@ export function RefundThresholdPreview({ requests, preview, previewExample }: {
       setBusy(true);
       setResult(undefined);
       setError("");
+      setConfirming(false);
       try {
         const thresholdCents = cents(amount);
         if (example && previewExample) {
@@ -89,6 +107,15 @@ export function RefundThresholdPreview({ requests, preview, previewExample }: {
         <div><dt>Projected supervisor reviews</dt><dd>{result.projectedReview}</dd></div>
       </dl>
       <p role="status">Holds added: {result.added} · Holds removed: {result.removed} · Insufficient evidence: {result.insufficient}</p>
+      {applyChange && result.changePreviewId && result.proposedCents !== result.currentCents && (
+        confirming ? <section aria-label="Confirm threshold change">
+          <h4>Confirm threshold change</h4>
+          <p>You previewed {location}. This threshold applies to all stores in {merchantName}.</p>
+          <p><strong>Current {money(result.currentCents)} → Proposed {money(result.proposedCents)}</strong></p>
+          <button type="button" disabled={busy} onClick={() => void confirmChange()}>Confirm and apply threshold</button>
+          <button type="button" disabled={busy} onClick={() => setConfirming(false)}>Cancel</button>
+        </section> : <button type="button" onClick={() => setConfirming(true)}>Review threshold change</button>
+      )}
       {result.rows.length ? <ul className={styles.queue}>{result.rows.map(row => <li key={row.id}>
         {example ? <strong>{money(row.amountCents)} synthetic refund request</strong> :
           <Link href={"/transactions/" + row.id + "/receipt"} prefetch={false} target="_blank" rel="noopener">

@@ -18,10 +18,15 @@ export function refundPreviewScope(request: RefundRequest) {
 type Outcome = "Supervisor review" | "Routine" | "Blocked" | "Insufficient evidence";
 type Row = { id: string; amountCents: number; current: Outcome; proposed: Outcome; reason: string };
 export type RefundPreviewScope = { location: string; shift?: string | undefined; week?: string | undefined; thresholdCents: number };
+export type RefundPolicyHistory = {
+  thresholdCents: number;
+  changes: { id: string; location: string; actor: string; effectiveAt: string; oldCents: number; newCents: number }[];
+};
 export type ThresholdPreview = {
   currentCents: number; proposedCents: number; currentReview: number; projectedReview: number;
   added: number; removed: number; insufficient: number; rows: Row[];
   period?: { start: string; end: string; timeZone: string };
+  changePreviewId?: string;
 };
 
 function outcome(route: RefundCheck["route"]): Outcome {

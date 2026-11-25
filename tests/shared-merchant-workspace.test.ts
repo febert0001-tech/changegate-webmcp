@@ -96,6 +96,14 @@ async function signIn(server: Pick<ReturnType<typeof app>, "request">, username:
   };
 }
 
+async function prepareThreshold(owner: Awaited<ReturnType<typeof signIn>>, thresholdCents: number, location = "Harbor Fuel") {
+  const preview = await owner.send<import("../src/merchant-team/refund-threshold-preview").ThresholdPreview>({
+    action: "previewRefundThreshold", location, shift: "Evening", thresholdCents, prepareChange: true,
+  });
+  if (!preview.changePreviewId) throw Error("The owner preview did not authorize a change.");
+  return { action: "setRefundPolicy", previewId: preview.changePreviewId };
+}
+
 describe("local Harbor Bar discount approval", () => {
   const action = (command: DiscountCommand) => ({ action: "demoDiscount", command });
 
@@ -152,7 +160,7 @@ describe("local Harbor Bar discount approval", () => {
     const [maya, robin, jordan, owner] = await Promise.all(
       ["maya", "qa-cashier-b", "jordan", "shop-owner"].map(user => signIn(server, user)),
     );
-    await owner!.send({ action: "setRefundPolicy", thresholdCents: 2000 });
+    await owner!.send(await prepareThreshold(owner!, 2000, "Harbor Bar"));
     const shiftA = randomUUID(), shiftB = randomUUID();
     const reference = "DEMO-SALE-" + randomUUID();
     await maya!.send({ action: "openCashDrawer", id: shiftA, cents: 10000, register: "harbor-bar" });
@@ -1371,7 +1379,7 @@ describe("PayPal Sandbox refunds with simulated transport", () => {
       { ...users[0]!, username: "pay-owner", role: "owner" }];
     const server = app(undefined, roles, undefined, undefined, mock.provider);
     const owner = await signIn(server, "pay-owner");
-    await owner.send({ action: "setRefundPolicy", thresholdCents: 25000 });
+    await owner.send(await prepareThreshold(owner, 25000));
     const first = await signIn(server, "maya");
     const second = await signIn(server, "jordan");
     const third = await signIn(server, "pay-operator");
@@ -1599,7 +1607,7 @@ describe("PayPal Sandbox refunds with simulated transport", () => {
 
     if (change === "lowered threshold") {
       const owner = await signIn(server, "pay-owner");
-      await owner.send({ action: "setRefundPolicy", thresholdCents: 2000 });
+      await owner.send(await prepareThreshold(owner, 2000));
     } else {
       mock.priorRefunds.push({ ...pendingPrior, amount: "30.00" });
     }
@@ -2157,6 +2165,61 @@ describe("shared merchant workspace", () => {
     expect((await save()).batch.summary.id).toBe(original.batch.summary.id);
   });
 
+  it("applies an owner-previewed policy once, preserves refund evidence, and rejects stale revisions", async () => {
+    const roles: Employee[] = roster.map(user => ({
+      ...user, role: user.username === "jordan" ? "manager" : user.username === "alex" ? "owner" : "cashier",
+    }));
+    roles.push({ ...roles[0]!, username: "owner", name: "Harbor Owner", role: "owner" },
+      { ...roles[0]!, username: "second-owner", name: "Harbor Co-owner", role: "owner" });
+    let now = "2026-11-25T15:00:00.000Z";
+    const server = app(undefined, roles, () => now);
+    const owner = await signIn(server, "owner");
+    const coOwner = await signIn(server, "second-owner");
+    const cashier = await signIn(server, "maya");
+    const manager = await signIn(server, "jordan");
+    const ridge = await signIn(server, "alex");
+    const request = (reference: string, amount: string) => cashier.send<RefundRequest>({
+      action: "createRefundRequest", submissionId: randomUUID(),
+      terms: { reference, amount, currency: "USD", reason: "Synthetic policy audit" },
+    });
+    const history = { action: "refundPolicyHistory" };
+    const first = await request("TEST-SALE-PARTIAL", "21.00");
+    const approved = await manager.send<RefundRequest>({ action: "decideRefundRequest", id: first.id, decision: "Approved", password });
+
+    const change = await prepareThreshold(owner, 3600);
+    const stale = await prepareThreshold(coOwner, 4500);
+    expect(await owner.send(history)).toEqual({ thresholdCents: 5000, changes: [] });
+    expect((await cashier.request(change)).status).toBe(403);
+    expect((await ridge.request(change)).status).toBe(409);
+    now = "2026-11-25T15:01:00.000Z";
+    const applied = { thresholdCents: 3600, changes: [{
+      id: change.previewId, location: "Harbor Fuel", actor: "Harbor Owner",
+      effectiveAt: now, oldCents: 5000, newCents: 3600,
+    }] };
+    expect(await Promise.all([owner.send(change), owner.send(change)])).toEqual([applied, applied]);
+    const rejection = await coOwner.request(stale);
+    expect(rejection.status).toBe(409);
+    expect(await rejection.json()).toEqual({ error: "REFUND_POLICY_PREVIEW_STALE" });
+    const fresh = await request("TEST-SALE-CASH", "36.00");
+    expect(checks(fresh)).toMatchObject({ thresholdCents: 3600, route: "manager", monitoring: {
+      reasons: ["Cumulative refunds would reach $36.00, meeting or exceeding the $36.00 store threshold."],
+    } });
+
+    const restore = await prepareThreshold(owner, 5000);
+    now = "2026-11-25T15:02:00.000Z";
+    const restored = { thresholdCents: 5000, changes: [{
+      id: restore.previewId, location: "Harbor Fuel", actor: "Harbor Owner",
+      effectiveAt: now, oldCents: 3600, newCents: 5000,
+    }, ...applied.changes] };
+    expect(await owner.send(restore)).toEqual(restored);
+    expect(await owner.send(change)).toEqual(restored);
+    expect((await coOwner.request(stale)).status).toBe(409);
+    expect(await ridge.send(history)).toEqual({ thresholdCents: 5000, changes: [] });
+    const reopened = await manager.send<RefundRequest>({ action: "openRefundRequest", id: first.id });
+    expect(reopened).toEqual(approved);
+    expect(requestReceipt(reopened)).toEqual({ ...requestReceipt(approved), exportedAt: expect.any(String) });
+  });
+
   it("replays the synthetic closed week without reading or changing the saved threshold or requests", async () => {
     const users: Employee[] = roster.map(employee => ({
       ...employee, role: employee.username === "jordan" ? "manager" : employee.username === "alex" ? "owner" : "cashier",
@@ -2305,8 +2368,8 @@ describe("shared merchant workspace", () => {
     const manager = await signIn(server, "jordan");
     const owner = await signIn(server, "owner");
     const outsider = await signIn(server, "alex");
-    expect((await cashier.request({ action: "setRefundPolicy", thresholdCents: 5000 })).status).toBe(403);
-    expect(await owner.send({ action: "setRefundPolicy", thresholdCents: 5000 })).toEqual({ thresholdCents: 5000 });
+    expect((await cashier.request({ action: "setRefundPolicy", previewId: randomUUID() })).status).toBe(403);
+    expect(await owner.send(await prepareThreshold(owner, 5000))).toEqual({ thresholdCents: 5000, changes: [] });
     const command = (reference: string, amount: string) => ({ action: "createRefundRequest", submissionId: randomUUID(),
       terms: { reference, amount, currency: "USD", reason: "Test correction" } });
     const preview = (thresholdCents: number, location = "Harbor Bar", shift = "Evening") =>

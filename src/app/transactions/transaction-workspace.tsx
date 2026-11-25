@@ -14,7 +14,7 @@ import { PhoneAlerts } from "./phone-alerts";
 import { RefundHistory } from "./refund-history";
 import { useTransactionTools } from "./use-transaction-tools";
 import { RefundThresholdPreview } from "./refund-threshold-preview";
-import { canPreviewRefundThreshold, canPreviewSyntheticRefundWeek, type ThresholdPreview } from "../../merchant-team/refund-threshold-preview";
+import { canPreviewRefundThreshold, canPreviewSyntheticRefundWeek, type RefundPolicyHistory, type ThresholdPreview } from "../../merchant-team/refund-threshold-preview";
 import styles from "../merchant/merchant.module.css";
 
 type Send = <T>(command: TeamCommand, options?: { signal?: AbortSignal; sessionVersion?: string }) => Promise<T>;
@@ -66,7 +66,7 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
   const [rows,setRows]=useState<RefundRequest[]>([]);
   const [record,setRecord]=useState<RefundRequest>();
   const [alertStatus,setAlertStatus]=useState<AlertView[]>([]);
-  const [threshold,setThreshold]=useState<number>();
+  const [policy,setPolicy]=useState<RefundPolicyHistory>();
   const [query,setQuery]=useState("");
   const [location,setLocation]=useState("");
   const [register,setRegister]=useState("");
@@ -121,8 +121,8 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       }
     }
     void load();
-    if(!id&&session.role==="owner"&&!session.syntheticOnly)void send<{thresholdCents:number}>({action:"refundPolicy"},options)
-      .then(result=>{if(!controller.signal.aborted)setThreshold(result.thresholdCents);})
+    if(!id&&session.role==="owner"&&!session.syntheticOnly)void send<RefundPolicyHistory>({action:"refundPolicyHistory"},options)
+      .then(result=>{if(!controller.signal.aborted)setPolicy(result);})
       .catch(e=>{if(!controller.signal.aborted&&!onSessionError(e))setError("Could not load the refund policy.");});
     const timer=id||manager||session.demoShift ? window.setInterval(()=>{if(document.visibilityState==="visible")void load();},5000):undefined;
     return()=>{controller.abort();if(timer!==undefined)window.clearInterval(timer);};
@@ -251,24 +251,24 @@ export function TransactionWorkspace({destination,session,send,onSessionError}: 
       </section>}
       {canPreviewRefundThreshold(session, Boolean(session.demoShift))&&<section className={styles.importSection}>
         <h3>Owner settings</h3>
-        <RefundThresholdPreview requests={rows} preview={scope=>
-          api<ThresholdPreview>({action:"previewRefundThreshold",...scope})}
+        <RefundThresholdPreview requests={rows} merchantName={session.merchantName} preview={scope=>
+          api<ThresholdPreview>({action:"previewRefundThreshold",...scope,
+            ...(session.role==="owner"&&!session.syntheticOnly&&{prepareChange:true as const})})}
           previewExample={canPreviewSyntheticRefundWeek(session, Boolean(session.demoShift)) ? thresholdCents=>
-            api<ThresholdPreview>({action:"previewSyntheticRefundWeek",thresholdCents}) : undefined} />
+            api<ThresholdPreview>({action:"previewSyntheticRefundWeek",thresholdCents}) : undefined}
+          applyChange={session.role==="owner"&&!session.syntheticOnly ? async previewId=>{
+            setPolicy(await api<RefundPolicyHistory>({action:"setRefundPolicy",previewId}));
+            setNotice("Approval threshold applied.");
+          } : undefined} />
         {session.role==="owner"&&!session.syntheticOnly&&<><h4>Owner activity</h4>
-        {threshold!==undefined&&<form className={styles.formRow} onSubmit={event=>{
-          event.preventDefault();
-          const amount=value(new FormData(event.currentTarget),"threshold");
-          void run(async()=>{
-            if(!/^\d{1,10}(\.\d{1,2})?$/.test(amount))throw Error("Enter a USD amount with up to two decimal places.");
-            const result=await api<{thresholdCents:number}>({action:"setRefundPolicy",thresholdCents:cents(amount)});
-            setThreshold(result.thresholdCents);setNotice("Approval threshold saved.");
-          });
-        }}>
-          <label>Cumulative manager approval threshold (USD)<input name="threshold" key={threshold} inputMode="decimal"
-            defaultValue={(threshold/100).toFixed(2)} required /></label>
-          <button disabled={busy}>Save threshold</button>
-        </form>}
+        {policy&&<section aria-label="Refund threshold history">
+          <p>Active threshold <strong>{money(policy.thresholdCents)}</strong></p>
+          <h5>Refund threshold history</h5>
+          {policy.changes.length ? <ul>{policy.changes.map(change=><li key={change.id}>
+            <strong>{money(change.oldCents)} → {money(change.newCents)}</strong> · {change.actor} ·{" "}
+            <time dateTime={change.effectiveAt}>{time(change.effectiveAt)}</time> · Previewed store {change.location}
+          </li>)}</ul> : <p>No threshold changes recorded.</p>}
+        </section>}
         <div className={styles.importMapping}>{([
           ["Location",location,setLocation,rows.map(r=>r.sale?.location)],
           ["Register",register,setRegister,rows.map(r=>r.sale?.register)],
