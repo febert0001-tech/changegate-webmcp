@@ -2207,6 +2207,9 @@ describe("shared merchant workspace", () => {
     expect(result.rows.some(row => [otherStore.id, nextWeek.id].includes(row.id))).toBe(false);
     expect((await owner.request({ ...weekly, shift: "Morning" })).status).toBe(400);
     expect((await owner.request({ ...preview, week: "2026-03-09" })).status).toBe(422);
+    const farFuture = await owner.request({ ...preview, week: "9999-12-31" });
+    expect(farFuture.status).toBe(422);
+    expect(await farFuture.json()).toEqual({ error: "REFUND_PREVIEW_WEEK_OPEN" });
     expect(await owner.send({ action: "refundPolicy" })).toEqual({ thresholdCents: 5000 });
     expect(await Promise.all([morning, evening].map(({ id }) => owner.send({ action: "openRefundRequest", id })))).toEqual(before);
   });

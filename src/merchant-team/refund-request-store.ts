@@ -106,9 +106,10 @@ export class RefundRequestStore {
       return previewRefundThreshold(rows.map(project), currentCents, thresholdCents);
     }
 
+    const currentWeekStart = cashWeekMonday(cashStoreDate(this.now()));
+    if (week >= currentWeekStart) throw new TeamError("REFUND_PREVIEW_WEEK_OPEN", 422);
     const start = cashWeekMonday(week);
     const next = addCashWeekDays(start, 7);
-    if (next > cashStoreDate(this.now())) throw new TeamError("REFUND_PREVIEW_WEEK_OPEN", 422);
     // Narrow the UTC query, then apply the reporting calendar at the store's local midnight.
     const rows = this.db.prepare(scope + " AND r.created_at>=? AND r.created_at<? ORDER BY r.created_at DESC,r.id")
       .all(employee.merchantId, location, start, addCashWeekDays(next, 1)) as unknown as (RequestRow & { createdAt: string })[];
