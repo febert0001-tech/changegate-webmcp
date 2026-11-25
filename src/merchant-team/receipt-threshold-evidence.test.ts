@@ -20,21 +20,33 @@ const held: RefundRequest = {
 };
 
 describe("receipt threshold evidence", () => {
-  it("uses the first saved check and the change in force at the time", () => {
+  it("preserves the original hold when a later check is routine", () => {
     const request: RefundRequest = { ...held, events: [...held.events, {
       kind: "Checks recorded", actor: "ChangeGate", occurredAt: "2026-11-25T20:40:00.000Z",
       check: { route: "routine", thresholdCents: 5000, cumulativeCents: 3600, balanceCents: 25000, explanation: "Later recheck." },
     }] };
 
-    expect(receiptThresholdEvidence(request, policy)).toEqual({ thresholdCents: 3600, change: applied });
+    expect(receiptThresholdEvidence(request, policy)).toEqual({ thresholdCents: 3600, whenHeld: true, change: applied });
+  });
+
+  it("attributes a later hold to its own check after the policy is restored", () => {
+    const routine: RefundRequest["events"][number] = {
+      kind: "Checks recorded", actor: "ChangeGate", occurredAt: "2026-11-25T19:55:00.000Z",
+      check: { route: "routine", thresholdCents: 5000, cumulativeCents: 3600, balanceCents: 25000, explanation: "Within store policy." },
+    };
+    const request = { ...held, events: [routine, ...held.events] };
+    const saved = structuredClone(request.events);
+
+    expect(receiptThresholdEvidence(request, policy)).toEqual({ thresholdCents: 3600, whenHeld: true, change: applied });
+    expect(request.events).toEqual(saved);
   });
 
   it("preserves available facts when the audit record cannot establish attribution", () => {
     expect(receiptThresholdEvidence(held, { ...policy, changes: [restored] }))
-      .toEqual({ thresholdCents: 3600, change: undefined });
+      .toEqual({ thresholdCents: 3600, whenHeld: true, change: undefined });
     expect(receiptThresholdEvidence(held, { ...policy, changes: [
       restored, { ...applied, effectiveAt: held.events[0]!.occurredAt },
-    ] })).toEqual({ thresholdCents: 3600 });
-    expect(receiptThresholdEvidence({ ...held, events: [] }, policy)).toEqual({ thresholdCents: undefined });
+    ] })).toEqual({ thresholdCents: 3600, whenHeld: true });
+    expect(receiptThresholdEvidence({ ...held, events: [] }, policy)).toEqual({ thresholdCents: undefined, whenHeld: false });
   });
 });

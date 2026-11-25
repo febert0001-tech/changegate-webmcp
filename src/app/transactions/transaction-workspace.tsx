@@ -28,11 +28,11 @@ const time = (value: string) => value.replace("T"," ").slice(0,19) + " UTC";
 const thresholdChangeAnchor = (id: string) => "threshold-change-" + id;
 
 function ReceiptThreshold({ request, policy }: { request: RefundRequest; policy: RefundPolicyHistory | undefined }) {
-  const { thresholdCents, change } = receiptThresholdEvidence(request, policy);
+  const { thresholdCents, whenHeld, change } = receiptThresholdEvidence(request, policy);
   return <section aria-label="Refund threshold evidence">
     <h4>Refund threshold evidence</h4>
     <dl className={styles.facts}>
-      <div><dt>Threshold when checked</dt><dd>{thresholdCents === undefined ? "Unavailable" : money(thresholdCents)}</dd></div>
+      <div><dt>{whenHeld ? "Threshold when held" : "Threshold when checked"}</dt><dd>{thresholdCents === undefined ? "Unavailable" : money(thresholdCents)}</dd></div>
       <div><dt>Current threshold</dt><dd>{policy ? money(policy.thresholdCents) : "Unavailable"}</dd></div>
     </dl>
     {change ? <p><Link href={"/transactions#" + thresholdChangeAnchor(change.id)} prefetch={false}>View threshold change</Link>
